@@ -1,0 +1,57 @@
+# Roadmap: iOS 26 on lisa
+
+Written 2026-11-07, from the public state of the projects below as read that day.
+
+## The wall: pointer authentication
+
+Since iOS 17 every system binary is **arm64e only**: iOS 17 dropped the A11, the last iPhone without pointer
+authentication (PAC, ARMv8.3), so the IPSWs no longer carry a plain arm64 dyld shared cache. iOS 26 needs an A13 or later.
+
+The SM7325's Cortex-A78 and Cortex-A55 are ARMv8.2 and **have no PAC**. The hint-space PAC instructions (`PACIBSP`,
+`AUTIBSP`) run as `NOP` there, but the others (`RETAB`, `BLRAA`, `LDRAA`, `PACIA`, ...) are undefined and trap. An iOS 26
+binary dies at its first `RETAB`.
+
+## What exists
+
+| Project | Kernel | User space | CPU | What it gives us |
+| --- | --- | --- | --- | --- |
+| [HakiOS](https://github.com/oosexgang/hakios-xnu-kernel) | xnu-8796 (iOS 16) | iOS 16.5, iPhone X (arm64) | **SM7325** (POCO X5 Pro 5G) | drivers for our SoC: display, touch, Adreno 642L (Mesa, Metal), Wi-Fi, audio, cameras |
+| [UniXNU](https://github.com/UniXNU/UniXNU) | **xnu-12377 (iOS 26)** | **iPadOS 26.5.2**, also 17.7.11 and 27.0.1 | SM8550 (has PAC); an SM7325 tablet on iPadOS 17 | the iOS 26 kernel profile, a UEFI boot path (Mu-Silicium, which has `lisaPkg`), a Linux toolchain for XNU |
+| [Bergamota](https://github.com/ry-diffusion/bergamota) | xnu-11215 (iOS 18) | iOS 18.7.8 to SpringBoard | SDM845 (**no PAC**) | the proof that arm64e user space runs on a CPU without PAC once rewritten (its Renegade tool) |
+
+Nobody runs iOS 26 on a CPU without PAC. UniXNU's iOS 26 ports all rely on the SM8550's FEAT_PAuth.
+
+## The plan
+
+### Phase 1: the PAC gap, on the host (no phone needed)
+
+- [x] `tools/pacstrip`: rewrite one Mach-O (our implementation; Renegade states no license, so none of its code is used)
+- [ ] the iOS 26 dyld shared cache: rewrite every executable mapping of the main cache and the sub-caches, honour each
+      image's data-in-code, refresh the CodeDirectory page hashes
+- [ ] a feature scan: list every instruction beyond the A78's features (FJCVTZS, FCMA, LRCPC2, FlagM, ...) with its
+      count, from the real iOS 26 cache, so we know what the kernel must emulate
+- [ ] the Apple kexts the iOS 26 kernelcache contributes (AMFI, APFS, sandbox, IOSurface, ...) are arm64e too: same
+      rewrite, and the prelinker must emit unsigned pointers for their authenticated fixups
+
+### Phase 2: the kernel, in QEMU with a CPU without PAC
+
+- [ ] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth)
+- [ ] kernel patches: accept arm64e Mach-O (cpusubtype and ptrauth ABI version), never touch the PAC key registers,
+      emulate the reported traps in the undefined-instruction handler
+- [ ] boot it under `qemu-system-aarch64 -cpu cortex-a76` (ARMv8.2, no PAC: the phone's limits on the host) to
+      launchd, then SpringBoard
+
+### Phase 3: lisa
+
+- [ ] boot path: Mu-Silicium `lisaPkg` with UniXNU's UEFI modules (UniXNUDxe, DarwinBoot), started from RAM with
+      `fastboot boot` first, nothing written to the phone
+- [ ] SoC layer: the SM7325 support (UniXNU's SM7325 port, HakiOS's redwood drivers)
+- [ ] lisa's own parts: the CSOT VTDR6130 panel in DSI command mode with DSC, Goodix Berlin touch over SPI, the
+      TFA9873 amplifiers (our mainline port documents all of them)
+- [ ] the iOS 26 root on the phone's storage
+
+## Inputs that are not in this repository
+
+- an iOS or iPadOS 26 IPSW, obtained by you from Apple;
+- the phone's firmware, pulled from your own phone;
+- the toolchains, built from their sources.

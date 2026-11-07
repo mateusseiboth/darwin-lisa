@@ -30,8 +30,10 @@ whole system into an HFS+ volume instead).
 This port rewrites in memory: XNU already transforms code pages on page-in for encrypted apps (the
 `apple_protect_pager` and its `text_crypter` callback, FairPlay's path). A crypter that runs `insn.rewrite()` over each
 page of an arm64e mapping gives the same result as rewriting the files, for executables, dylibs and the dyld shared
-cache alike, while the sealed volume stays exactly as Apple shipped it. A 16 KiB page is 4096 table lookups:
-microseconds, against the I/O that brought the page in.
+cache alike, while the sealed volume stays exactly as Apple shipped it. `kernel/pacstrip/pac_rewrite.c` (the C twin of
+`insn.py`, checked against its vectors) takes about 15 us per 16 KiB page on the PC; expect roughly twice that on the
+A78, close to the cost of reading the page from UFS. It is paid once per page-in, and a pre-filter on the top bits of
+each word is still to do.
 
 What the page-in path cannot see is `LC_DATA_IN_CODE` (a data range inside `__text` that looks like a PAC
 instruction). Clang puts jump tables in `__TEXT,__const`, so this should be rare; the scan of the real cache measures
@@ -57,8 +59,9 @@ The kexts prelinked into the kernelcache are rewritten statically, at prelink ti
 - [ ] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth)
 - [ ] kernel patches: accept arm64e Mach-O (cpusubtype and ptrauth ABI version), never touch the PAC key registers,
       emulate the reported traps in the undefined-instruction handler
+- [x] `kernel/pacstrip/pac_rewrite.c`: the rewrite in C, checked against 1 018 759 vectors from `insn.py`
 - [ ] the PAC-stripping pager: a `text_crypter` for every executable mapping of an arm64e Mach-O and of the shared
-      cache, running the same rewrite as `insn.py` (ported to C, with the same test vectors)
+      cache, calling `pac_rewrite_buffer()`
 - [ ] boot it under `qemu-system-aarch64 -cpu cortex-a76` (ARMv8.2, no PAC: the phone's limits on the host) to
       launchd, then SpringBoard
 

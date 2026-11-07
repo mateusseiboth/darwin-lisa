@@ -1,1 +1,3 @@
 __pycache__/
+kernel/pacstrip/test_pac_rewrite
+kernel/pacstrip/vectors.txt

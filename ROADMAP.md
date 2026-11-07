@@ -28,8 +28,9 @@ Nobody runs iOS 26 on a CPU without PAC. UniXNU's iOS 26 ports all rely on the S
 - [x] `tools/pacstrip`: rewrite one Mach-O (our implementation; Renegade states no license, so none of its code is used)
 - [ ] the iOS 26 dyld shared cache: rewrite every executable mapping of the main cache and the sub-caches, honour each
       image's data-in-code, refresh the CodeDirectory page hashes
-- [ ] a feature scan: list every instruction beyond the A78's features (FJCVTZS, FCMA, LRCPC2, FlagM, ...) with its
-      count, from the real iOS 26 cache, so we know what the kernel must emulate
+- [x] a feature scan (`featscan.py`): every instruction beyond the A78's features (FJCVTZS, FCMA, LRCPC2, FlagM, ...)
+      with its count, LLVM's disassembler as the oracle
+- [ ] run it on the real iOS 26 cache, so we know what the kernel must emulate
 - [ ] the Apple kexts the iOS 26 kernelcache contributes (AMFI, APFS, sandbox, IOSurface, ...) are arm64e too: same
       rewrite, and the prelinker must emit unsigned pointers for their authenticated fixups
 

@@ -36,6 +36,10 @@ tools/pacstrip/pacstrip.py strip IN [OUT]   # rewrite IN into OUT (in place with
 Only arm64 slices of thin and fat files are touched, only in sections marked as code, and never inside the ranges
 `LC_DATA_IN_CODE` lists. The code signature is not refreshed.
 
+`tools/pacstrip/featscan.py FILE` lists the instructions that the Apple A13 (the oldest iOS 26 CPU) decodes and the
+Cortex-A78 does not, with their counts, using LLVM's disassembler for both CPUs (`--have` and `--want` take any
+`-mcpu` LLVM knows). Run it on the rewritten files: what it prints is what the kernel has to emulate.
+
 Tests: `cd tools/pacstrip && python3 -m unittest`. The exhaustive tests generate every encoding of the rewritten families
 and check each rewrite against llvm-mc's disassembler. One test compiles C with `clang -target arm64e-apple-ios17.0` and
 checks that nothing authenticated is left.

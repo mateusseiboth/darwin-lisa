@@ -40,6 +40,13 @@ class Cli(unittest.TestCase):
         run("strip", self.path)
         self.assertEqual(words_at(self.path.read_bytes(), self.text, 1), [RET])
 
+    def test_scan_reads_a_dyld_shared_cache(self):
+        from test_dyldcache import VM_PROT_EXECUTE, VM_PROT_READ, cache
+        self.path.write_bytes(cache([(0x1000, VM_PROT_READ | VM_PROT_EXECUTE, [RETAB, RETAB, LDRAB_OUT_OF_RANGE])]))
+        out = run("scan", self.path)
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertIn("2 to patch, 1 to emulate", out.stdout)
+
     def test_rejects_a_file_that_is_not_mach_o(self):
         self.path.write_bytes(b"\x7fELF" + b"\0" * 60)
         out = run("scan", self.path)

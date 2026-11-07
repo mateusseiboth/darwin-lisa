@@ -3,6 +3,7 @@
 
 usage:
   pacstrip.py scan FILE...        count what would change; list what the kernel must emulate
+                                  (Mach-O files, or dyld shared cache files)
   pacstrip.py strip IN [OUT]      rewrite IN into OUT (in place without OUT)
 """
 import argparse
@@ -12,7 +13,13 @@ from pathlib import Path
 # run with python3 -I as well: the modules live next to this file
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from dyldcache import is_cache, strip_cache  # noqa: E402
 from macho import strip  # noqa: E402
+
+
+def strip_any(data):
+    """A dyld shared cache (main or sub-cache) or a Mach-O."""
+    return strip_cache(data) if is_cache(data) else strip(data)
 
 
 def describe(path, report):
@@ -23,12 +30,12 @@ def describe(path, report):
 
 def scan(args):
     for path in args.files:
-        print(describe(path, strip(bytearray(path.read_bytes()))))
+        print(describe(path, strip_any(bytearray(path.read_bytes()))))
 
 
 def rewrite(args):
     data = bytearray(args.input.read_bytes())
-    report = strip(data)
+    report = strip_any(data)
     (args.output or args.input).write_bytes(data)
     print(describe(args.input, report))
 

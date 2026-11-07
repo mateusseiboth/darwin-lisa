@@ -14,6 +14,7 @@ published this combination yet. [ROADMAP.md](ROADMAP.md) explains why it is hard
 | [`tools/pacstrip/`](tools/pacstrip) | Rewrites arm64e code for a CPU without pointer authentication. Our own implementation, from the Arm ARM encodings, checked against llvm-mc |
 | [`kernel/pacstrip/`](kernel/pacstrip) | The same rewrite in C, for the kernel's page-in path. `make test` checks it against vectors made by the Python version |
 | [`docker/unixnu-toolchain/`](docker/unixnu-toolchain) | UniXNU's Linux toolchain for XNU, built inside a Docker image |
+| [`docs/pac-pager.md`](docs/pac-pager.md) | How the kernel rewrites arm64e code pages on page-in, and where in XNU |
 | [ROADMAP.md](ROADMAP.md) | The plan, phase by phase, and what each phase is built on |
 
 ## pacstrip

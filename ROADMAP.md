@@ -21,6 +21,24 @@ binary dies at its first `RETAB`.
 
 Nobody runs iOS 26 on a CPU without PAC. UniXNU's iOS 26 ports all rely on the SM8550's FEAT_PAuth.
 
+## Design decision: rewrite code pages as they are paged in
+
+UniXNU boots iOS 26 from the IPSW's `OS` and `Cryptex1,SystemOS` disk images **unchanged**: Apple's APFS kext mounts
+the sealed system volume and checks its seal. Rewriting the binaries on disk breaks the seal (Bergamota copies the
+whole system into an HFS+ volume instead).
+
+This port rewrites in memory: XNU already transforms code pages on page-in for encrypted apps (the
+`apple_protect_pager` and its `text_crypter` callback, FairPlay's path). A crypter that runs `insn.rewrite()` over each
+page of an arm64e mapping gives the same result as rewriting the files, for executables, dylibs and the dyld shared
+cache alike, while the sealed volume stays exactly as Apple shipped it. A 16 KiB page is 4096 table lookups:
+microseconds, against the I/O that brought the page in.
+
+What the page-in path cannot see is `LC_DATA_IN_CODE` (a data range inside `__text` that looks like a PAC
+instruction). Clang puts jump tables in `__TEXT,__const`, so this should be rare; the scan of the real cache measures
+it, and the exec/mmap path can pass the ranges to the pager if it is not.
+
+The kexts prelinked into the kernelcache are rewritten statically, at prelink time, with `tools/pacstrip`.
+
 ## The plan
 
 ### Phase 1: the PAC gap, on the host (no phone needed)
@@ -39,6 +57,8 @@ Nobody runs iOS 26 on a CPU without PAC. UniXNU's iOS 26 ports all rely on the S
 - [ ] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth)
 - [ ] kernel patches: accept arm64e Mach-O (cpusubtype and ptrauth ABI version), never touch the PAC key registers,
       emulate the reported traps in the undefined-instruction handler
+- [ ] the PAC-stripping pager: a `text_crypter` for every executable mapping of an arm64e Mach-O and of the shared
+      cache, running the same rewrite as `insn.py` (ported to C, with the same test vectors)
 - [ ] boot it under `qemu-system-aarch64 -cpu cortex-a76` (ARMv8.2, no PAC: the phone's limits on the host) to
       launchd, then SpringBoard
 

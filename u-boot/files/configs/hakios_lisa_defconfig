@@ -40,3 +40,15 @@ CONFIG_FASTBOOT_BUF_SIZE=0x8000000
 # CONFIG_EFI_CAPSULE_ON_DISK is not set
 # CONFIG_EFI_CAPSULE_FIRMWARE_RAW is not set
 # CONFIG_TOOLS_MKEFICAPSULE is not set
+
+# Multiboot: the boot menu also starts postmarketOS, whose image sits inside userdata with a partition table of its
+# own. blkmap maps userdata as a disk of its own so that the image's boot partition can be read.
+CONFIG_BLKMAP=y
+CONFIG_CMD_BLKMAP=y
+# sysboot reads the extlinux.conf that postmarketOS's boot-deploy writes
+CONFIG_CMD_SYSBOOT=y
+# part start gives a block number in hex, blkmap's linear mapping reads its source block in decimal
+CONFIG_CMD_SETEXPR_FMT=y
+
+# the fastboot screen: drivers/video/fastboot_logo.bmp, from devices/lisa/u-boot/files
+CONFIG_VIDEO_LOGO_FASTBOOT=y

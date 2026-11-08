@@ -1,0 +1,7 @@
+# Proprietary firmware pulled from the phone and Apple-derived images never go in the repository.
+/fw-*/
+*.apfs
+*.hkub
+# The capybara boot logo (the user's own image) is carried in the portable bundle, not the repo.
+u-boot/files/drivers/video/u_boot_logo.bmp
+u-boot/files/drivers/video/fastboot_logo.bmp

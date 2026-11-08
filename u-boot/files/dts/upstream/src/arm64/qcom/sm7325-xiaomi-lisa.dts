@@ -1,0 +1,205 @@
+// SPDX-License-Identifier: BSD-3-Clause
+/*
+ * The Xiaomi 11 Lite 5G NE (lisa, SM7325) for HakiOS's U-Boot.
+ *
+ * Only what U-Boot needs: the memory the firmware and the remote processors keep, the panel's framebuffer as the
+ * bootloader left it, the keys, USB as a device (fastboot) and UFS. Same SoC as the POCO X5 Pro (redwood), so the
+ * SoC-level nodes (PMIC keys, UFS, USB) are redwood's; the reserved memory, the panel geometry and the ABL match
+ * values (qcom,msm-id / qcom,board-id) are lisa's own, taken from the mainline device tree that boots on this phone
+ * (sm7325-xiaomi-lisa.dts) and the stock yupik DTB.
+ *
+ * The size of RAM is not here: ABL writes it into the device tree it hands over (the appended Android one), and U-Boot
+ * reads it from there (arch/arm/mach-snapdragon/board.c, qcom_parse_memory()).
+ */
+
+/dts-v1/;
+
+#include <dt-bindings/arm/qcom,ids.h>
+#include <dt-bindings/gpio/gpio.h>
+#include <dt-bindings/input/linux-event-codes.h>
+#include <dt-bindings/pinctrl/qcom,pmic-gpio.h>
+#include "sm7325.dtsi"
+#include "pm7325.dtsi"
+#include "pm8350b.dtsi" /* PM7325B */
+#include "pm8350c.dtsi" /* PM7350C */
+#include "pmk8350.dtsi" /* PMK7325 */
+
+/*
+ * kodiak.dtsi's carve-outs are a Chromebook's; the phone's differ (below), so the three the phone re-declares with its
+ * own addresses are removed first (the mainline lisa tree does the same).
+ */
+/delete-node/ &adsp_mem;
+/delete-node/ &cdsp_mem;
+/delete-node/ &rmtfs_mem;
+
+/ {
+	model = "Xiaomi 11 Lite 5G NE";
+	compatible = "xiaomi,lisa", "qcom,sm7325";
+	chassis-type = "handset";
+
+	/* what ABL matches against; the appended Android device tree carries the same (stock yupik: SM7325, board 0x1000b) */
+	qcom,msm-id = <QCOM_ID_SM7325 0x10000>;
+	qcom,board-id = <0x1000b 0x00>;
+
+	chosen {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/*
+		 * The panel as ABL left it: 1080 x 2400, 32 bits (Novatek VTDR6130 in command mode). At 0xE1000000 the
+		 * HakiOS loader knows the phone by it (xnuloader/loader.c, efi_main()). No clocks: U-Boot keeps the display
+		 * running by not touching it.
+		 */
+		framebuffer0: framebuffer@e1000000 {
+			compatible = "simple-framebuffer";
+			reg = <0x0 0xe1000000 0x0 (1080 * 2400 * 4)>;
+			width = <1080>;
+			height = <2400>;
+			stride = <(1080 * 4)>;
+			format = "a8r8g8b8";
+		};
+	};
+
+	gpio-keys {
+		compatible = "gpio-keys";
+
+		pinctrl-0 = <&kypd_volp_n>;
+		pinctrl-names = "default";
+
+		key-volume-up {
+			label = "Volume Up";
+			gpios = <&pm7325_gpios 6 GPIO_ACTIVE_LOW>;
+			linux,code = <KEY_VOLUMEUP>;
+		};
+	};
+
+	reserved-memory {
+		#address-cells = <2>;
+		#size-cells = <2>;
+		ranges;
+
+		/* lisa's own no-map carve-outs, from the mainline device tree that boots on this phone */
+		cdsp_secure_heap_mem: cdsp-secure-heap@81800000 {
+			reg = <0x0 0x81800000 0x0 0x1e00000>;
+			no-map;
+		};
+
+		camera_mem: camera@86200000 {
+			reg = <0x0 0x86200000 0x0 0x500000>;
+			no-map;
+		};
+
+		adsp_mem: adsp@86700000 {
+			reg = <0x0 0x86700000 0x0 0x4000000>;
+			no-map;
+		};
+
+		/* mainline video_mem is the downstream cvp_mem */
+		real_video_mem: video@8ad00000 {
+			reg = <0x0 0x8ad00000 0x0 0x500000>;
+			no-map;
+		};
+
+		ipa_gsi_mem: ipa-gsi@8b710000 {
+			reg = <0x0 0x8b710000 0x0 0xa000>;
+			no-map;
+		};
+
+		cdsp_mem: cdsp@9c700000 {
+			reg = <0x0 0x9c700000 0x0 0x1e00000>;
+			no-map;
+		};
+
+		ramoops_mem: ramoops@a9000000 {
+			reg = <0x0 0xa9000000 0x0 0x200000>;
+			no-map;
+		};
+
+		removed_mem: removed@c0000000 {
+			reg = <0x0 0xc0000000 0x0 0x5100000>;
+			no-map;
+		};
+
+		pil_trustedvm_mem: pil-trustedvm@d0800000 {
+			reg = <0x0 0xd0800000 0x0 0x76f7000>;
+			no-map;
+		};
+
+		qrtr_shmem: qrtr-shmem@d7ef7000 {
+			reg = <0x0 0xd7ef7000 0x0 0x9000>;
+			no-map;
+		};
+
+		neuron_block_0_mem: neuron-block@d7f00000 {
+			reg = <0x0 0xd7f00000 0x0 0x80000>;
+			no-map;
+		};
+
+		neuron_block_1_mem: neuron-block@d7f80000 {
+			reg = <0x0 0xd7f80000 0x0 0x80000>;
+			no-map;
+		};
+
+		/* the panel's memory and the display's dfps data after it (ABL's splash region) */
+		cont_splash_mem: cont-splash@e1000000 {
+			reg = <0x0 0xe1000000 0x0 0x2300000>;
+			no-map;
+		};
+
+		rmtfs_mem: rmtfs@ef500000 {
+			reg = <0x0 0xef500000 0x0 0x280000>;
+			no-map;
+		};
+
+		/*
+		 * Where the HakiOS loader takes its payload from (PAYLOAD_BASE, 64 MiB with the panic log in its last MiB).
+		 * Mapped (no no-map): the hakios command writes the payload here, and nothing else in U-Boot may take it.
+		 */
+		hakios_payload_mem: hakios-payload@f0000000 {
+			reg = <0x0 0xf0000000 0x0 0x4000000>;
+		};
+	};
+};
+
+&pm7325_gpios {
+	kypd_volp_n: kypd-volp-n-state {
+		pins = "gpio6";
+		function = PMIC_GPIO_FUNC_NORMAL;
+		power-source = <1>;
+		bias-pull-up;
+		input-enable;
+	};
+};
+
+&pon_pwrkey {
+	status = "okay";
+};
+
+&pon_resin {
+	linux,code = <KEY_VOLUMEDOWN>;
+	status = "okay";
+};
+
+&ufs_mem_hc {
+	reset-gpios = <&tlmm 175 GPIO_ACTIVE_LOW>;
+	status = "okay";
+};
+
+&ufs_mem_phy {
+	status = "okay";
+};
+
+/* USB 2.0 as a device: U-Boot's fastboot; the SuperSpeed PHY is left as ABL left it */
+&usb_1 {
+	qcom,select-utmi-as-pipe-clk;
+	dr_mode = "peripheral";
+	maximum-speed = "high-speed";
+	phys = <&usb_1_hsphy>;
+	phy-names = "usb2-phy";
+	status = "okay";
+};
+
+&usb_1_hsphy {
+	status = "okay";
+};

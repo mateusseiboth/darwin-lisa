@@ -1,7 +1,7 @@
 From cf988e5a96b54a5b74b733e38dde42dd9f3d55c7 Mon Sep 17 00:00:00 2001
 From: Mateus Seiboth <mateusseiboth12@gmail.com>
 Date: Sun, 8 Nov 2026 09:21:26 -0400
-Subject: [PATCH 1/2] lisa port: Goodix touch clock HWCG fix, device packaging,
+Subject: [PATCH 1/3] lisa port: Goodix touch clock HWCG fix, device packaging,
  capybara/6BOT branding
 
 - drivers/input/hakios.goodix.c: the QUP1 master/slave AHB branches are HWCG
@@ -511,7 +511,7 @@ index 422f9d3..6b884f9 100644
 From 98db8f8239d3ab1f7aa63d51c642d3aa6d705289 Mon Sep 17 00:00:00 2001
 From: Mateus Seiboth <mateusseiboth12@gmail.com>
 Date: Sun, 8 Nov 2026 16:39:20 -0400
-Subject: [PATCH 2/2] mk-mesa: find the SDK's zlib through pkg-config for the
+Subject: [PATCH 2/3] mk-mesa: find the SDK's zlib through pkg-config for the
  cross build
 
 The iPhoneOS SDK ships zlib (and other libraries) as .tbd stubs with no pkg-config
@@ -562,6 +562,265 @@ index 045e37b..bcb370b 100755
  DRIVERS=${DRIVERS:-softpipe,freedreno}
  BUILD=build-${DRIVERS//,/-}
  [ -f $BUILD/build.ninja ] || meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+-- 
+2.56.0
+
+
+From f8a0aa0d4267b83139f6af7a45933afa3664078d Mon Sep 17 00:00:00 2001
+From: Mateus Seiboth <mateusseiboth12@gmail.com>
+Date: Sun, 8 Nov 2026 17:15:39 -0400
+Subject: [PATCH 3/3] goodix: support the gt9897 (Goodix Berlin variant A),
+ working on lisa
+
+lisa's touch controller is a gt9897 ("variant A"), not the gt9916 ("variant D")
+the driver was written for, and the two differ in three ways that together left the
+chip unreadable ("no valid firmware version" / "no goodix touch screen"):
+
+- register addresses: fw-version 0x1000C and ic-info 0x10068 on variant A, 0x10014
+  and 0x10070 on D. Reading D's 0x10014 landed eight bytes into the struct.
+- SPI read framing: four dummy bytes (a nine-byte prefix) on A, three (eight) on D.
+- the mainline dev_confirm handshake (write 8x0xAA to the boot-option register and
+  read it back) before the first read, which both confirms the link and, being a
+  known pattern, shows the read is aligned.
+
+Also: bring_up never released the chip from reset before probing (power_on holds
+RESET low); call touch_reset() first. boot-arg touch_goodix_a=1 selects variant A;
+the default stays variant D for the reference phone. The FIFO interface is disabled
+on lisa's serial engine (GSI-only), so the driver bit-bangs the pins, which the
+handshake proved reliable. Confirmed on hardware: chip "BERLIN", firmware "9897T",
+"touch screen ready".
+---
+ configs/boot-args.lst         |  2 +
+ configs/symbols.tsv           |  2 +
+ docs/boot-args.md             |  6 ++-
+ drivers/input/hakios.goodix.c | 88 +++++++++++++++++++++++++++++++----
+ 4 files changed, 86 insertions(+), 12 deletions(-)
+
+diff --git a/configs/boot-args.lst b/configs/boot-args.lst
+index bd70726..683c547 100644
+--- a/configs/boot-args.lst
++++ b/configs/boot-args.lst
+@@ -281,7 +281,9 @@ torch_secs	k
+ touch_avdd_ldo	k
+ touch_avdd_mv	k
+ touch_chip	k
++touch_delay_ms	k
+ touch_flip	k
++touch_goodix_a	k
+ touch_lat	ku
+ touch_poll_us	k
+ touch_rate	k
+diff --git a/configs/symbols.tsv b/configs/symbols.tsv
+index a797ee7..d895a77 100644
+--- a/configs/symbols.tsv
++++ b/configs/symbols.tsv
+@@ -254,7 +254,9 @@ TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.torch.c
+ TOUCH_AVDD_LDO	arg	touch_avdd_ldo	Touch and buttons	k	hakios.goodix.c	the analog supply is the PMIC rail NAME through RPMh, not the AVDD GPIO.
+ TOUCH_AVDD_MV	arg	touch_avdd_mv	Touch and buttons	k	hakios.goodix.c	that rail's voltage in millivolts (default 3000)
+ TOUCH_CHIP	arg	touch_chip	Touch and buttons	k	hakios.goodix.c	the phone carries only this one, and the straps are not read
++TOUCH_DELAY_MS	arg	touch_delay_ms	Touch and buttons	k	hakios.goodix.c	wait before the probe so its log survives the early ring-buffer churn
+ TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
++TOUCH_GOODIX_A	arg	touch_goodix_a	Touch and buttons	k	hakios.goodix.c	the Goodix Berlin "variant A" (gt9897, lisa), not the default D.
+ TOUCH_LAT	arg	touch_lat	GPU and display	ku	HakiosMetalCA.m,MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
+ TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
+ TOUCH_RATE	arg	touch_rate	Touch and buttons	k	hakios.goodix.c	the chip reports twice as often (Xiaomi's game mode; 240 otherwise)
+diff --git a/docs/boot-args.md b/docs/boot-args.md
+index 4d4ebab..71dc5ad 100644
+--- a/docs/boot-args.md
++++ b/docs/boot-args.md
+@@ -2,7 +2,7 @@
+ 
+ Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
+ 
+-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **353 arguments**: 282 read by the kernel, 14 by the loader, 68 by user space (one is read in more than one place).
++Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **355 arguments**: 284 read by the kernel, 14 by the loader, 68 by user space (one is read in more than one place).
+ 
+ This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list. What the arguments of the two Metal paths do: [Metal on the Adreno](reference/metal.md#boot-arguments).
+ 
+@@ -247,7 +247,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
+ | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
+ 
+-## Touch and buttons (13)
++## Touch and buttons (15)
+ 
+ | Argument | Layer | Read by | Configuration | Set by |
+ |---|---|---|---|---|
+@@ -258,7 +258,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `touch_avdd_ldo` | K | `hakios.goodix.c` | `CONFIG_TOUCH_AVDD_LDO` |  |
+ | `touch_avdd_mv` | K | `hakios.goodix.c` | `CONFIG_TOUCH_AVDD_MV` |  |
+ | `touch_chip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_CHIP` |  |
++| `touch_delay_ms` | K | `hakios.goodix.c` | `CONFIG_TOUCH_DELAY_MS` |  |
+ | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
++| `touch_goodix_a` | K | `hakios.goodix.c` | `CONFIG_TOUCH_GOODIX_A` |  |
+ | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
+ | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |
+ | `touch_spi_hz` | K | `hakios.goodix.c` | `CONFIG_TOUCH_SPI_HZ` |  |
+diff --git a/drivers/input/hakios.goodix.c b/drivers/input/hakios.goodix.c
+index ca1812b..4dae5a0 100644
+--- a/drivers/input/hakios.goodix.c
++++ b/drivers/input/hakios.goodix.c
+@@ -446,6 +446,8 @@ geni_spi_init(uint32_t hz)
+ 		return "the serial engine has no SPI firmware";
+ 	}
+ 	if (rd(GENI_IF_DISABLE_RO) & 1) {
++		/* lisa's SE13 reports a 16-deep FIFO but marks the interface disabled (GSI-configured), and a
++		 * forced FIFO transfer returns nothing, so there is no using it: the caller drives the pins. */
+ 		return "the serial engine's FIFO interface is disabled";
+ 	}
+ 	fifo_depth = rd(SE_HW_PARAM_0) >> 16 & 0x3f;
+@@ -624,16 +626,30 @@ static bool (*spi_transfer)(const uint8_t *tx, uint8_t *rx, uint32_t length);
+ 
+ /* ---- the Goodix chip ------------------------------------------------------------------------------- */
+ 
+-#define GOODIX_FW_VERSION       0x10014         /* 28 bytes */
+-#define GOODIX_IC_INFO          0x10070         /* a 16-bit length, then that many bytes */
++/*
++ * Two Goodix Berlin variants differ in their register addresses and SPI read framing (mainline
++ * goodix_berlin.h / goodix_berlin_spi.c). The POCO X5 Pro (redwood) carries a gt9916 ("variant D");
++ * lisa carries a gt9897 ("variant A"). boot-arg touch_goodix_a=1 selects variant A.
++ *     variant A (gt9897): fw-version 0x1000C, ic-info 0x10068, 4 dummy bytes (9-byte read prefix)
++ *     variant D (gt9916): fw-version 0x10014, ic-info 0x10070, 3 dummy bytes (8-byte read prefix)
++ */
++#define GOODIX_FW_VERSION_A     0x1000c
++#define GOODIX_FW_VERSION_D     0x10014         /* 28 bytes */
++#define GOODIX_IC_INFO_A        0x10068
++#define GOODIX_IC_INFO_D        0x10070         /* a 16-bit length, then that many bytes */
++#define GOODIX_BOOTOPTION_ADDR  0x10000         /* the dev_confirm handshake register */
+ #define GOODIX_MAX_READ         1024
+ #define GOODIX_MAX_TOUCHES      10
+ #define GOODIX_STATUS_TOUCH     0x80
+ #define GOODIX_STATUS_REQUEST   0x40
+ #define GOODIX_REQUEST_RESET    3
+ 
+-static uint8_t spi_tx[8 + GOODIX_MAX_READ], spi_rx[8 + GOODIX_MAX_READ];
++static uint8_t spi_tx[16 + GOODIX_MAX_READ], spi_rx[16 + GOODIX_MAX_READ];
+ static uint32_t touch_address, command_address;
++/* Selected from the Goodix Berlin variant (touch_goodix_a); the defaults are variant D (the gt9916). */
++static uint32_t goodix_fw_version_addr = GOODIX_FW_VERSION_D;
++static uint32_t goodix_ic_info_addr = GOODIX_IC_INFO_D;
++static uint32_t goodix_read_dummy = 3;
+ static const char *report_rate = "240";        /* what the status line says (touch_rate=480) */
+ static uint32_t max_x = 10800, max_y = 24000;   /* the device tree's; the chip may say otherwise */
+ 
+@@ -643,17 +659,21 @@ goodix_read(uint32_t address, uint8_t *data, uint32_t length)
+ 	if (length > GOODIX_MAX_READ) {
+ 		return false;
+ 	}
++	/* The read frame is 0xf1, the 32-bit big-endian address, then goodix_read_dummy bytes (four on
++	 * variant A, three on D) the chip clocks its answer out during, then the reply itself. */
++	uint32_t prefix = 5 + goodix_read_dummy;
++
+ 	spi_tx[0] = 0xf1;
+ 	spi_tx[1] = (uint8_t)(address >> 24);
+ 	spi_tx[2] = (uint8_t)(address >> 16);
+ 	spi_tx[3] = (uint8_t)(address >> 8);
+ 	spi_tx[4] = (uint8_t)address;
+-	spi_tx[5] = spi_tx[6] = spi_tx[7] = 0xff;
+-	memset(spi_tx + 8, 0, length);
+-	if (!spi_transfer(spi_tx, spi_rx, 8 + length)) {
++	memset(spi_tx + 5, 0xff, goodix_read_dummy);
++	memset(spi_tx + prefix, 0, length);
++	if (!spi_transfer(spi_tx, spi_rx, prefix + length)) {
+ 		return false;
+ 	}
+-	memcpy(data, spi_rx + 8, length);
++	memcpy(data, spi_rx + prefix, length);
+ 	return true;
+ }
+ 
+@@ -672,6 +692,31 @@ goodix_write(uint32_t address, const uint8_t *data, uint32_t length)
+ 	return spi_transfer(spi_tx, NULL, 5 + length);
+ }
+ 
++/*
++ * The handshake the mainline driver does before the first read (goodix_berlin_dev_confirm): write eight
++ * 0xAA to the boot-option register and read them back. It confirms the link and, with 0xAA a known pattern,
++ * confirms the link and, with 0xaa a known pattern, shows that the read is aligned. Up to three tries.
++ */
++static bool
++goodix_dev_confirm(void)
++{
++	uint8_t want[8], got[8];
++
++	memset(want, 0xaa, sizeof(want));
++	for (int attempt = 0; attempt < 3; attempt++) {
++		memset(got, 0, sizeof(got));
++		goodix_write(GOODIX_BOOTOPTION_ADDR, want, sizeof(want));
++		goodix_read(GOODIX_BOOTOPTION_ADDR, got, sizeof(got));
++		printf("goodix: dev_confirm try %d: wrote aa*8, read back %02x %02x %02x %02x %02x %02x %02x %02x\n",
++		    attempt, got[0], got[1], got[2], got[3], got[4], got[5], got[6], got[7]);
++		if (memcmp(want, got, sizeof(want)) == 0) {
++			return true;
++		}
++		sleep_ms(5);
++	}
++	return false;
++}
++
+ /* The chip's blocks end in the 16-bit sum of their bytes; all zeros or all ones is no answer at all. */
+ static bool
+ goodix_checksum_ok(const uint8_t *data, uint32_t length)
+@@ -718,7 +763,12 @@ goodix_probe(bool verbose)
+ 	uint8_t version[28];
+ 	uint32_t length, offset;
+ 
+-	if (!goodix_read(GOODIX_FW_VERSION, version, sizeof(version))) {
++	/* the mainline handshake before the first read: confirms the link and calibrates the read offset */
++	if (!goodix_dev_confirm() && verbose) {
++		printf("goodix: dev_confirm did not read back its pattern (the 0xaa line above shows the offset)\n");
++	}
++
++	if (!goodix_read(goodix_fw_version_addr, version, sizeof(version))) {
+ 		return false;
+ 	}
+ 	if (!goodix_checksum_ok(version, sizeof(version))) {
+@@ -732,11 +782,11 @@ goodix_probe(bool verbose)
+ 	printf("goodix: chip \"%.6s\", firmware \"%.8s\" %02x.%02x.%02x.%02x, sensor %u\n", (const char *)version,
+ 	    (const char *)version + 10, version[18], version[19], version[20], version[21], version[23]);
+ 
+-	if (!goodix_read(GOODIX_IC_INFO, info, 2)) {
++	if (!goodix_read(goodix_ic_info_addr, info, 2)) {
+ 		return false;
+ 	}
+ 	length = le16(info);
+-	if (length < 40 || length >= GOODIX_MAX_READ || !goodix_read(GOODIX_IC_INFO, info, length) ||
++	if (length < 40 || length >= GOODIX_MAX_READ || !goodix_read(goodix_ic_info_addr, info, length) ||
+ 	    !goodix_checksum_ok(info, length)) {
+ 		printf("goodix: bad chip description (length %u)\n", length);
+ 		return false;
+@@ -1472,6 +1522,9 @@ bring_up(void)
+ 		printf("goodix: the bus at %u Hz\n", spi_hz);
+ 		problem = geni_spi_init(spi_hz);
+ 	}
++	/* power_on holds the chip in reset (RESET low); take it out and let its firmware boot before any
++	 * read, or the firmware-version block comes back as the boot ROM's partial, uninitialised answer. */
++	touch_reset();
+ 	if (problem == NULL) {
+ 		use_engine_pins();
+ 		spi_transfer = geni_transfer;
+@@ -1545,6 +1598,21 @@ goodix_thread(__unused void *parameter, __unused wait_result_t result)
+ 	rsc = ml_io_map(RSC_PHYS, RSC_SIZE);
+ 	cmd_db = ml_io_map_wcomb(CMD_DB_PHYS, CMD_DB_SIZE);      /* memory, not registers: no alignment rules */
+ 
++	{
++		/* boot-arg touch_goodix_a=1: the Goodix Berlin "variant A" (gt9897, lisa), not the default D. */
++		uint32_t variant_a = 0, delay_ms = 0;
++
++		if (PE_parse_boot_argn("touch_goodix_a", &variant_a, sizeof(variant_a)) && variant_a) {
++			goodix_fw_version_addr = GOODIX_FW_VERSION_A;
++			goodix_ic_info_addr = GOODIX_IC_INFO_A;
++			goodix_read_dummy = 4;
++		}
++		/* boot-arg touch_delay_ms: wait before the probe so its log survives the early ring-buffer churn. */
++		if (PE_parse_boot_argn("touch_delay_ms", &delay_ms, sizeof(delay_ms)) && delay_ms) {
++			sleep_ms(delay_ms);
++		}
++	}
++
+ 	if (!bring_up()) {
+ 		printf("goodix: no %s touch screen\n", chip_name());
+ 		thread_terminate(current_thread());
 -- 
 2.56.0
 

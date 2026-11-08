@@ -1,0 +1,567 @@
+From cf988e5a96b54a5b74b733e38dde42dd9f3d55c7 Mon Sep 17 00:00:00 2001
+From: Mateus Seiboth <mateusseiboth12@gmail.com>
+Date: Sun, 8 Nov 2026 09:21:26 -0400
+Subject: [PATCH 1/2] lisa port: Goodix touch clock HWCG fix, device packaging,
+ capybara/6BOT branding
+
+- drivers/input/hakios.goodix.c: the QUP1 master/slave AHB branches are HWCG
+  (hwcg_bit=1 in gcc-sc7280), so their CBCR keeps CLK_OFF set while idle and it
+  never clears; clear HWCG to free-run them and wait only on the serial-engine
+  branch. Replaces the earlier branch-enable attempt that left S_AHB at
+  0x8000000a.
+- tools/mkubootimg.py: per-device prebuilt/bootimg.args (e.g. --base 0x0 for lisa's ABL).
+- userland/build.sh: copy (not hard-link) the dyld shared cache into the image;
+  keep sysroot only with KEEP_SYSROOT.
+- xnuloader/loader.c: capybara boot logo and the 6BOT banner.
+- devices/lisa: the lisa device repository (submodule), configs and boot-args.
+---
+ configs/boot-args.lst         |  3 ++
+ configs/symbols.tsv           |  3 ++
+ docs/boot-args.md             |  7 ++-
+ docs/devices/index.md         |  3 +-
+ docs/devices/lisa.md          | 21 ++++++++
+ docs/reference/drivers.md     | 98 +++++++++++++++++------------------
+ drivers/input/hakios.goodix.c | 94 +++++++++++++++++++++++++--------
+ tools/mkubootimg.py           |  7 ++-
+ userland/build.sh             |  9 ++--
+ xnuloader/loader.c            | 10 ++--
+ 10 files changed, 172 insertions(+), 83 deletions(-)
+ create mode 100644 docs/devices/lisa.md
+
+diff --git a/configs/boot-args.lst b/configs/boot-args.lst
+index cb2079e..bd70726 100644
+--- a/configs/boot-args.lst
++++ b/configs/boot-args.lst
+@@ -278,6 +278,9 @@ thermal_tm1	k
+ torch	kl
+ torch_max_s	k
+ torch_secs	k
++touch_avdd_ldo	k
++touch_avdd_mv	k
++touch_chip	k
+ touch_flip	k
+ touch_lat	ku
+ touch_poll_us	k
+diff --git a/configs/symbols.tsv b/configs/symbols.tsv
+index 17df562..a797ee7 100644
+--- a/configs/symbols.tsv
++++ b/configs/symbols.tsv
+@@ -251,6 +251,9 @@ THERMAL_TM1	arg	thermal_tm1	Chip, thermal and PMIC	k	hakios.thermal.c
+ TORCH	arg	torch	Haptics and torch	kl	hakios.torch.c,loader.c	a look, reading only: the arbiter's channel for the module and who may write through it, the module's type, its registers, the PMIC's temperature
+ TORCH_MAX_S	arg	torch_max_s	Haptics and torch	k	hakios.torch.c	
+ TORCH_SECS	arg	torch_secs	Haptics and torch	k	hakios.torch.c	
++TOUCH_AVDD_LDO	arg	touch_avdd_ldo	Touch and buttons	k	hakios.goodix.c	the analog supply is the PMIC rail NAME through RPMh, not the AVDD GPIO.
++TOUCH_AVDD_MV	arg	touch_avdd_mv	Touch and buttons	k	hakios.goodix.c	that rail's voltage in millivolts (default 3000)
++TOUCH_CHIP	arg	touch_chip	Touch and buttons	k	hakios.goodix.c	the phone carries only this one, and the straps are not read
+ TOUCH_FLIP	arg	touch_flip	Touch and buttons	k	hakios.goodix.c	
+ TOUCH_LAT	arg	touch_lat	GPU and display	ku	HakiosMetalCA.m,MiniIOMobileFramebuffer.cpp,eagl.c,hakios.goodix.c,hakios.gpu.cpp,hakios.input.c,inject.c,inject_sb.c	a line for every wait of a program's for the GPU that took a millisecond or more ("tl: f KIND US at US"), for telling apart what holds a frame up
+ TOUCH_POLL_US	arg	touch_poll_us	Touch and buttons	k	hakios.goodix.c	
+diff --git a/docs/boot-args.md b/docs/boot-args.md
+index 0b2df4c..4d4ebab 100644
+--- a/docs/boot-args.md
++++ b/docs/boot-args.md
+@@ -2,7 +2,7 @@
+ 
+ Made by `tools/boot-args.py --markdown`; CI fails if it is out of date with the source (`tools/boot-args.py --check`).
+ 
+-Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **350 arguments**: 279 read by the kernel, 14 by the loader, 68 by user space (one is read in more than one place).
++Every argument that the kernel, the loader or user space of this port reads, and which file reads it. **353 arguments**: 282 read by the kernel, 14 by the loader, 68 by user space (one is read in more than one place).
+ 
+ This is a catalogue of what exists and who reads it, not a manual. What an argument means is in the head of the file that reads it. The stable switches have a symbol in the configuration (`tools/hakios-config.py help SYMBOL`, `docs/configs.md`); the rest are the knobs of bring-up (a driver's steps, pauses, traces, test modes) and can change with the driver. Any of them can be given in a configuration with `CONFIG_BOOTARGS="name=value ..."`, which checks that each name is in this list. What the arguments of the two Metal paths do: [Metal on the Adreno](reference/metal.md#boot-arguments).
+ 
+@@ -247,7 +247,7 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `cam_shutter` | K | `hakios.camera.c` | `CONFIG_CAM_SHUTTER` |  |
+ | `cam_vblank` | K | `hakios.camera.c` | `CONFIG_CAM_VBLANK` |  |
+ 
+-## Touch and buttons (10)
++## Touch and buttons (13)
+ 
+ | Argument | Layer | Read by | Configuration | Set by |
+ |---|---|---|---|---|
+@@ -255,6 +255,9 @@ Layers: **K** the kernel, **L** the loader, **U** user space (through `sysctl ke
+ | `buttons_steps` | K | `hakios.buttons.c` | `CONFIG_BUTTONS_STEPS` |  |
+ | `press_power` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER` |  |
+ | `press_power_ms` | K | `hakios.buttons.c` | `CONFIG_PRESS_POWER_MS` |  |
++| `touch_avdd_ldo` | K | `hakios.goodix.c` | `CONFIG_TOUCH_AVDD_LDO` |  |
++| `touch_avdd_mv` | K | `hakios.goodix.c` | `CONFIG_TOUCH_AVDD_MV` |  |
++| `touch_chip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_CHIP` |  |
+ | `touch_flip` | K | `hakios.goodix.c` | `CONFIG_TOUCH_FLIP` |  |
+ | `touch_poll_us` | K | `hakios.goodix.c` | `CONFIG_TOUCH_POLL_US` |  |
+ | `touch_rate` | K | `hakios.goodix.c` | `CONFIG_TOUCH_RATE` |  |
+diff --git a/docs/devices/index.md b/docs/devices/index.md
+index 81f4830..cb55d00 100644
+--- a/docs/devices/index.md
++++ b/docs/devices/index.md
+@@ -7,6 +7,7 @@ Every device with a repository, and how far each part of it works. A device of y
+ 
+ | Device | SoC | display | touch | buttons | cpu | gpu | storage | audio | battery | haptic | camera | torch | wifi | bluetooth | cellular | network | thermal |
+ |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
++| [Xiaomi 11 Lite 5G NE](lisa.md) | `sc7280` | partly | partly |  |  |  |  |  |  |  |  |  |  |  |  |  |  |
+ | [QEMU virt (aarch64)](qemu.md) | `none` | yes | yes | yes |  | no | yes | yes |  |  |  |  |  |  |  | yes |  |
+ | [POCO X5 Pro 5G](redwood.md) | `sc7280` | yes | yes | yes | yes | yes | yes | yes | partly | yes | yes | partly | yes | no | partly |  | partly |
+ 
+@@ -16,4 +17,4 @@ An empty cell is a part nobody has looked at on that device yet.
+ 
+ | SoC | What | |
+ |---|---|---|
+-| `sc7280` | Qualcomm SC7280 family (SM7325 "Snapdragon 778G", QCM6490; "yupik", "kodiak") | carried by redwood (`devices/redwood/soc/`) |
++| `sc7280` | Qualcomm SC7280 family (SM7325 "Snapdragon 778G", QCM6490; "yupik", "kodiak") | carried by lisa, redwood (`devices/lisa/soc/`) |
+diff --git a/docs/devices/lisa.md b/docs/devices/lisa.md
+new file mode 100644
+index 0000000..5be9700
+--- /dev/null
++++ b/docs/devices/lisa.md
+@@ -0,0 +1,21 @@
++<!-- Made by tools/docs-gen.py from devices/lisa/device.conf. Do not edit: change that, then run tools/docs-gen.py. -->
++
++
++# Xiaomi 11 Lite 5G NE (`lisa`)
++
++| | |
++|---|---|
++| Vendor | Xiaomi |
++| SoC | `sc7280` |
++| Configuration | `make lisa_defconfig` |
++| Maintainer | Mateus Seiboth |
++| Repository | [`devices/lisa/`](https://github.com/oosexgang/hakios-xnu-kernel/tree/main/devices/lisa) |
++
++## What works
++
++| Part | State | |
++|---|---|---|
++| display | partly | UEFI's framebuffer, through the loader (to be checked) |
++| touch | partly | Goodix "Berlin" (gt9897t) on SPI SE13, the redwood driver with lisa's AVDD rail (touch_avdd_ldo=ldoc7) and touch_chip=goodix; written from the device tree, not yet run on the phone |
++
++The state is what has been seen on this device, written down in `devices/lisa/device.conf`; a part the table does not name has not been looked at.
+diff --git a/docs/reference/drivers.md b/docs/reference/drivers.md
+index 3af1d8d..71eabfc 100644
+--- a/docs/reference/drivers.md
++++ b/docs/reference/drivers.md
+@@ -22,87 +22,87 @@ Every driver the kernel can be built with. `CONFIG_HAKIOS_<NAME>=y` in a defconf
+ 
+ ## audio
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_ADSP`**<br>the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's firmware from the phone (fw-audio/) | `hakios.adsp.c` |  | `adsp=`, `adsp_again=`, `adsp_apr_wait=`, `adsp_keep=`, `adsp_listen=`, `adsp_new=`, `adsp_pause=`, `adsp_return=` and 3 more |  | built | |
+-| **`HAKIOS_SPEAKER`**<br>the two speaker amplifiers on I2C, and their watch of temperature and battery | `hakios.speaker.c` |  | `speaker_probe=` |  | built | |
+-| **`HAKIOS_SOUND`**<br>the speakers playing (sound=N): what the DSP's services are told, the feeder, and the speakers' guard that limits what the amplifiers get | `hakios.sound.c`<br>`hakios.guard.c` | `HAKIOS_ADSP`, `HAKIOS_SPEAKER` | `sound=`, `sound_below=`, `sound_gain=`, `sound_guard_as=`, `sound_pause=`, `sound_secs=` |  | built | |
+-| **`HAKIOS_MIC`**<br>the microphones, through the audio DSP (mic=N) | `hakios.mic.c` | `HAKIOS_ADSP`, `HAKIOS_SOUND` | `mic=`, `mic_adc=`, `mic_input=`, `mic_main=`, `mic_secs=`, `mic_tap=`, `mic_test=` |  | built | |
+-| **`HAKIOS_VIRTIO_SOUND`**<br>QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only | `hakios.virtio_sound.c` |  | `virtio_sound=` | built | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_ADSP`**<br>the audio DSP started and linked (adsp=1, adsp_step=N); the battery's state comes through it too. Needs the DSP's firmware from the phone (fw-audio/) | `hakios.adsp.c` |  | `adsp=`, `adsp_again=`, `adsp_apr_wait=`, `adsp_keep=`, `adsp_listen=`, `adsp_new=`, `adsp_pause=`, `adsp_return=` and 3 more |  |  | built | |
++| **`HAKIOS_SPEAKER`**<br>the two speaker amplifiers on I2C, and their watch of temperature and battery | `hakios.speaker.c` |  | `speaker_probe=` |  |  | built | |
++| **`HAKIOS_SOUND`**<br>the speakers playing (sound=N): what the DSP's services are told, the feeder, and the speakers' guard that limits what the amplifiers get | `hakios.sound.c`<br>`hakios.guard.c` | `HAKIOS_ADSP`, `HAKIOS_SPEAKER` | `sound=`, `sound_below=`, `sound_gain=`, `sound_guard_as=`, `sound_pause=`, `sound_secs=` |  |  | built | |
++| **`HAKIOS_MIC`**<br>the microphones, through the audio DSP (mic=N) | `hakios.mic.c` | `HAKIOS_ADSP`, `HAKIOS_SOUND` | `mic=`, `mic_adc=`, `mic_input=`, `mic_main=`, `mic_secs=`, `mic_tap=`, `mic_test=` |  |  | built | |
++| **`HAKIOS_VIRTIO_SOUND`**<br>QEMU's virtio sound device as the player of /dev/hakios-audio (virtio_sound=1). QEMU only | `hakios.virtio_sound.c` |  | `virtio_sound=` | built | built | built | |
+ 
+ ## bluetooth
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_BT`**<br>the Bluetooth half of the WCN6750: step one, a read-only look at its three pins (bt=1) | `hakios.bt.c` |  | `bt=`, `bt_again=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_BT`**<br>the Bluetooth half of the WCN6750: step one, a read-only look at its three pins (bt=1) | `hakios.bt.c` |  | `bt=`, `bt_again=` |  |  | built | |
+ 
+ ## camera
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_CAMERA`**<br>the cameras (cam=N): the sensors on the CCI bus and the ISP's interface. The sensors, their tables (fw-camera/) and the pins are the POCO X5 Pro's | `hakios.camera.c` |  | `cam_after=`, `cam_fake=`, `cam_fake_fps=`, `cam_frames=`, `cam_gain=`, `cam_keep_mb=`, `cam_mode=`, `cam_pattern=` and 4 more |  | built | |
+-| **`HAKIOS_TORCH`**<br>the flashlight: the flash LED module of the PM8350C (torch=1); it stays off while the battery is too warm | `hakios.torch.c` |  | `torch_max_s=`, `torch_secs=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_CAMERA`**<br>the cameras (cam=N): the sensors on the CCI bus and the ISP's interface. The sensors, their tables (fw-camera/) and the pins are the POCO X5 Pro's | `hakios.camera.c` |  | `cam_after=`, `cam_fake=`, `cam_fake_fps=`, `cam_frames=`, `cam_gain=`, `cam_keep_mb=`, `cam_mode=`, `cam_pattern=` and 4 more |  |  | built | |
++| **`HAKIOS_TORCH`**<br>the flashlight: the flash LED module of the PM8350C (torch=1); it stays off while the battery is too warm | `hakios.torch.c` |  | `torch_max_s=`, `torch_secs=` |  |  | built | |
+ 
+ ## core
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_SOCINFO`**<br>the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps SMEM item 137; where the shared memory is comes from soc_smem= | `hakios.socinfo.c` |  | `soc_smem=`, `soc_smem_size=`, `socinfo=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_SOCINFO`**<br>the chip's identity from the firmware's shared memory: kern.hakios.soc_* (socinfo=1). Any Qualcomm SoC that keeps SMEM item 137; where the shared memory is comes from soc_smem= | `hakios.socinfo.c` |  | `soc_smem=`, `soc_smem_size=`, `socinfo=` | built |  | built | |
+ 
+ ## gpu
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa, Metal and the window server draw through (gpu=1, adreno_keep=1; docs/reference/metal.md). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 10 more |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_ADRENO`**<br>the Adreno 642L of the SC7280 woken step by step (adreno=N), and HakiosGPU, the IOKit service Mesa, Metal and the window server draw through (gpu=1, adreno_keep=1; docs/reference/metal.md). Needs the GPU's firmware from the phone (fw-gpu/) | `hakios.adreno.c`<br>`hakios.gpu.cpp` |  | `adreno=`, `adreno_blind=`, `adreno_dirty=`, `adreno_fine=`, `adreno_keep=`, `adreno_only=`, `adreno_pause=`, `adreno_return=` and 10 more |  |  | built | |
+ 
+ ## haptic
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_HAPTIC`**<br>the vibration motor: an Awinic AW86927 driving a linear resonant actuator (haptic=N), its waveforms from fw-haptic/ | `hakios.haptic.c` |  | `haptic=`, `haptic_effect=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_HAPTIC`**<br>the vibration motor: an Awinic AW86927 driving a linear resonant actuator (haptic=N), its waveforms from fw-haptic/ | `hakios.haptic.c` |  | `haptic=`, `haptic_effect=` |  |  | built | |
+ 
+ ## input
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` | built | built | |
+-| **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` |  | built | |
+-| **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `press_power=`, `press_power_ms=`, `touchscreen=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_VIRTIO_INPUT`**<br>QEMU's virtio tablet and keyboard as the touch screen and the buttons (virtio_input=1). QEMU only | `hakios.virtio_input.c` |  | `virtio_input=` | built | built | built | |
++| **`HAKIOS_GOODIX`**<br>the touch screen: a Goodix GT9916 ("Berlin-D") or a FocalTech FT3680 on SPI (touchscreen=1). The bus, pins and supplies are the POCO X5 Pro's; another phone with one of these controllers changes those | `hakios.goodix.c` |  | `touch_avdd_ldo=`, `touch_avdd_mv=`, `touch_chip=`, `touch_flip=`, `touch_poll_us=`, `touch_rate=`, `touch_spi_hz=`, `touchscreen=` | built |  | built | |
++| **`HAKIOS_BUTTONS`**<br>the power and volume keys, read from the PMIC through the SPMI arbiter (buttons=1) | `hakios.buttons.c` |  | `buttons=`, `buttons_steps=`, `press_power=`, `press_power_ms=`, `touchscreen=` |  |  | built | |
+ 
+ ## modem
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_QMI`**<br>QMI messages over the IPC router: how the Wi-Fi firmware's service and the modem's are spoken to | `hakios.qmi.c` |  |  |  | built | |
+-| **`HAKIOS_MODEM`**<br>the modem (modem=1): started, its file systems served from the flash, the IPA's data path as en1, the SIM and the network registration. Research; needs fw-modem/ from the phone | `hakios.mpss.c`<br>`hakios.cell.c`<br>`hakios.nas.c`<br>`hakios.ipa.c` | `HAKIOS_QMI`, `HAKIOS_UFS` | `modem=`, `modem_again=`, `modem_apn=`, `modem_buffer=`, `modem_data_nobind=`, `modem_data_off=`, `modem_data_wait=`, `modem_dpm_off=` and 45 more |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_QMI`**<br>QMI messages over the IPC router: how the Wi-Fi firmware's service and the modem's are spoken to | `hakios.qmi.c` |  |  |  |  | built | |
++| **`HAKIOS_MODEM`**<br>the modem (modem=1): started, its file systems served from the flash, the IPA's data path as en1, the SIM and the network registration. Research; needs fw-modem/ from the phone | `hakios.mpss.c`<br>`hakios.cell.c`<br>`hakios.nas.c`<br>`hakios.ipa.c` | `HAKIOS_QMI`, `HAKIOS_UFS` | `modem=`, `modem_again=`, `modem_apn=`, `modem_buffer=`, `modem_data_nobind=`, `modem_data_off=`, `modem_data_wait=`, `modem_dpm_off=` and 45 more |  |  | built | |
+ 
+ ## net
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` |  | `virtio_net=` | built | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_VIRTIO_NET`**<br>QEMU's virtio network device as the link behind en0 (virtio_net=1). QEMU only | `hakios.virtio_net.c` |  | `virtio_net=` | built | built | built | |
+ 
+ ## power
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_BATTERY`**<br>the battery: kern.hakios.battery_*, and HakiosBattery, the IOPMPowerSource Darwin reads the charge from (the state comes from the audio DSP's battery manager, with adsp=1) | `hakios.battery.c`<br>`hakios.battery.cpp` |  | `battery_shared_pa=` |  | built | |
+-| **`HAKIOS_CPUFREQ`**<br>the clock of the cores the kernel runs on (cpufreq=1), and the memory bus's votes (ddr=) | `hakios.cpufreq.c` |  | `cpufreq=`, `cpuload=`, `ddr=`, `ddr_rest=`, `ddr_vote=`, `membench=` |  | built | |
+-| **`HAKIOS_THERMAL`**<br>the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the phone gets too hot (thermal_stop=) | `hakios.thermal.c` |  | `thermal=`, `thermal_log=`, `thermal_poll=`, `thermal_stop=`, `thermal_tm0=`, `thermal_tm1=` |  | built | |
+-| **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` |  | built | |
+-| **`HAKIOS_BATTGUARD`**<br>the run handed back to the loader before the battery is flat (battery_stop=<percent>) | `hakios.battguard.c` |  | `battery_stop=`, `battery_stop_poll=` |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_BATTERY`**<br>the battery: kern.hakios.battery_*, and HakiosBattery, the IOPMPowerSource Darwin reads the charge from (the state comes from the audio DSP's battery manager, with adsp=1) | `hakios.battery.c`<br>`hakios.battery.cpp` |  | `battery_shared_pa=` |  |  | built | |
++| **`HAKIOS_CPUFREQ`**<br>the clock of the cores the kernel runs on (cpufreq=1), and the memory bus's votes (ddr=) | `hakios.cpufreq.c` |  | `cpufreq=`, `cpuload=`, `ddr=`, `ddr_rest=`, `ddr_vote=`, `membench=` | built |  | built | |
++| **`HAKIOS_THERMAL`**<br>the SoC's temperature sensors (thermal=1): kern.hakios.thermal_*, and the run handed back to the loader when the phone gets too hot (thermal_stop=) | `hakios.thermal.c` |  | `thermal=`, `thermal_log=`, `thermal_poll=`, `thermal_stop=`, `thermal_tm0=`, `thermal_tm1=` | built |  | built | |
++| **`HAKIOS_PMIC`**<br>the blocks of the power-management chips the SPMI arbiter shows, and the PMIC's clock (pmic=1); read only | `hakios.pmic.c` |  | `pmic=`, `pmic_list=` | built |  | built | |
++| **`HAKIOS_BATTGUARD`**<br>the run handed back to the loader before the battery is flat (battery_stop=<percent>) | `hakios.battguard.c` |  | `battery_stop=`, `battery_stop_poll=` |  |  | built | |
+ 
+ ## storage
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_UFS`**<br>the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from the kernel (ufs_native=). THE ONLY CODE OF THE KERNEL THAT MAY WRITE TO THE PHONE (ufs_write=1, the partition `darwin` only): see tools/provenance.allow | `hakios.ufs.c`<br>`hakios.ufshc.c` |  | `ufs_bench=`, `ufs_check=`, `ufs_native_bench=`, `ufs_native_buffer=`, `ufs_native_check=`, `ufs_native_hang=`, `ufs_native_leave=`, `ufs_native_slots=` and 3 more |  | built | |
+-| **`HAKIOS_VIRTIO_BLK`**<br>a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only | `hakios.virtio_blk.c` |  | `virtio_blk=` | built | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_UFS`**<br>the phone's UFS flash: a block device for each GPT partition (ufs=1, ufs=2), and the UFS host controller driven from the kernel (ufs_native=). THE ONLY CODE OF THE KERNEL THAT MAY WRITE TO THE PHONE (ufs_write=1, the partition `darwin` only): see tools/provenance.allow | `hakios.ufs.c`<br>`hakios.ufshc.c` |  | `ufs_bench=`, `ufs_check=`, `ufs_native_bench=`, `ufs_native_buffer=`, `ufs_native_check=`, `ufs_native_hang=`, `ufs_native_leave=`, `ufs_native_slots=` and 3 more |  |  | built | |
++| **`HAKIOS_VIRTIO_BLK`**<br>a disk image of the host as /dev/rvblk0 (virtio_blk=1). QEMU only | `hakios.virtio_blk.c` |  | `virtio_blk=` | built | built | built | |
+ 
+ ## wifi
+ 
+-| Driver | Files | Requires | Boot arguments | qemu | redwood | |
+-|---|---|---|---|---|---|
+-| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface Darwin's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c`<br>`hakios.lx.c`<br>`hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` | `HAKIOS_QMI` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  | built | |
++| Driver | Files | Requires | Boot arguments | lisa | qemu | redwood | |
++|---|---|---|---|---|---|---|
++| **`HAKIOS_WIFI`**<br>Wi-Fi of the WCN6750 (wifi=1, wifi_step=N): the DSP that runs the radio's firmware, Linux's ath11k (its object, made by tools/mk-ath11k.sh, is linked in only with this), a station, and the Apple80211 surface Darwin's wifid talks to. Needs fw-wifi/ from the phone | `hakios.wifi.c`<br>`hakios.wlfw.c`<br>`hakios.lx.c`<br>`hakios.sta.c`<br>`hakios.apple80211.c`<br>`hakios.wlan.cpp` | `HAKIOS_QMI` | `wifi=`, `wifi_again=`, `wifi_ask=`, `wifi_cal=`, `wifi_dirty=`, `wifi_file=`, `wifi_fine=`, `wifi_keep=` and 14 more |  |  | built | |
+ 
+ The columns on the right are the devices' defconfigs: "built" means that defconfig builds the driver in.
+diff --git a/drivers/input/hakios.goodix.c b/drivers/input/hakios.goodix.c
+index 38c9ff2..ca1812b 100644
+--- a/drivers/input/hakios.goodix.c
++++ b/drivers/input/hakios.goodix.c
+@@ -1,20 +1,24 @@
+ /*
+- * The touch screen of the POCO X5 Pro (redwood): either a Goodix GT9916 ("Berlin-D") or a
+- * FocalTech FT3680 on the SPI bus of the SoC's serial engine 13, as a source of touches for
+- * /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg touchscreen=1: every address
+- * below belongs to this phone.
++ * The touch screen of a Goodix "Berlin" / FocalTech phone on the SPI bus of the SoC's serial engine 13,
++ * as a source of touches for /dev/hakios-touch (sys/hakios.input.h). Only with boot-arg touchscreen=1.
++ * The pins and the serial engine below are the POCO X5 Pro's (redwood, Goodix GT9916 "Berlin-D" / FocalTech
++ * FT3680); the two supplies and the controller it is tell the phones of this SoC apart and move to boot-arguments:
++ *   touch_avdd_ldo=<name>  the analog supply is the PMIC rail <name> through RPMh (e.g. the Xiaomi 11 Lite 5G
++ *                          NE / lisa: ldoc7 at touch_avdd_mv=3000), not the GPIO the POCO X5 Pro switches
++ *   touch_chip=goodix|focaltech  the phone carries only this one; its GPIO96/68 straps are not read
++ * Left as they are, both keep the POCO X5 Pro's behaviour (the GPIO analog supply, the straps read).
+  *
+  * There is no clock, pin, regulator or SPI framework in this kernel, so the driver does all of
+  * it itself, in the order the vendor's Linux drivers do:
+- *   power    the chip's I/O supply is LDO2 of the PM8350C, switched through RPMh (one request
+- *            written into the "always on" processor's command slots); the analog supply is
+- *            behind a GPIO
++ *   power    the chip's I/O supply is LDO2 of the PM8350C ("ldoc2"), switched through RPMh (one request
++ *            written into the "always on" processor's command slots); the analog supply is the POCO X5 Pro's
++ *            GPIO or, with touch_avdd_ldo=<name>, a PMIC rail through RPMh too
+  *   clocks   the serial engine's three clocks, by vote in the global clock controller
+  *   pins     four GPIOs to the serial engine, plus reset, interrupt and the analog supply switch
+  *   SPI      the serial engine ("GENI") in FIFO mode, polled; or, if the engine cannot be used,
+  *            the same four pins driven by hand
+  *   panel    GPIO96=1 and GPIO68=0 identify the FocalTech variant; everything else is Goodix,
+- *            the same discriminator the vendor sm8350-kernel-OKX uses
++ *            the same discriminator the vendor sm8350-kernel-OKX uses (skipped when touch_chip= names one)
+  *   chip     Goodix: find where it keeps the touch report, then read it when the IRQ line signals;
+  *            FocalTech: read the report at register 0x01 with FTS 5.x SPI framing (cmd 0xC1 for
+  *            read, 0xC0 for write, two-byte CRC-16/Kermit)
+@@ -247,25 +251,29 @@ rpmh_write(const uint32_t *address, const uint32_t *data, unsigned count)
+ 	return done;
+ }
+ 
+-/* The chip's I/O supply: 1.8 V from LDO2 of the PM8350C ("ldoc2"). Nothing else is connected to it. */
++/*
++ * A PMIC rail through RPMh: its voltage, enable and mode written into the always-on processor's command slots.
++ * The chip's I/O supply is LDO2 of the PM8350C ("ldoc2", 1.8 V); where a phone's analog supply is a rail and not a
++ * GPIO (boot-arg touch_avdd_ldo=<name>) it is one of these too. Nothing else is connected to either.
++ */
+ static bool
+-io_supply_on(void)
++rpmh_ldo_on(const char *name, uint32_t mv)
+ {
+-	uint32_t base = rpmh_address("ldoc2");
++	uint32_t base = rpmh_address(name);
+ 	uint32_t address[3] = { base + VRM_VOLTAGE, base + VRM_ENABLE, base + VRM_MODE };
+-	uint32_t data[3] = { 1800, 1, VRM_MODE_LDO_HPM };
++	uint32_t data[3] = { mv, 1, VRM_MODE_LDO_HPM };
+ 
+ 	/* addresses of regulators ("VRM") have 4 in bits 19:16; anything else is not what we are looking for */
+ 	if (base == 0 || (base >> 16 & 0xf) != 4) {
+-		printf("goodix: RPMh: no regulator \"ldoc2\" (address %#x)\n", base);
++		printf("goodix: RPMh: no regulator \"%s\" (address %#x)\n", name, base);
+ 		return false;
+ 	}
+-	printf("goodix: RPMh: ldoc2 is at %#x; slot status %#x, control %#x, irq enable %#x status %#x\n", base,
++	printf("goodix: RPMh: %s is at %#x; slot status %#x, control %#x, irq enable %#x status %#x\n", name, base,
+ 	    rd(TCS(TCS_STATUS)), rd(TCS(TCS_CONTROL)), rd(TCS(TCS_IRQ_ENABLE)), rd(TCS(TCS_IRQ_STATUS)));
+ 	if (!rpmh_write(address, data, 3)) {
+ 		return false;
+ 	}
+-	printf("goodix: I/O supply on (1.8 V)\n");
++	printf("goodix: regulator %s on (%u mV)\n", name, mv);
+ 	return true;
+ }
+ 
+@@ -289,6 +297,12 @@ io_supply_on(void)
+ #define GCC_QUP1_SE5_PERF_M(l)  (gcc + 0x1865c + 4 * (l))
+ #define GCC_QUP1_SE5_PERF_N(l)  (gcc + 0x1869c + 4 * (l))
+ #define CLOCK_OFF               (1u << 31)
++#define CLOCK_ENABLE            (1u << 0)      /* a branch's CBCR enable bit: some QUP AHB branches (the slave AHB on lisa)
++                                                * are not turned on by the application-processor vote alone and need this set
++                                                * too, the way U-Boot's clk_enable_cbc does; a no-op where the vote sufficed */
++#define CLOCK_HWCG              (1u << 1)      /* a branch's hardware clock gating: gcc-sc7280 marks the QUP AHB branches
++                                                * hwcg_bit=1, so their CBCR keeps CLK_OFF set while idle and only clears it
++                                                * during an actual AHB transaction. Clear it to make the branch free-run. */
+ #define XO_HZ                   19200000
+ 
+ static uint32_t se_source_hz, se_clock_select;
+@@ -347,14 +361,22 @@ clocks_on(void)
+ 		se_clock_select = 0;
+ 	}
+ 	wr(GCC_VOTE, rd(GCC_VOTE) | VOTE_QUP1_SE5);
++	/* Enable the branches in their CBCRs too: the vote alone leaves the slave AHB off on lisa (its CBCR enable bit was
++	 * clear, where the POCO X5 Pro's firmware had left it set), and the serial engine cannot be reached without it.
++	 * The master and slave AHB branches are hardware-clock-gated (hwcg_bit=1 in gcc-sc7280): with HWCG on, their CLK_OFF
++	 * stays set while idle (lisa's slave AHB read 0x8000000a: voted, gated) and never clears, so clear HWCG to make them
++	 * free-run. Only the serial-engine branch (not HWCG) has a CLK_OFF that clears, so wait on that one alone. */
++	wr(GCC_QUP1_M_AHB_CBCR, (rd(GCC_QUP1_M_AHB_CBCR) & ~CLOCK_HWCG) | CLOCK_ENABLE);
++	wr(GCC_QUP1_S_AHB_CBCR, (rd(GCC_QUP1_S_AHB_CBCR) & ~CLOCK_HWCG) | CLOCK_ENABLE);
++	wr(GCC_QUP1_SE5_CBCR, rd(GCC_QUP1_SE5_CBCR) | CLOCK_ENABLE);
+ 	for (int i = 0; i < 1000; i++) {
+-		if (!((rd(GCC_QUP1_M_AHB_CBCR) | rd(GCC_QUP1_S_AHB_CBCR) | rd(GCC_QUP1_SE5_CBCR)) & CLOCK_OFF)) {
++		if (!(rd(GCC_QUP1_SE5_CBCR) & CLOCK_OFF)) {
+ 			return true;
+ 		}
+ 		sleep_us(10);
+ 	}
+-	printf("goodix: clocks stay off: %#x %#x %#x\n", rd(GCC_QUP1_M_AHB_CBCR), rd(GCC_QUP1_S_AHB_CBCR),
+-	    rd(GCC_QUP1_SE5_CBCR));
++	printf("goodix: the serial engine's clock stays off: %#x %#x %#x\n", rd(GCC_QUP1_M_AHB_CBCR),
++	    rd(GCC_QUP1_S_AHB_CBCR), rd(GCC_QUP1_SE5_CBCR));
+ 	return false;
+ }
+ 
+@@ -1371,10 +1393,27 @@ power_on(void)
+ 	gpio_output(PIN_RESET, false, PULL_UP, 8);
+ 	gpio_configure(PIN_INT, 0, PULL_UP, 8, false);
+ 	/* without its I/O rail the chip must not get the analog supply or be driven: stop before AVDD */
+-	if (!io_supply_on()) {
++	if (!rpmh_ldo_on("ldoc2", 1800)) {
+ 		return false;
+ 	}
+ 	sleep_ms(3);
++	/*
++	 * The analog supply. The POCO X5 Pro switches it with a GPIO; another phone's is a PMIC rail through RPMh.
++	 * boot-arg touch_avdd_ldo=NAME:  the analog supply is the PMIC rail NAME through RPMh, not the AVDD GPIO.
++	 * boot-arg touch_avdd_mv=N:  that rail's voltage in millivolts (default 3000)
++	 */
++	char avdd_ldo[8] = { 0 };
++
++	if (PE_parse_boot_argn("touch_avdd_ldo", avdd_ldo, sizeof(avdd_ldo)) && avdd_ldo[0] != '\0') {
++		uint32_t mv = 3000;
++
++		PE_parse_boot_argn("touch_avdd_mv", &mv, sizeof(mv));
++		if (!rpmh_ldo_on(avdd_ldo, mv)) {
++			return false;
++		}
++		sleep_ms(15);
++		return true;
++	}
+ 	gpio_output(PIN_AVDD, true, PULL_NONE, 2);
+ 	sleep_ms(15);
+ 	return true;
+@@ -1401,9 +1440,20 @@ bring_up(void)
+ 	const char *problem = "its clocks cannot be turned on";
+ 
+ 	show_state("as found");
+-	touch_chip = touch_chip_detect();
+-	printf("goodix: ID gpio96=%u gpio68=%u: selected %s\n", gpio_get(PIN_GOODIX_ID),
+-	    gpio_get(PIN_FOCALTECH_ID), chip_name());
++	/*
++	 * Which controller. The POCO X5 Pro carries one of two and reads two straps (GPIO96/68) to tell them apart.
++	 * boot-arg touch_chip=goodix|focaltech:  the phone carries only this one, and the straps are not read
++	 */
++	char chip_arg[16] = { 0 };
++
++	if (PE_parse_boot_argn("touch_chip", chip_arg, sizeof(chip_arg)) && chip_arg[0] != '\0') {
++		touch_chip = strcmp(chip_arg, "focaltech") == 0 ? TOUCH_FOCALTECH : TOUCH_GOODIX;
++		printf("goodix: touch_chip=%s: %s (straps not read)\n", chip_arg, chip_name());
++	} else {
++		touch_chip = touch_chip_detect();
++		printf("goodix: ID gpio96=%u gpio68=%u: selected %s\n", gpio_get(PIN_GOODIX_ID),
++		    gpio_get(PIN_FOCALTECH_ID), chip_name());
++	}
+ 	if (!power_on()) {
+ 		printf("goodix: the I/O supply is not on; the chip is left alone\n");
+ 		return false;
+diff --git a/tools/mkubootimg.py b/tools/mkubootimg.py
+index 14bf7b2..277374f 100755
+--- a/tools/mkubootimg.py
++++ b/tools/mkubootimg.py
+@@ -109,9 +109,14 @@ def main():
+     open(kernel, 'wb').write(gzip.compress(u_boot, 6) + open(dtb, 'rb').read())
+     # no container: one zero byte for ABL, which hakios load does not take, so U-Boot waits for the host instead
+     open(ramdisk, 'wb').write(hkub or b'\0')
++    # devices/<dev>/prebuilt/bootimg.args: extra mkbootimg arguments the phone's ABL needs (load addresses). lisa's ABL
++    # refuses mkbootimg's default base 0x10000000 and wants the stock vendor_boot layout (base 0x0): devices/lisa carries
++    # "--base 0x0" there. A device without the file keeps mkbootimg's defaults (redwood).
++    bootimg_args = os.path.join(dev, 'prebuilt', 'bootimg.args')
++    extra = open(bootimg_args, encoding='utf-8').read().split() if os.path.isfile(bootimg_args) else []
+     try:
+         subprocess.check_call([sys.executable, mkbootimg, '--kernel', kernel, '--ramdisk', ramdisk,
+-                               '--header_version', '1', '-o', out])
++                               '--header_version', '1', *extra, '-o', out])
+     finally:
+         os.unlink(kernel)
+         os.unlink(ramdisk)
+diff --git a/userland/build.sh b/userland/build.sh
+index c604123..7a86ba0 100755
+--- a/userland/build.sh
++++ b/userland/build.sh
+@@ -741,12 +741,15 @@ if [ -f $DARWIN/system.manifest ] && [ -f $CACHE/dyld_shared_cache_arm64 ] &&
+ 	mkdir -p $D
+ 	for f in $CACHE/dyld_shared_cache_arm64*; do
+ 		case "$f" in *.symbols) continue ;; esac     # symbolication data, never mapped
+-		# -f: a cryptex fetched with the cache already in it would otherwise stop the build
+-		ln -f "$f" $D/
++		# copy, not hard-link: the cryptex leaves a placeholder (often a symlink) at this name, and a hard
++		# link across filesystems fails and leaves it, so the cache ends up empty. rm -f drops the
++		# placeholder; cp brings the real content regardless of where source and tree are.
++		rm -f "$D/${f##*/}" && cp "$f" "$D/"
+ 	done
++	echo "build.sh: dyld cache in the image: $(du -sh "$D" 2>/dev/null | cut -f1), $(ls "$D" | wc -l | tr -d ' ') files"
+ 	# zlib where it saves room, as Apple keeps the root (a small file whole in its attribute): 5.4 GB of
+ 	# files in 2.5 GB, what fits into the phone's RAM beside Darwin
+ 	python3 ../tools/apfs/mkapfs.py -z -o system.apfs System=sysroot,manifest=$DARWIN/system.manifest | tail -1
+ 	[ -z "$CHECK" ] || ../tools/apfs/check-image.sh system.apfs System=sysroot,manifest=$DARWIN/system.manifest
+-	rm -rf sysroot
++	[ -n "$KEEP_SYSROOT" ] || rm -rf sysroot
+ fi
+diff --git a/xnuloader/loader.c b/xnuloader/loader.c
+index 422f9d3..6b884f9 100644
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -4297,11 +4297,11 @@ print_banner(void)
+ 	const char *version = payload_kernel_version();
+ 
+ 	print("\n");
+-	print("   #   #   ###   #   #  #####   ###    ####\n");
+-	print("   #   #  #   #  #  #     #    #   #  #\n");
+-	print("   #####  #####  ###      #    #   #   ###\n");
+-	print("   #   #  #   #  #  #     #    #   #      #\n");
+-	print("   #   #  #   #  #   #  #####   ###   ####\n");
++	print("    ###   ####    ###   #####\n");
++	print("   #      #   #  #   #    #\n");
++	print("   ####   ####   #   #    #\n");
++	print("   #   #  #   #  #   #    #\n");
++	print("    ###   ####    ###     #\n");
+ 	print("\n");
+ 	print("   hello hakios-kernel!\n");
+ 	print("   kernel.ver=%s\n", version ? version : "unknown");
+-- 
+2.56.0
+
+
+From 98db8f8239d3ab1f7aa63d51c642d3aa6d705289 Mon Sep 17 00:00:00 2001
+From: Mateus Seiboth <mateusseiboth12@gmail.com>
+Date: Sun, 8 Nov 2026 16:39:20 -0400
+Subject: [PATCH 2/2] mk-mesa: find the SDK's zlib through pkg-config for the
+ cross build
+
+The iPhoneOS SDK ships zlib (and other libraries) as .tbd stubs with no pkg-config
+.pc file, and meson's "system" detection does not recognise a .tbd as a library,
+so zlib is not found and the Mesa build stops. Enable a real pkg-config in the
+cross file and drop a zlib.pc pointing at the SDK, so meson finds it (its first
+method). With this, and the ld64-lld wrapper reading .tbd stubs, Mesa 25.0.7
+(softpipe + freedreno) builds as libOSMesa.8.dylib for GL=1 on the Adreno.
+---
+ tools/mk-mesa.sh | 20 +++++++++++++++++++-
+ 1 file changed, 19 insertions(+), 1 deletion(-)
+
+diff --git a/tools/mk-mesa.sh b/tools/mk-mesa.sh
+index 045e37b..bcb370b 100755
+--- a/tools/mk-mesa.sh
++++ b/tools/mk-mesa.sh
+@@ -84,7 +84,7 @@ objc = ['$CC', '-arch', 'arm64', '-isysroot', '$SDK']
+ ar = 'llvm-ar'
+ ranlib = 'llvm-ranlib'
+ strip = 'llvm-strip'
+-pkg-config = 'false'
++pkg-config = 'pkg-config'
+ 
+ [host_machine]
+ system = 'darwin'
+@@ -96,6 +96,24 @@ endian = 'little'
+ [properties]
+ needs_exe_wrapper = true
+ INI
++
++# The SDK ships zlib (and other libraries) as .tbd stubs without a pkg-config .pc, and meson's
++# "system" detection does not recognise a .tbd as a library file, so it never finds them. Give it
++# a .pc per such library, pointing at the SDK, and let meson find them through pkg-config (its first
++# method). The paths are the SDK's own, absolute, so PKG_CONFIG_SYSROOT_DIR stays unset.
++mkdir -p pkgconfig
++cat > pkgconfig/zlib.pc <<PC
++prefix=$SDK/usr
++libdir=\${prefix}/lib
++includedir=\${prefix}/include
++Name: zlib
++Description: zlib compression library (SDK stub)
++Version: 1.2.11
++Libs: -L\${libdir} -lz
++Cflags: -I\${includedir}
++PC
++export PKG_CONFIG_LIBDIR=$B/pkgconfig
++unset PKG_CONFIG_SYSROOT_DIR PKG_CONFIG_PATH
+ DRIVERS=${DRIVERS:-softpipe,freedreno}
+ BUILD=build-${DRIVERS//,/-}
+ [ -f $BUILD/build.ninja ] || meson setup $BUILD mesa-$VERSION --cross-file cross.ini --wrap-mode=nofallback \
+-- 
+2.56.0
+

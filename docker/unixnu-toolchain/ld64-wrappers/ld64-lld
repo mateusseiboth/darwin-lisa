@@ -1,0 +1,25 @@
+#!/bin/bash
+# Run lld's Mach-O flavor as a drop-in ld64: translate the few GNU/clang flags that build
+# systems pass but the Mach-O linker spells differently, and drop the ELF-only ones.
+args=()
+whole=0
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -iphoneos_version_min|-ios_version_min) args+=(-platform_version ios "$2" "$2"); shift 2;;
+    -macosx_version_min) args+=(-platform_version macos "$2" "$2"); shift 2;;
+    -tvos_version_min) args+=(-platform_version tvos "$2" "$2"); shift 2;;
+    -watchos_version_min) args+=(-platform_version watchos "$2" "$2"); shift 2;;
+    # --whole-archive FOO.a ... --no-whole-archive  ->  -force_load FOO.a ...  (Mach-O spelling)
+    --whole-archive) whole=1; shift;;
+    --no-whole-archive) whole=0; shift;;
+    # ELF-only flags the Mach-O linker has no use for (archives need no grouping, undefined
+    # symbols already error by default, dead-strip is -dead_strip which Mesa does not request here).
+    --as-needed|--no-as-needed|--no-undefined|--start-group|--end-group|--gc-sections) shift;;
+    # ELF -soname names the shared library; mk-mesa.sh sets the Mach-O install name afterwards with
+    # install_name_tool, so drop -soname and its argument.
+    -soname|--soname) shift 2;;
+    *.a) if [ "$whole" = 1 ]; then args+=(-force_load "$1"); else args+=("$1"); fi; shift;;
+    *) args+=("$1"); shift;;
+  esac
+done
+exec ld.lld -flavor darwin "${args[@]}"

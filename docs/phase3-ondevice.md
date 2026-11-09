@@ -316,3 +316,38 @@ the stock imageboot/di_root path -> /dev/md0, `rd=md0` auto-added). Next: port H
 drivers (hakios.platform.c/stubs.c/version.c/...) to unblock IOKit, and/or resolve the single-wake-source
 idle stall (a bring-up artifact per the timer analysis; real drivers add wake sources). GPU (Adreno) + touch
 (Goodix) are the end-goal minimum but come after the kernel boots to userland.
+
+## MILESTONE (2026-11-09): the FULL iOS 26 root mounts + boots userland on device
+
+Both bring-up workers delivered and the result was confirmed on hardware (lisa, bootcpu=7,
+cpus=1, 0 panics):
+
+- **Full root**: `userland-26/out/system-26.apfs`, 3.59 GB, 65688 files / 24183 dirs / 821
+  symlinks (one mkapfs System volume). Ships our static init as `/sbin/launchd` + Apple's
+  arm64e launchd as `/sbin/launchd.darwin`; dyld cache at
+  `/private/preboot/Cryptexes/OS/.../com.apple.dyld`. Build scripts: `userland/scripts/`.
+- **Kernel**: `kernel26.nopac` (22,790,856 B) with miniamfi (always on) + Goodix/Adreno
+  behind boot-args, on top of the 5 bring-up fixes + APFS/GICv3.
+
+Boot driver `userland/scripts/run-fullroot.sh` (a fresh loader session is required, but
+`fastboot reboot` wipes the resident region, so the order is reboot -> `xl ramdisk
+system-26.apfs` [the resident upload raises max-download-size past the 63 MB kernel-payload
+cap] -> boot with NO `ramdisk=`; the loader prepends `cpus=1 rd=md0` and wires the resident
+image as md0). Confirmed log:
+
+```
+Added memory device md0/rmd0 (01000000/0E000000) at FFFFFFF00C000000 for 00000000E0838000  <- 3.59 GB
+BSD root: md0, major 1, minor 0
+apfs: volume 0 "System" of container 0: 65688 files, 24183 directories, 915522 blocks of 4096 used
+load_init_program: attempting to load /usr/appleinternal/sbin/launchd.development
+==== iOS 26.5.2 (23F84) userland on lisa: /sbin/launchd alive ====
+init26: pid=1 uid=0 argv0=/sbin/launchd
+init26: contents of /:   ->  usr  System  private  Applications ...   (the real iOS 26 root)
+init26: no /bin/sh in this image, nothing to hand over to
+init26: first-boot checks done, halting.
+```
+
+So our APFS driver mounts the real, full iOS 26.5.2 filesystem and runs userland to a clean
+halt. NEXT: exercise Apple's real arm64e launchd (`/sbin/launchd.darwin`) through miniamfi +
+the pac-pager (keep `/bin/sh` or point init at launchd.darwin); then the touch/GPU boot-args
+and the deferred Metal stack for the UI.

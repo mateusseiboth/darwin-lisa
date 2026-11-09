@@ -1,0 +1,6 @@
+# Plain arm64 compile of iPadOS 26.5.2 (darwin-lisa Phase 2): source corecrypto/pthread, arm platform.
+CONFIG_XNU_SOURCE_CORECRYPTO14=y
+CONFIG_XNU_SOURCE_PTHREAD=y
+CONFIG_XNU_ARM_DT_PLATFORM=y
+CONFIG_XNU_ARMCPU=y
+CONFIG_XNU_CRYPTO_BOOTSTRAP="prelinked"

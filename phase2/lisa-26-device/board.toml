@@ -1,0 +1,22 @@
+schema_version = 2
+
+[board]
+name = "lisa26"
+soc = "sm7325"
+soc_source = "sm7325"
+os_profile = "ipados-26.5.2-23F84"
+description = "lisa: plain arm64 compile of iPadOS 26.5.2 (no ptrauth), darwin-lisa Phase 2"
+
+[components]
+include = ["ArmDTPlatform", "ArmCpu"]
+
+[kernel]
+defconfig = "lisa26_defconfig"
+config_fragments = ["arch:configs/common.config", "os:configs/ipados.config"]
+patch_series = ["arch:patches/xnu/series", "os:patches/xnu/series"]
+
+[package]
+unixnu = "../research/UniXNU"
+
+[package.defconfig]
+"ipados-26.5.2-23F84" = "lisa26_defconfig"

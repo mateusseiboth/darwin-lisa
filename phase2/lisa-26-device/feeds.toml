@@ -1,0 +1,5 @@
+[[source]]
+name = "sm7325"
+kind = "soc"
+git = "/home/mateusseiboth/Dev/mobile/UniXNU-sm7325-common"
+commit = "3caad3450fc034ef2e2fb1194629b82416986b11"

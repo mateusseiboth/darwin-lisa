@@ -1,0 +1,10 @@
+[soc]
+name = "sm7325"
+page_size = 4096
+
+[components]
+include = []
+
+[kernel]
+config_fragments = ["soc:configs/sm7325.config"]
+patch_series = ["soc:patches/xnu/series"]

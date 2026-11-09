@@ -1,0 +1,14 @@
+--- a/pexpert/gen/pe_gen.c	2026-11-09 11:41:02.943943929 -0400
++++ b/pexpert/gen/pe_gen.c	2026-11-09 11:41:02.954539028 -0400
+@@ -136,6 +136,11 @@
+ {
+ 	if (!vm_initialized) {
+ 		PE_putc = console_write_char;
++		{
++			/* darwin-lisa: tee printf into the xnuloader's live log buffer. */
++			extern void loader_console_tap_putc(void);
++			loader_console_tap_putc();
++		}
+ 	} else {
+ 		vcattach();
+ 	}

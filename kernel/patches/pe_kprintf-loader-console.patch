@@ -1,0 +1,14 @@
+--- a/pexpert/arm/pe_kprintf.c	2026-11-09 11:41:02.929068385 -0400
++++ b/pexpert/arm/pe_kprintf.c	2026-11-09 11:41:02.939642625 -0400
+@@ -71,6 +71,11 @@
+ 		 */
+ 		PE_kputc = console_write_unbuffered;
+ 	}
++	{
++		/* darwin-lisa: tee kprintf into the xnuloader's live log buffer. */
++		extern void loader_console_tap_kputc(void);
++		loader_console_tap_kputc();
++	}
+ }
+ STARTUP(KPRINTF, STARTUP_RANK_FIRST, PE_init_kprintf);
+ 

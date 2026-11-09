@@ -56,7 +56,7 @@ The kexts prelinked into the kernelcache are rewritten statically, at prelink ti
 
 ### Phase 2: the kernel, in QEMU with a CPU without PAC
 
-- [ ] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth)
+- [x] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth) — xnu-12377 links to a standalone MH_EXECUTE, cpusubtype ARM64_ALL, ios 26.0; see docs/phase2-build.md
 - [ ] kernel patches: accept arm64e Mach-O (cpusubtype and ptrauth ABI version), never touch the PAC key registers,
       emulate the reported traps in the undefined-instruction handler
 - [x] `kernel/pacstrip/pac_rewrite.c`: the rewrite in C, checked against 1 018 759 vectors from `insn.py`

@@ -1,14 +1,28 @@
---- a/osfmk/kern/debug.c	2026-11-09 12:07:49.216249595 -0400
-+++ b/osfmk/kern/debug.c	2026-11-09 12:07:49.227193227 -0400
-@@ -276,6 +276,7 @@
+--- a/osfmk/kern/debug.c	2026-11-09 12:20:08.954889443 -0400
++++ b/osfmk/kern/debug.c	2026-11-09 12:20:08.966207232 -0400
+@@ -276,6 +276,8 @@
  void panic_spin_forever(void) __dead2;
  void panic_stackshot_release_lock(void);
  extern void PE_panic_hook(const char*);
 +extern void loader_return(void);	/* darwin-lisa: return-to-loader channel */
++extern void loader_log_putc(char c);
  extern int sync_internal(void);
  
  #define NESTEDDEBUGGERENTRYMAX 5
-@@ -1370,6 +1371,7 @@
+@@ -1252,6 +1254,12 @@
+     uint64_t panic_options_mask, void *panic_data_ptr, unsigned long panic_caller, const char *panic_initiator)
+ {
+ #pragma clang diagnostic pop
++	{	/* darwin-lisa: record the panic reason on the loader channel */
++		static const char lcp[] = "\n=== PANIC: ";
++		for (const char *q = lcp; *q != 0; q++) { loader_log_putc(*q); }
++		for (const char *q = panic_format_str; q != 0 && *q != 0; q++) { loader_log_putc(*q); }
++		loader_log_putc(0x0a);
++	}
+ 
+ #if defined(__x86_64__) && (DEVELOPMENT || DEBUG)
+ 	read_lbr();
+@@ -1370,6 +1378,7 @@
  void __attribute__((noinline, optnone))
  panic_spin_forever(void)
  {
@@ -16,7 +30,7 @@
  	for (;;) {
  #if defined(__arm__) || defined(__arm64__)
  		/* On arm32, which doesn't have a WFE timeout, this may not return.  But that should be OK on this path. */
-@@ -1390,6 +1392,7 @@
+@@ -1390,6 +1399,7 @@
  static void
  kdp_machine_reboot_type(unsigned int type, uint64_t debugger_flags)
  {

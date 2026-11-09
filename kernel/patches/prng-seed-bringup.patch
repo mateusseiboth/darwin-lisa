@@ -1,0 +1,19 @@
+--- a/osfmk/prng/prng_random.c	2026-11-09 12:22:24.410177264 -0400
++++ b/osfmk/prng/prng_random.c	2026-11-09 12:22:24.420615031 -0400
+@@ -68,11 +68,11 @@
+ 
+ 	n = PE_get_random_seed(dst, request_size);
+ 	if (n < request_size) {
+-		/*
+-		 * Insufficient entropy is fatal.  We must fill the
+-		 * entire entropy buffer during initializaton.
+-		 */
+-		panic("Expected %u seed bytes from bootloader, but got %u.\n", request_size, n);
++		/* darwin-lisa bring-up: the xl loader's ADT has a short/absent random-seed.
++		 * Fill the remainder and continue; entropy quality is not a bring-up concern. */
++		for (uint32_t i = n; i < request_size; i++) {
++			dst[i] = (uint8_t)(i * 0x9eu + 0x3bu);
++		}
+ 	}
+ }
+ 

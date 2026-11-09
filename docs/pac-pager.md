@@ -55,3 +55,24 @@ enforcement off for these mappings (the port's AMFI policy already does).
   `featscan.py` finds beyond the A78): the pager leaves them; the undefined-instruction handler emulates them.
 - **The PAC key registers.** A kernel built without ptrauth never writes them; the arm64e process setup paths that
   do are patched out.
+
+## Implementation status (2026-11-09)
+
+Built and linked into the xnu-12377 kernel (`kernel/patches/apply.sh`, verified by the symbols in the
+linked kernel):
+
+- `pac_page_transform()` + `pac_protect_segment()` live in `bsd/kern/mach_loader.c`
+  (`patches/mach_loader-pac-pager.patch`); the crypter calls `pac_rewrite_buffer()` (`pac_rewrite.c`,
+  now compiled into osfmk). `load_segment()` applies it to every `VM_PROT_EXECUTE` segment of an
+  arm64e Mach-O — the **main executable and dyld**.
+- The loader accepts the arm64e slice (`patches/machdep-grade-arm64e.patch`).
+
+Remaining pager surface (needed before launchd fully runs):
+
+- the **dyld shared cache** in `osfmk/vm/vm_shared_region.c` (`vm_shared_region_map_file_setup`): rewrite
+  each executable mapping once, in the shared region's own map, so every process shares the result;
+- non-cache dylibs / plug-ins via `mmap` in `bsd/kern/kern_mman.c`;
+- turning off code-signing enforcement for these mappings (the pages differ from the signed ones).
+
+Behavioural validation happens at the QEMU boot (the crypter, the emulator's EL0 traps, and the data-in-code
+question are all exercised there, not by a compile).

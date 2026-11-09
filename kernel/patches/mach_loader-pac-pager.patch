@@ -1,0 +1,63 @@
+--- a/bsd/kern/mach_loader.c	2026-11-09 11:06:27.855260031 -0400
++++ b/bsd/kern/mach_loader.c	2026-11-09 11:06:27.866088401 -0400
+@@ -2189,6 +2189,41 @@
+ 
+ #define APPLE_UNPROTECTED_HEADER_SIZE   (3 * 4096)
+ 
++/*
++ * darwin-lisa: a text_crypter that strips pointer authentication from an
++ * arm64e code page as it is paged in, so iOS 26 runs unchanged from its sealed
++ * volumes on this CPU without PAC. The in-place rewriter is pac_rewrite.c; the
++ * instructions it cannot rewrite are emulated at EL0 (pac_emulate.c).
++ */
++extern size_t pac_rewrite_buffer(uint32_t *words, size_t count);
++
++static int
++pac_page_transform(const void *src, void *dst, unsigned long long src_offset __unused,
++    void *ops __unused)
++{
++	memcpy(dst, src, 4096);
++	pac_rewrite_buffer((uint32_t *)dst, 4096 / sizeof(uint32_t));
++	return 0;
++}
++
++static load_return_t
++pac_protect_segment(vm_map_t map, vm_map_offset_t map_addr, vm_map_size_t map_size)
++{
++	struct pager_crypt_info crypt_info;
++	kern_return_t kr;
++
++	if (map_size == 0) {
++		return LOAD_SUCCESS;
++	}
++	crypt_info.page_decrypt = pac_page_transform;
++	crypt_info.crypt_ops = NULL;
++	crypt_info.crypt_end = NULL;
++	kr = vm_map_apple_protected(map, map_addr, map_addr + map_size,
++	    (vm_object_offset_t)-1 /* use the map entry's own offset */,
++	    &crypt_info, CRYPTID_APP_ENCRYPTION);
++	return (kr == KERN_SUCCESS) ? LOAD_SUCCESS : LOAD_FAILURE;
++}
++
+ static load_return_t
+ unprotect_dsmos_segment(
+ 	uint64_t        file_off,
+@@ -2870,6 +2905,18 @@
+ 		ret = LOAD_SUCCESS;
+ 	}
+ 
++#if CONFIG_CODE_DECRYPTION
++	/* darwin-lisa: rewrite arm64e executable pages (strip PAC) on page-in. */
++	if (ret == LOAD_SUCCESS && (scp->initprot & VM_PROT_EXECUTE) && imgp != NULL &&
++	    (imgp->ip_origcpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E) {
++		ret = pac_protect_segment(map, vm_start, vm_end - vm_start);
++		if (ret != LOAD_SUCCESS) {
++			DEBUG4K_ERROR("pac_protect 0x%llx 0x%llx ret %d\n", (uint64_t)vm_start, (uint64_t)vm_end, ret);
++			return ret;
++		}
++	}
++#endif /* CONFIG_CODE_DECRYPTION */
++
+ 	if (LOAD_SUCCESS == ret &&
+ 	    filetype == MH_DYLINKER &&
+ 	    result->all_image_info_addr == MACH_VM_MIN_ADDRESS) {

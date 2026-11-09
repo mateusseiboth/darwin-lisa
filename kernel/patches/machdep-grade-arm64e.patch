@@ -1,0 +1,15 @@
+--- a/bsd/dev/arm/kern_machdep.c	2026-11-09 11:02:36.157778340 -0400
++++ b/bsd/dev/arm/kern_machdep.c	2026-11-09 11:02:36.168641797 -0400
+@@ -91,6 +91,12 @@
+ 				return 10;
+ 			case CPU_SUBTYPE_ARM64_ALL:
+ 				return 9;
++			/* darwin-lisa: this plain-arm64 kernel runs rewritten arm64e user
++			 * binaries (iOS 26 ships arm64e only). Pointer authentication is
++			 * stripped by the pager, so accept the arm64e slice; the ABI-version
++			 * check in grade_arm64e_binary still applies. */
++			case CPU_SUBTYPE_ARM64E:
++				return grade_arm64e_binary(execfeatures);
+ 			}
+ 			break;
+ 

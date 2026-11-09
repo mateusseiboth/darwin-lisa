@@ -63,10 +63,15 @@ The kexts prelinked into the kernelcache are rewritten statically, at prelink ti
         key-register writes or sign/auth code at all
   - [x] emulate the reported traps (LDRAA/LDRAB/FJCVTZS) in `handle_uncategorized`: `pac_emulate.c` (host-tested) +
         `pac_trap.c` glue, linked into the kernel (`_pac_emulate_user_trap` in the symbol table); see docs/phase2-emulation.md
-  - [ ] accept arm64e Mach-O in the loader (`bsd/kern/mach_loader.c` cpusubtype/ptrauth-ABI grading)
+  - [x] accept arm64e Mach-O in the loader: `ml_grade_binary` grades the arm64e slice on a plain-arm64
+        (ARM64_V8) host; the JOP/ptrauth process setup is inert (`HAS_APPLE_PAC` off). Linked in.
 - [x] `kernel/pacstrip/pac_rewrite.c`: the rewrite in C, checked against 1 018 759 vectors from `insn.py`
-- [ ] the PAC-stripping pager: a `text_crypter` for every executable mapping of an arm64e Mach-O and of the shared
+- [~] the PAC-stripping pager: a `text_crypter` for every executable mapping of an arm64e Mach-O and of the shared
       cache, calling `pac_rewrite_buffer()`
+  - [x] the crypter itself (`pac_page_transform`) + `pac_protect_segment`, wired into `load_segment` for every
+        VM_PROT_EXECUTE segment of an arm64e Mach-O: covers the main executable and dyld. Linked in.
+  - [ ] the dyld shared cache (`vm_shared_region_map_file_setup`) and non-cache dylibs (`mmap` in kern_mman.c)
+  - [ ] code-signing: hand out pages that differ from the signed ones (AMFI policy / CS enforcement off for these)
 - [ ] boot it under `qemu-system-aarch64 -cpu cortex-a76` (ARMv8.2, no PAC: the phone's limits on the host) to
       launchd, then SpringBoard
 

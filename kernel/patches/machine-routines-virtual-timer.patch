@@ -1,0 +1,17 @@
+--- a/osfmk/arm64/machine_routines.c	2026-11-09 12:33:32.797926967 -0400
++++ b/osfmk/arm64/machine_routines.c	2026-11-09 12:33:32.808844918 -0400
+@@ -2708,11 +2708,9 @@
+ 	uint64_t cntvctl = CNTV_CTL_EL0_ENABLE; /* One wants to use 32 bits, but "mrs" prefers it this way */
+ 
+ 	__builtin_arm_wsr64(KERNEL_CNTV_CTL_EL0, cntvctl);
+-	/* disable the physical timer as a precaution, as its registers reset to architecturally unknown values */
+-	__builtin_arm_wsr64("CNTP_CTL_EL0", CNTP_CTL_EL0_IMASKED);
+-#if HAS_APPLE_GENERIC_TIMER
+-	__builtin_arm_wsr64("S3_1_C15_C13_4", CNTP_CTL_EL0_IMASKED);
+-#endif
++	/* darwin-lisa: under the phone's Qualcomm hypervisor the EL1 physical timer
++	 * registers (CNTP_*) are trapped and their access faults; the guest owns only
++	 * the virtual timer, so do not touch CNTP_CTL_EL0 here (cf. HakiOS). */
+ }
+ 
+ void

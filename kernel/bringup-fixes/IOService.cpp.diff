@@ -1,0 +1,43 @@
+--- research/UniXNU/out/feeds/xnu-3199e8bc/iokit/Kernel/IOService.cpp	2026-11-09 09:25:33.394940199 -0400
++++ research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work/iokit/Kernel/IOService.cpp	2026-11-09 17:48:19.590641815 -0400
+@@ -5396,7 +5396,15 @@
+ 	bool                wasHiding;
+ 
+ 	iomediaClass = OSMetaClass::getMetaClassWithName(gIOMediaKey);
+-	assert(iomediaClass);
++	if (!iomediaClass) {
++		/*
++		 * darwin-lisa bring-up: IOMedia comes from the IOStorageFamily kext,
++		 * which this no-prelink kernel does not have. With no IOMedia class
++		 * there are no hidden media to publish; skip instead of asserting
++		 * (reached after "BSD root: md0" when the root media is registered).
++		 */
++		return;
++	}
+ 
+ 	LOCKWRITENOTIFY();
+ 	wasHiding = gIOServiceHideIOMedia;
+@@ -5448,14 +5456,16 @@
+ 	const OSMetaClass * ioblockstoragedriverClass;
+ 	bool unhide;
+ 
+-	ioblockstoragedriverClass = OSMetaClass::getMetaClassWithName(gIOBlockStorageDriverKey);
+-	assert(ioblockstoragedriverClass);
+-
+-	while (root) {
+-		if (root->metaCast(ioblockstoragedriverClass)) {
+-			break;
++	if (root) {
++		ioblockstoragedriverClass = OSMetaClass::getMetaClassWithName(gIOBlockStorageDriverKey);
++		assert(ioblockstoragedriverClass);
++
++		while (root) {
++			if (root->metaCast(ioblockstoragedriverClass)) {
++				break;
++			}
++			root = root->getProvider();
+ 		}
+-		root = root->getProvider();
+ 	}
+ 
+ 	LOCKWRITENOTIFY();

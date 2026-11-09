@@ -1,0 +1,27 @@
+--- research/UniXNU/out/feeds/xnu-3199e8bc/iokit/Kernel/IOStartIOKit.cpp	2026-11-09 09:25:33.394940199 -0400
++++ research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work/iokit/Kernel/IOStartIOKit.cpp	2026-11-09 17:43:04.679311589 -0400
+@@ -72,17 +72,13 @@
+ void
+ IOKitInitializeTime( void )
+ {
+-	mach_timespec_t         t;
+-
+-	t.tv_sec = 30;
+-	t.tv_nsec = 0;
+-
+-	IOService::waitForService(
+-		IOService::resourceMatching("IORTC"), &t );
+-#if defined(__i386__) || defined(__x86_64__)
+-	IOService::waitForService(
+-		IOService::resourceMatching("IONVRAM"), &t );
+-#endif
++	/*
++	 * darwin-lisa bring-up: no IORTC driver exists on this kernel, and on a
++	 * single CPU (cpus=1) the deadline-sleep inside waitForService() never
++	 * wakes (the EL1 virtual timer stops at idle and the hypervisor does not
++	 * re-inject it), so waiting for IORTC hung bsd_init() here forever. There
++	 * is no RTC to wait for; seed the calendar directly.
++	 */
+ 
+ 	clock_initialize_calendar();
+ }

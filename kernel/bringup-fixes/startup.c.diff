@@ -1,0 +1,39 @@
+--- research/UniXNU/out/feeds/xnu-3199e8bc/osfmk/kern/startup.c	2026-11-09 09:25:33.490941752 -0400
++++ research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work/osfmk/kern/startup.c	2026-11-09 17:35:53.627196740 -0400
+@@ -903,14 +903,26 @@
+ #ifdef  IOKIT
+ 	kernel_bootstrap_log("PE_lockdown_iokit");
+ 	PE_lockdown_iokit();
++	printf("DLISA-P1 post PE_lockdown_iokit\n");
+ #endif
+ 	/*
+ 	 * max_cpus must be nailed down by the time PE_lockdown_iokit() finishes,
+ 	 * at the latest
+ 	 */
+ 	vm_set_restrictions(machine_info.max_cpus);
++	printf("DLISA-P2 post vm_set_restrictions\n");
+ 
+ 
++#if !USE_APPLEARMSMP
++	/*
++	 * darwin-lisa: this config has no cpu_boot_thread (USE_APPLEARMSMP) and no
++	 * IOCPUInterruptController driver to call ml_set_max_cpus(), so the CPU
++	 * count is never finalized and ml_wait_max_cpus() (in kperf_init_early)
++	 * would sleep forever. machine_info.max_cpus is already nailed down by
++	 * here (see the comment above and vm_set_restrictions), so signal it.
++	 */
++	ml_set_max_cpus(machine_info.max_cpus);
++#endif
+ #if KPERF
+ 	kperf_init_early();
+ #endif
+@@ -919,7 +931,9 @@
+ 	 *	Start the user bootstrap.
+ 	 */
+ #ifdef  MACH_BSD
++	printf("DLISA-P3 pre bsd_init\n");
+ 	bsd_init();
++	printf("DLISA-P4 bsd_init RETURNED\n");
+ #endif
+ 
+ 

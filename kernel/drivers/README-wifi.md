@@ -108,3 +108,17 @@ All lines are `printf`/`tell` prefixed `wifi:`, teed into the loader_log ring.
 4. **Userland** — the supplicant/wifid/configd side runs from the real iOS root; this pass is the
    kernel side only. `HakiosWLANStart` + `MiniIONetworkStack` publish the registry objects they
    wait on.
+
+## Firmware source — pmOS (lisa WiFi works there), not just Android /vendor
+
+The lisa postmarketOS rootfs has the working WCN6750 firmware and is the easiest source
+(it also proves ath11k+remoteproc work on this exact SoC):
+- WPSS DSP: `lib/firmware/qcom/sm7325/xiaomi/lisa/wpss.mbn` (merged pil ELF, ~7.6 MB).
+  pmOS/mainline load it merged (the `wpss.mdt` name is a symlink to it); OUR driver needs the
+  SPLIT pil layout (`wpss.mdt` header + `wpss.bNN` segments) and validates
+  `mdt_size == 52 + 32*phnum + hashes` (hakios.wifi.c). Un-squash with `wpss-unsquash.py`:
+  `python3 -I wpss-unsquash.py <path>/wpss.mbn fw-wifi/` -> wpss.mdt + wpss.b02..b07 (verified
+  the size check passes; b04 is the ~6 MB main DSP image).
+- Board data: `lib/firmware/ath11k/WCN6750/hw1.0/board-2.bin.zst` -> `fw-wifi/board-2.bin`.
+- Regulatory: ath11k `regdb.bin` (same db across WCN parts) -> `fw-wifi/regdb.bin`.
+Blobs are proprietary + device-local, so they live in `fw-wifi/` (not committed), like `fw-wifi/mac`.

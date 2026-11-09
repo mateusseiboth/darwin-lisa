@@ -1,0 +1,5 @@
+iPadOS 26.5.2 (23F84) arm64e dyld shared cache — pacstrip scan (2026-11-11)
+12,536,018 to rewrite (pager), 3,007 to emulate (undefined-instruction handler):
+  ldraa    1,514
+  ldrab    1,021
+  fjcvtzs    472

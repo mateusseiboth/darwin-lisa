@@ -50,7 +50,7 @@ The kexts prelinked into the kernelcache are rewritten statically, at prelink ti
       image's data-in-code, refresh the CodeDirectory page hashes
 - [x] a feature scan (`featscan.py`): every instruction beyond the A78's features (FJCVTZS, FCMA, LRCPC2, FlagM, ...)
       with its count, LLVM's disassembler as the oracle
-- [ ] run it on the real iOS 26 cache, so we know what the kernel must emulate
+- [x] run it on the real iOS 26 cache: 12.5M to rewrite, 3,007 to emulate (LDRAA/LDRAB/FJCVTZS only) — see docs/phase1-featscan.md
 - [ ] the Apple kexts the iOS 26 kernelcache contributes (AMFI, APFS, sandbox, IOSurface, ...) are arm64e too: same
       rewrite, and the prelinker must emit unsigned pointers for their authenticated fixups
 

@@ -1,0 +1,80 @@
+== XNULOADER run (usb) ==
+payload entry 'kernel' size 153f6a8
+payload entry 'cmdline' size 6c
+payload entry 'kernel.ver' size 29
+kernel va fffffff007004000..fffffff0088d4000 entry fffffff00751e488
+largest free block f4000000 size 15c000000
+phys window f4000000 size 15c000000, claim status 0
+kernel loaded at pa f7004000..f88d4000
+return slot patched at f7b74118, checkpoint 0
+cmdline: 190 of 607 characters
+device tree f88d4000 len 3818, boot_args f88e4000, top f88e8000
+cmdline: debug=0x8 cpus=1 hv_wdt_pet=1 hakios_kver=2.3.4-hakios-darwin22.5-sc7280-g3434bb74 loader_return_after=55 epoch=1794242442 sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -enable_kprintf_spam -v
+the kernel will run on core 700 (this is core 0)
+jumping to f751e488
+log: 4096 bytes written to logdump (0), read back the same (0)
+core 700: the firmware answers 0 to the request to start it
+log: 4096 bytes written to logdump (0), read back the same (0)
+
+== KERNEL LOG (the kernel is still running) ==
+kprintf initialized
+pe_arm_init_interrupts: args: 0xfffffff007baef60
+pe_arm_map_interrupt_controller: soc_phys:  0x400000
+pe_arm_map_interrupt_controller: failed to find the interrupt-controller.
+pe_arm_init_debug: failed to find cpu-debug-interface
+Darwin Kernel Version 25.5.0: Mon Nov  9 14:24:46 UTC 2026; root:ios-obj/DEVELOPMENT_ARM64_BCM2837
+pmap_startup() init/release time: 405038 microsec
+vm_page_bootstrap: 1384192 free pages, 41216 wired pages
+VM bootstrap: 30 maps, 128 entries and 16 nodes available
+Enable all vm_debug options with boot-arg vm_debug=1
+Maximum number of VM swap files: 5
+gIOKitPageableFixed     : 0xfffffff198055000 - 0xfffffff1f8055000 (1536M)
+zone_meta               : 0xfffffff1f8055000 - 0xfffffff1ff08f000 (112M)
+bsd_pageable            : 0xfffffff1ff08f000 - 0xfffffff200151000 (16M)
+bufferhdr               : 0xfffffff200151000 - 0xfffffff200909000 (7M)
+ipc_kernel_map          : 0xfffffff200909000 - 0xfffffff202909000 (32M)
+compressor              : 0xfffffff202909000 - 0xfffffff38693a000 (6G)
+kmem_ptr_range_0        : 0xfffffff38693a000 - 0xfffffff44227b000 (3001M)
+kmem_io                 : 0xfffffff44227b000 - 0xfffffff48227b000 (1024M)
+mb                      : 0xfffffff48227b000 - 0xfffffff48827b000 (96M)
+zones                   : 0xfffffff48827b000 - 0xfffffffa8827b000 (24G)
+kmem_data_shared_range  : 0xfffffffa8827b000 - 0xfffffffb43bbb000 (3001M)
+ipc_kernel_copy_map     : 0xfffffffb43bbb000 - 0xfffffffb443bb000 (8M)
+kmem_data_private_range : 0xfffffffb443bb000 - 0xfffffffbffcfb000 (3001M)
+vm: "vm_compressor_mode" is 2
+zone_init: map VM    0xfffffff48827b000:0xfffffff56e8e0000 (3686M, 3686M usable)
+zone_init: map RO    0xfffffff56e8e0000:0xfffffff5bb5b7000 (1228M, 1228M usable)
+zone_init: map GEN0  0xfffffff5bb5b7000:0xfffffff6a1c1c000 (3686M, 3686M usable)
+zone_init: map GEN1  0xfffffff6a1c1c000:0xfffffff788281000 (3686M, 3686M usable)
+zone_init: map GEN2  0xfffffff788281000:0xfffffff86e8e7000 (3686M, 3686M usable)
+zone_init: map GEN3  0xfffffff86e8e7000:0xfffffff954f4d000 (3686M, 3686M usable)
+zone_init: map DATA  0xfffffff954f4d000:0xfffffffa8827b000 (4915M, 4915M usable)
+zone_init: metadata  0xfffffff1f8065000:0xfffffff1fe065000 (96M)
+zone_init: metabits  0xfffffff1fe065000:0xfffffff1ff07f000 (16M)
+zone_init: extra     0:0 (0B)
+Unable to find vm tag  for btlog
+VM bootstrap done: 28 maps, 104 entries and 12 nodes left
+IOKit IOMD setownership ENABLED
+ATM subsystem is initialized
+standard timeslicing quantum is 10000 us
+standard background quantum is 2500 us
+Scheduler: Default of clutch
+Setting scheduler priority decay band limit 18
+Long logs support configured: size: 16384
+OSLog stream configured: stream: 8192 bytes, cache: 2112 bytes
+OSLog stream verification: 0
+Log queues configured: slot count: 9, per-slot size: 32768, total size: 294912
+Firehose configured: 16 chunks, 8 io pages
+[trap_telemetry] trap_telemetry_init
+mig_table_max_displ = 90 mach_kobj_count = 381
+BANK subsystem is initialized
+debug_log_init: Error!! gPanicBase is still not initialized
+suspend_cluster_powerdown_locked>calling sched_update_powered_cores to suspend powerdown
+debug_log_init: Error!! gPanicBase is still not initialized
+kdp_core zlib memory 0x7000
+Registered coredump handler for kernel
+Serial requested, consistent debug disabled or debug boot arg not present, configuring debugging over serial
+Initializing serial KDP
+corecrypto_kext_start (tracing disabled)
+FIPSPOST_KEXT [248952654] fipspost_post:141: [FIPSPOST][Module-ID] Apple corecrypto Module v14.0 [Apple ARM, Kernel, Software, SL1]
+FIPSPOST_KEXT [248954822] fipspost_post:149: PASSED: (0 ms) - fipspost_post_hmac

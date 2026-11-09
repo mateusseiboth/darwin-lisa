@@ -1,0 +1,15 @@
+--- a/osfmk/console/serial_console.c	2026-11-09 12:36:50.594425046 -0400
++++ b/osfmk/console/serial_console.c	2026-11-09 12:36:50.605259058 -0400
+@@ -526,6 +526,12 @@
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}
++	{	/* darwin-lisa: tee console output into the loader log for live capture */
++		extern void loader_log_putc(char c);
++		for (int lci = 0; lci < size; lci++) {
++			loader_log_putc(str[lci]);
++		}
++	}
+ 
+ 	assert(str != NULL);
+ 

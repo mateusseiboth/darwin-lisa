@@ -256,3 +256,33 @@ kernel's entry within it) — a separate task, after matching is good enough to 
 Reproducibility: `phase3/prelink/apply-build-flags.sh <work>/makedefs/MakeInc.def` adds the arm64 link
 flags; `phase3/prelink/kc_image-format6.patch` teaches the kit format 6; rebuild with
 `XNU_KERNEL_CHAINED_FIXUPS=1` (delete `mach.*.unstripped*` to force a relink), then run the prelink.
+
+## Reference kernel (KDK) drops the matching gap ~4x (2026-11-09)
+
+Got a symbol-bearing xnu-12377 reference kernel: the macOS 26.5.2 (build 25F84, xnu-12377.121.10 — exact
+match to iPadOS 26.5.2) **Kernel Debug Kit**, mirrored on GitHub by **dortania/KdkSupportPkg** (no Apple
+account). Acquire on Linux:
+- `curl -L -O https://github.com/dortania/KdkSupportPkg/releases/download/25F84/Kernel_Debug_Kit_26.5.2_build_25F84.dmg`
+- `7z x` the dmg -> `KernelDebugKit.pkg`; `7z x` the pkg -> `KDK.pkg/Payload` (pbzx); decode pbzx (xz chunks)
+  and pipe to `cpio -idm '*/Kernels/*'`. Use `System/Library/Kernels/kernel.release.t6000` (arm64e,
+  MH_EXECUTE, **6894 nlist symbols**). Kept at `~/Dev/mobile/refs/kdk/kernel.release.t6000` (not in git, 16 MB).
+
+Passing `--fileset-reference .../kernel.release.t6000` to emit_prelink:
+
+| metric | no reference | with KDK reference |
+| --- | --- | --- |
+| kext-facing targets named | 544/3094 | **2499/3094** |
+| unresolved closure references | 871 | **95** |
+| stubbed functions | 5802 | **1378** |
+
+The matcher now names Apple's stripped iOS functions via the reference's symbol table (602 symbol anchors,
+3695 order anchors, 185 data names) instead of guessing by shape. The 85 MB MH_FILESET still writes.
+
+BUT the remaining missing/stubbed are in **boot-critical kexts** — apfs (22 missing + 117 stubbed), AMFI
+(3+65), AppleARMPlatform (10+80), IOHIDFamily (11+...). apfs/AMFI call kernel functions our build didn't
+match, so the cache would still trap during root mount / code-signing. The gap is our native kernel being
+**DEVELOPMENT** (28794 fns, different inlining) while both the iOS cache kernel and the KDK reference are
+**RELEASE**: shape matching native<->original suffers. Next lever: a **RELEASE** native build, which should
+drive the critical stubs toward zero. Then pacstrip the arm64e kexts (no-PAC A78) and boot (the `xl` loader
+is already largely fileset-ready: it maps LC_SEGMENT_64 + jumps to the top-level LC_UNIXTHREAD, both present;
+no filetype check; 85 MB fits kernel_size/MAX_MEM_SIZE; XNU handles the collection via __PRELINK_INFO).

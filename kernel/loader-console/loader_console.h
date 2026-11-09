@@ -9,6 +9,8 @@
 
 void loader_log_putc(char c);		/* append one char to the log the loader reads */
 void loader_return(void);		/* collect the log and jump back to the loader */
+void loader_bringup_tick(void);		/* IRQ-driven watchdog pet + timed return (no thread_calls) */
+void loader_diag_wfi_probe(void);	/* bring-up diag: does the vtimer survive WFI under the hv? */
 
 /* Install the console tees. Call right after PE_kputc / PE_putc are set. */
 void loader_console_tap_kputc(void);

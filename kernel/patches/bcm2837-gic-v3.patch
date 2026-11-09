@@ -1,0 +1,31 @@
+--- a/pexpert/pexpert/arm64/BCM2837.h	2026-11-09 00:00:00.000000000 -0400
++++ b/pexpert/pexpert/arm64/BCM2837.h	2026-11-09 00:00:00.000000000 -0400
+@@ -39,4 +39,28 @@
+ #define CPMU_PMC_COUNT 10
+ #endif /* ! ASSEMBLER */
+ 
++
++/*
++ * darwin-lisa: the SM7325 (lisa) has a standard GICv3, like VMAPPLE and unlike
++ * the stock BCM2837 (Raspberry Pi 3, no GIC). Enable the GICv3 CPU-interface
++ * bring-up in pe_init_fiq() and give it the register layout it needs. These
++ * offsets match both Apple's VMAPPLE.h and HakiOS's proven lisa GIC driver
++ * (RD_base + SGI_base at +0x10000, 0x20000 per redistributor).
++ */
++#define HAS_GIC_V3                1
++#define GIC_SPURIOUS_IRQ          1023
++#define GICR_PE_SIZE              0x20000
++#define GICD_CTLR                 0x0
++#define GICD_CTLR_ENABLEGRP0      0x1
++#define GICR_TYPER                              0x08
++#define GICR_WAKER                              0x14
++#define GICR_IGROUPR0                           0x10080
++#define GICR_ISENABLER0                         0x10100
++#define GICR_TYPER_AFFINITY_VALUE_SHIFT         32
++#define GICR_TYPER_LAST                         0x10
++#define GICR_WAKER_PROCESSORSLEEP               0x2
++#define GICR_WAKER_CHILDRENASLEEP               0x4
++#define ICC_CTLR_EOIMODE                        0x1
++#define ICC_SRE_SRE                             0x1
++
+ #endif /* ! _PEXPERT_ARM_BCM2837_H */

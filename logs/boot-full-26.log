@@ -1,0 +1,17 @@
+== XNULOADER run (usb) ==
+payload entry 'kernel' size 153f6a8
+payload entry 'cmdline' size 6d
+payload entry 'kernel.ver' size 29
+kernel va fffffff007004000..fffffff0088d4000 entry fffffff00751e488
+largest free block f4000000 size 15c000000
+phys window f4000000 size 15c000000, claim status 0
+kernel loaded at pa f7004000..f88d4000
+return slot patched at f7b74118, checkpoint 0
+cmdline: 191 of 607 characters
+device tree f88d4000 len 3818, boot_args f88e4000, top f88e8000
+cmdline: debug=0x8 cpus=1 hv_wdt_pet=1 hakios_kver=2.3.4-hakios-darwin22.5-sc7280-g3434bb74 loader_return_after=120 epoch=1794244499 sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -enable_kprintf_spam -v
+the kernel will run on core 700 (this is core 0)
+jumping to f751e488
+log: 4096 bytes written to logdump (0), read back the same (0)
+core 700: the firmware answers 0 to the request to start it
+log: 4096 bytes written to logdump (0), read back the same (0)

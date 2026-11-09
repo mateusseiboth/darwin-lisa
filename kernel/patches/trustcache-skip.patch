@@ -1,0 +1,15 @@
+--- a/bsd/kern/kern_trustcache.c	2026-11-09 13:47:33.558247663 -0400
++++ b/bsd/kern/kern_trustcache.c	2026-11-09 13:47:33.670603386 -0400
+@@ -587,9 +587,10 @@
+ 	allow_legacy_caches = true;
+ #endif
+ 
+-	/* Image4 interface needs to be available */
++	/* darwin-lisa bring-up: the source kernel has no image4/AMFI kext, so skip
++	 * the trust cache entirely (code signing is off for the rewritten mappings). */
+ 	if (img4if == NULL) {
+-		panic("image4 interface not available");
++		return;
+ 	}
+ 
+ 	/* AMFI interface needs to be available */

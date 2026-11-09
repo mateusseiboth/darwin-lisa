@@ -26,9 +26,13 @@
 
 #include "loader_console.h"
 
-#define LOADER_LOG_SIZE (1536 * 1024)
-#define LOADER_LOG_HEAD (256 * 1024)
-#define LOADER_LOG_RING (1024 * 1024)
+/* 256 KiB total is ~14x the largest boot log we capture (~18 KiB); keeping it
+ * small matters because this buffer is static __DATA (__common/__bss) that the
+ * Phase 3 prelink must fit inside the kernelcache's __DATA slot before the
+ * retained kexts. The old 1.5 MB ring overflowed that slot by ~1.75 MB. */
+#define LOADER_LOG_SIZE (256 * 1024)
+#define LOADER_LOG_HEAD (64 * 1024)
+#define LOADER_LOG_RING (192 * 1024)
 
 /* Also the target of the console tee; char buffer the loader reads. */
 char     loader_log[LOADER_LOG_SIZE];
@@ -319,6 +323,133 @@ hv_wdt_pet_init(void)
 	hv_wdt_pet(NULL, NULL);
 }
 STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, hv_wdt_pet_init);
+
+/*
+ * darwin-lisa bring-up: an interrupt-driven watchdog pet + timed return, called
+ * from the vtimer IRQ handler (gic_vtimer.c) on every tick. A bring-up kernel
+ * does not yet service delayed thread_calls, so hv_wdt_pet() and the
+ * loader_return_after timer above never re-fire; this path instead rides the
+ * one interrupt that is known to work. Timing is the architectural virtual
+ * counter CNTVCT_EL0 / CNTFRQ_EL0 (no clock subsystem needed).
+ */
+static uint64_t lc_bringup_start;
+static uint64_t lc_bringup_next_pet;
+static uint32_t lc_bringup_return_secs;
+static int lc_bringup_inited;
+
+/* ---- bring-up diagnostic: does the vtimer survive WFI under the hv? ---- */
+static void
+lc_diag_hex(const char *tag, uint64_t v)
+{
+	const char *h = "0123456789abcdef";
+	for (const char *p = tag; *p; p++) {
+		loader_log_putc(*p);
+	}
+	for (int s = 60; s >= 0; s -= 4) {
+		loader_log_putc(h[(v >> s) & 0xf]);
+	}
+}
+
+static void
+lc_diag_pet(void)
+{
+	register uint64_t x0 __asm__("x0") = VIRT_WDT_PET;
+	register uint64_t x1 __asm__("x1") = 0;
+	register uint64_t x2 __asm__("x2") = 0;
+	register uint64_t x3 __asm__("x3") = 0;
+	__asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
+	    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
+}
+
+/*
+ * Called once from the vtimer handler after enough ticks. We are in IRQ context
+ * (interrupts masked). Each round: arm the vtimer for ~1 s, WFI, then read back.
+ * WFI wakes on a pending physical interrupt even while masked, so if the vtimer
+ * fires the counter advances ~1 s and CNTV_CTL.ISTATUS becomes set. If the delta
+ * stays ~0, the hypervisor is freezing the guest virtual counter at idle
+ * (delivery can never happen). This isolates "hv freezes CNTVCT at WFI" from a
+ * pure GIC delivery fault. Ends by handing the log back to the loader.
+ */
+void
+loader_diag_wfi_probe(void)
+{
+	uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
+
+	loader_log_puts("\n--- diag: WFI vtimer probe (10 rounds, ~1s each) ---\n");
+	for (int round = 0; round < 10; round++) {
+		lc_diag_pet();
+		uint64_t before = __builtin_arm_rsr64("CNTVCT_EL0");
+		/* arm the EL1 virtual timer to fire in ~1 s and make sure it is on */
+		__builtin_arm_wsr64("CNTV_TVAL_EL0", freq);
+		__builtin_arm_wsr64("CNTV_CTL_EL0", 1 /* ENABLE, IMASK=0 */);
+		__builtin_arm_dsb(DSB_SY);
+		__builtin_arm_isb(ISB_SY);
+		lc_diag_hex("[diag] armed round=0x", (uint64_t)round);
+		loader_log_puts(" wfi...\n");	/* if the next line is missing, WFI never woke */
+		__builtin_arm_wfi();
+		uint64_t after = __builtin_arm_rsr64("CNTVCT_EL0");
+		uint64_t ctl = __builtin_arm_rsr64("CNTV_CTL_EL0");
+		uint64_t hppir = __builtin_arm_rsr64("ICC_HPPIR1_EL1");
+		lc_diag_hex("[diag] round=0x", (uint64_t)round);
+		lc_diag_hex(" dvct=0x", after - before);
+		lc_diag_hex(" ctl=0x", ctl);
+		lc_diag_hex(" hppir1=0x", hppir);
+		loader_log_putc('\n');
+	}
+	loader_log_puts("--- diag done; returning ---\n");
+	loader_return();	/* does not return */
+}
+
+void
+loader_bringup_tick(void)
+{
+	uint64_t now = __builtin_arm_rsr64("CNTVCT_EL0");
+	uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
+
+	if (freq == 0) {
+		return;
+	}
+	if (!lc_bringup_inited) {
+		lc_bringup_inited = 1;
+		lc_bringup_start = now;
+		lc_bringup_next_pet = 0;
+		PE_parse_boot_argn("loader_return_after", &lc_bringup_return_secs, sizeof(lc_bringup_return_secs));
+	}
+
+	uint64_t elapsed = (now - lc_bringup_start) / freq;	/* whole seconds */
+
+	/* Feed the Qualcomm hypervisor watchdog every few seconds. */
+	if (hv_wdt_enabled && elapsed >= lc_bringup_next_pet) {
+		register uint64_t x0 __asm__("x0") = VIRT_WDT_PET;
+		register uint64_t x1 __asm__("x1") = 0;
+		register uint64_t x2 __asm__("x2") = 0;
+		register uint64_t x3 __asm__("x3") = 0;
+
+		__asm__ volatile ("smc #0" : "+r" (x0), "+r" (x1), "+r" (x2), "+r" (x3) : :
+		    "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11", "x12", "x13", "x14", "x15", "x16", "x17");
+		loader_live.heartbeat++;
+		lc_bringup_next_pet = elapsed + 5;
+	}
+
+	/* Hand control back once loader_return_after seconds have passed. */
+	if (lc_bringup_return_secs != 0 && elapsed >= lc_bringup_return_secs) {
+		loader_log_puts("\n--- loader_return_after expired (irq-driven) ---\n");
+		loader_return();	/* does not return */
+	}
+
+	/*
+	 * Keep the virtual timer ticking at >= 20 Hz. When the scheduler is idle it
+	 * arms a far-future decrementer, the vtimer stops, and this path (and the
+	 * timer-call queue) stall. Clamp the next fire to 50 ms so the timer keeps
+	 * firing: it feeds the watchdog here and gives rtclock_intr frequent chances
+	 * to run expired timer calls. A real, nearer deadline is left untouched.
+	 */
+	int32_t remaining = (int32_t)__builtin_arm_rsr64("CNTV_TVAL_EL0");
+	int32_t floor = (int32_t)(freq / 20);
+	if (remaining > floor) {
+		__builtin_arm_wsr64("CNTV_TVAL_EL0", (uint64_t)(uint32_t)floor);
+	}
+}
 
 /* ---- console tees (installed from PE_init_kprintf / PE_init_printf) ---- */
 

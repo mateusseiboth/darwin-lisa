@@ -1,0 +1,53 @@
+diff --git a/kc_image.py b/kc_image.py
+index 1407d8e..d35c236 100644
+--- a/kc_image.py
++++ b/kc_image.py
+@@ -5,6 +5,8 @@ import struct
+ LC_SEGMENT_64, LC_SYMTAB, LC_FUNCTION_STARTS = 0x19, 0x2, 0x26
+ LC_DYLD_CHAINED_FIXUPS, LC_FILESET_ENTRY = 0x80000034, 0x80000035
+ PTR_ARM64E_KERNEL, PTR_64_KERNEL_CACHE = 7, 8
++# darwin-lisa: plain-arm64 (no PAC) kernels link with DYLD_CHAINED_PTR_64_OFFSET.
++PTR_64_OFFSET = 6
+ 
+ 
+ class Image:
+@@ -146,7 +148,7 @@ class Image:
+                 continue
+             at = table + relative
+             _, page_size, fmt, segment_offset, _, pages = struct.unpack_from('<IHHQIH', self.data, at)
+-            if fmt not in (PTR_ARM64E_KERNEL, PTR_64_KERNEL_CACHE):
++            if fmt not in (PTR_ARM64E_KERNEL, PTR_64_KERNEL_CACHE, PTR_64_OFFSET):
+                 raise ValueError(f'Unsupported chained pointer format {fmt}')
+             for page, start in enumerate(struct.unpack_from(f'<{pages}H', self.data, at + 22)):
+                 if start == 0xffff:
+@@ -157,17 +159,27 @@ class Image:
+                 while True:
+                     value, = struct.unpack_from('<Q', self.data, self.offset(site, 8))
+                     auth = value >> 63
+-                    if fmt == PTR_64_KERNEL_CACHE:
++                    if fmt == PTR_64_OFFSET:
++                        # dyld_chained_ptr_64_rebase: target[0:36], high8[36:44],
++                        # next[51:63] (stride 4), bind at bit 63 (0 for a rebase).
++                        if value >> 63:
++                            raise ValueError('Chained binds are not supported')
++                        target = self.base + (value & 0xfffffffff) + (((value >> 36) & 0xff) << 56)
++                        step = (value >> 51) & 0xfff
++                        result[site] = (target, 0, None, None, None)
++                    elif fmt == PTR_64_KERNEL_CACHE:
+                         if (value >> 30) & 3:
+                             raise ValueError('Only cache level 0 is supported')
+                         target, step = self.base + (value & 0x3fffffff), (value >> 51) & 0xfff
++                        result[site] = (target, auth, (value >> 49) & 3 if auth else None,
++                                        (value >> 32) & 0xffff if auth else None, (value >> 48) & 1 if auth else None)
+                     else:
+                         if (value >> 62) & 1:
+                             raise ValueError('Chained binds are not supported')
+                         offset = value & 0xffffffff if auth else (value & 0x7ffffffffff) | ((value >> 43) & 0xff) << 56
+                         target, step = self.base + offset, (value >> 51) & 0x7ff
+-                    result[site] = (target, auth, (value >> 49) & 3 if auth else None,
+-                                    (value >> 32) & 0xffff if auth else None, (value >> 48) & 1 if auth else None)
++                        result[site] = (target, auth, (value >> 49) & 3 if auth else None,
++                                        (value >> 32) & 0xffff if auth else None, (value >> 48) & 1 if auth else None)
+                     if not step:
+                         break
+                     site += step * 4

@@ -1,0 +1,21 @@
+--- a/osfmk/arm64/machine_routines.c	2026-11-09 00:00:00.000000000 -0400
++++ b/osfmk/arm64/machine_routines.c	2026-11-09 00:00:00.000000000 -0400
+@@ -2476,6 +2476,18 @@
+ 	assert(ml_get_interrupts_enabled() == FALSE);
+ 	cdp->cpu_decrementer = dec_value;
+ 
++	/*
++	 * darwin-lisa bring-up: never let the virtual timer sleep longer than ~50 ms.
++	 * The scheduler's idle path arms a far-future decrementer, but on this phone
++	 * the vtimer then stops firing and delayed thread_calls (the watchdog pet,
++	 * timeouts) never run. Flooring the arm keeps the vtimer ticking so
++	 * rtclock_intr drains the timer-call queue. CNTFRQ here is 19.2 MHz, so
++	 * 50 ms is 960000 counts; a nearer, real deadline is left untouched.
++	 */
++	if (dec_value > 960000u) {
++		dec_value = 960000u;
++	}
++
+ 	if (cdp->cpu_set_decrementer_func) {
+ 		cdp->cpu_set_decrementer_func(dec_value);
+ 	} else {

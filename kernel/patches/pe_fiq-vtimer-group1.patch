@@ -1,20 +1,69 @@
 --- a/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.744173168 -0400
 +++ b/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.754984337 -0400
-@@ -168,6 +168,19 @@
+@@ -164,10 +164,66 @@
+ 
+ 	// Enable the forwarding of the vtimer interrupt
+ 	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
+-	gicd_ctlr |= GICD_CTLR_ENABLEGRP0;
++	// darwin-lisa: Group-1-only; do not enable Group 0. (was: gicd_ctlr |= GICD_CTLR_ENABLEGRP0;)
  	gicd_write32(GICD_CTLR, gicd_ctlr);
- 	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+-	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
++	// darwin-lisa: Group-1-only; do not enable Group 0. (was: ICC_IGRPEN0_EL1 = 1)
  	__builtin_arm_isb(ISB_SY);
-+
-+	// darwin-lisa: also route the virtual timer (PPI 27) as Group 1 (IRQ) so it
-+	// reaches EL1 under the Qualcomm hypervisor (Group 0 / FIQ is taken to EL2).
++	// darwin-lisa: route the virtual timer (PPI 27) as Non-secure Group 1 (IRQ)
++	// so it reaches EL1 under the Qualcomm hypervisor (Group 0 / FIQ is taken to
++	// EL2). The stock Group-0/FIQ enablement above is commented out: this is a
++	// Group-1-only CPU interface, matching HakiOS's proven GICv3 cpu-init on this
++	// phone. Leaving Group 0 live wedged vtimer delivery across the idle
++	// transition (fires ~16x then stops), while HakiOS (Group-1-only) does not.
++	#define GICR_IGRPMODR0  0x10D00
++	#define GICR_IPRIORITYR 0x10400
++	#define GICD_CTLR_ENABLE_G1NS (1u << 1)
++	#define GICD_CTLR_ARE_NS      (1u << 4)
++	#define GICD_CTLR_RWP         (1u << 31)
 +	gicr_write32(GICR_IGROUPR0, gicr_read32(GICR_IGROUPR0) | (1u << 27));
-+	gicd_write32(GICD_CTLR, gicd_read32(GICD_CTLR) | (1u << 1) | (1u << 4)); // ENABLE_G1NS | ARE_NS
++	gicr_write32(GICR_IGRPMODR0, gicr_read32(GICR_IGRPMODR0) & ~(1u << 27));
++	*(volatile uint8_t *)(gicr_pe_base + GICR_IPRIORITYR + 27) = 0xA0;
++	gicr_write32(GICR_ISENABLER0, (1u << 27));
++	{
++		// Affinity routing, then Group 1 NS on (ARE before group-enable).
++		uint32_t ctlr = gicd_read32(GICD_CTLR);
++		if (!(ctlr & GICD_CTLR_ARE_NS)) {
++			gicd_write32(GICD_CTLR, ctlr | GICD_CTLR_ARE_NS);
++			while (gicd_read32(GICD_CTLR) & GICD_CTLR_RWP) {
++			}
++			ctlr = gicd_read32(GICD_CTLR);
++		}
++		if (!(ctlr & GICD_CTLR_ENABLE_G1NS)) {
++			gicd_write32(GICD_CTLR, ctlr | GICD_CTLR_ENABLE_G1NS);
++			while (gicd_read32(GICD_CTLR) & GICD_CTLR_RWP) {
++			}
++		}
++	}
++	// EOImode=1: split priority-drop (ICC_EOIR1) from deactivate (ICC_DIR); the
++	// handler completes each interrupt with EOIR1 then DIR.
++	__builtin_arm_wsr64("ICC_CTLR_EL1", __builtin_arm_rsr64("ICC_CTLR_EL1") | (1u << 1));
++	__builtin_arm_wsr64("ICC_AP1R0_EL1", 0);
 +	__builtin_arm_wsr64("ICC_BPR1_EL1", 0);
 +	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
 +	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
 +	__builtin_arm_isb(ISB_SY);
 +	{
 +		extern void gic_vtimer_install(void);
++		extern void loader_log_putc(char);
++		uint32_t ig = gicr_read32(GICR_IGROUPR0);
++		uint32_t im = gicr_read32(GICR_IGRPMODR0);
++		char buf[80];
++		int n = 0;
++		const char *h = "0123456789abcdef";
++		const char *pfx = "\n[GIC] vtimer G1 armed IGROUPR0=";
++		for (const char *p = pfx; *p; p++) buf[n++] = *p;
++		for (int s = 28; s >= 0; s -= 4) buf[n++] = h[(ig >> s) & 0xf];
++		const char *mid = " IGRPMODR0=";
++		for (const char *p = mid; *p; p++) buf[n++] = *p;
++		for (int s = 28; s >= 0; s -= 4) buf[n++] = h[(im >> s) & 0xf];
++		buf[n++] = '\n';
++		for (int i = 0; i < n; i++) loader_log_putc(buf[i]);
 +		gic_vtimer_install();
 +	}
  }

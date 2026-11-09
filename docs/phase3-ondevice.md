@@ -94,3 +94,33 @@ is the larger — it is a driver port, the same scope as the original HakiOS bri
 realistic first on-device milestone is **UEFI firmware + native kernel booting far enough to emit early kernel
 log over a working lisa serial/RAM-console**, before any display. Everything above the kernel (emulator,
 pager, grade) is already in place and waiting for that bring-up.
+
+## Boot progress (2026-11-09, session 2): into corecrypto FIPS POST
+
+With the loader log channel + live console capture, the bring-up became a normal debug loop. Fixes applied
+(all in kernel/patches/, via apply.sh):
+- `prng-seed-bringup` — fill the short bootloader random seed instead of panicking.
+- `pe_init-skip-console` — no-op the VRAM/framebuffer console (its mapping faults).
+- `machine-routines-virtual-timer` — don't touch CNTP_* (the physical timer is trapped by the phone's
+  Qualcomm hypervisor); the guest owns only the virtual timer.
+- `debug-loader-return` / `serial-console-tee` — log panic reason + live console into the loader channel.
+
+The kernel now boots on the A78 through: VM bootstrap (24G zones, 6G compressor), scheduler (clutch), OSLog/
+Firehose, the kext bootstrap, `corecrypto_kext_start`, and the FIPS power-on self-tests (passes
+`fipspost_post_hmac`). Full log in logs/boot-corecrypto-26.log.
+
+### Current blocker: source-corecrypto FIPS integrity self-test
+
+`fipspost_post_integrity` → `fipspost_get_hmac` hashes the kernel's `__text`. For a non-cache kernel it uses
+`pmach_header + sect->offset` (a flat-file layout). Our kernel is source-linked and runs under XNU's
+segmented pmap, so that address does not point at `__text` by corecrypto time — the hash runs on the wrong
+region and never completes. `prng_random.c:605` forbids `fips_mode != 0`, so FIPS cannot be skipped in source
+mode. Two ways forward:
+1. Patch `fipspost_get_hmac` to hash `__text` by its vmaddr+slide (what XNU's pmap maps), matching the seal's
+   content; keep re-sealing the **stripped** kernel (seal AFTER pacstrip — the 176 XPAC→NOP edits change the
+   hashed bytes).
+2. Switch to prelinked mode (corecrypto becomes a real kernelcache kext, the cache path works) — needs the
+   full prelink against the IPSW kernelcache (the deferred Phase 3 prelink work).
+
+Note: the kernel must be **pacstripped then re-sealed** (`scripts/seal-source-crypto-kernel.py` on the
+`.nopac`), since pacstrip edits `__text` after the build's seal.

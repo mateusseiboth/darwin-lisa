@@ -5,3 +5,5 @@ kernel/pacstrip/vectors.txt
 
 .work/
 .dbg.pristine.orig
+userland/init/out/
+userland/init/obj/

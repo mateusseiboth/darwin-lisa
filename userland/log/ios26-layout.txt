@@ -1,0 +1,41 @@
+iOS 26.5.2 (23F84) iPad17 - filesystem/cryptex layout map
+generated 2026-11-09T20:52Z by build-system-26 investigation
+
+## IPSW members (ipsw info)
+FileSystem  094-56106-108.dmg.aea  7.45GB AEA  -> /            (231363 files, 13.4GB)
+SystemOS    094-54821-109.dmg.aea  2.0GB  AEA  -> /System/Cryptexes/OS  (dyld cache + OS frameworks)
+AppOS       094-54871-112.dmg      14MB   plain-> /System/Cryptexes/App (Safari + daemons)
+ExclaveOS   094-55864-112.dmg.aea  143MB  AEA  -> /System/Cryptexes/ExclaveOS (optional, secure exclaves)
+Supplem.    094-54349-112.dmg.aea  226MB  AEA  -> Supplemental (optional)
+
+## rootfs /System/Cryptexes (ALL SYMLINKS into /private/preboot) - the iOS-26 change
+App -> ../../private/preboot/Cryptexes/App  0B
+ExclaveOS -> ../../private/preboot/Cryptexes/ExclaveOS  0B
+OS -> ../../private/preboot/Cryptexes/OS  0B
+Supplemental -> ../../private/preboot/Cryptexes/Supplemental  0B
+
+## /private/preboot in rootfs (EMPTY; cryptex content is laid here at build time)
+(empty)
+
+## rootfs top-level
+.b/   
+.nofollow/   
+.resolve/   
+Applications/   
+Developer/   
+Library/   
+System/   
+bin/   
+cores/   
+dev/   
+private/   
+sbin/   
+usr/   
+.file   
+etc   
+tmp   
+var   
+
+## base frameworks (code in cache, bundles in rootfs): 281 frameworks
+## Apple /sbin/launchd: arm64e, LC_LOAD_DYLINKER /usr/lib/dyld, MinOS 26.5 (kept as launchd.darwin)
+## /usr/lib/dyld present (1.3MB arm64e); staged_system_apps: 50 apps -> /Applications

@@ -236,3 +236,23 @@ kexts + userland + IPIs) will not hit this. Tried and rejected as fixes: EOImode
 not a priority lockout), Group-1-only, `wfi=0`, `jtag=1 wfe_mode=0`, a 50 ms CNTV_TVAL floor. Left as-is; revisit
 with the real driver stack. (The tick-12 WFI probe that "hung" was confounded: it WFI'd mid-handler with INTID
 27 still Active, which a level IRQ cannot re-forward as a wake — a GIC artifact, not hv evidence.)
+
+## Prelink emits a real MH_FILESET kernelcache (with --allow-missing)
+
+Running `emit_prelink.py --allow-missing` (over the strict pairing gate) **writes an 85 MB
+`kernel.prelinked.macho`, a valid MH_FILESET (0xc) kernel collection** holding our kernel plus ~30
+retained Apple kexts as fileset entries. The strict "53075 unresolved references" is the total
+cross-reference count; the actual closure is far smaller: **871 unresolved closure references, 5802
+stubbed functions** (`runtime qualification: pending`). A symbol-bearing reference kernel
+(`--fileset-reference`) should drive both down; what matters for a first boot is that the boot-critical
+kexts (apfs, AMFI, sandbox, IOKit families) resolve, not the long tail.
+
+**Boot-path note (future):** our prelink output is MH_FILESET, but the HakiOS `xl` loader loads a
+standalone MH_EXECUTE kernel (HakiOS's own kernel is MH_EXECUTE with its drivers compiled in + a
+ramdisk; it does NOT use a fileset kernelcache). So booting our kernelcache needs `xl`/xnuloader to
+learn the fileset/kernel-collection boot path (map the collection, set up prelink info, enter the
+kernel's entry within it) — a separate task, after matching is good enough to produce a bootable cache.
+
+Reproducibility: `phase3/prelink/apply-build-flags.sh <work>/makedefs/MakeInc.def` adds the arm64 link
+flags; `phase3/prelink/kc_image-format6.patch` teaches the kit format 6; rebuild with
+`XNU_KERNEL_CHAINED_FIXUPS=1` (delete `mach.*.unstripped*` to force a relink), then run the prelink.

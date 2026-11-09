@@ -1,6 +1,57 @@
-# Phase 3: booting iOS 26 on lisa — plan and honest status
+# Phase 3: booting iOS 26 on lisa — first on-device boot
 
-Updated 2026-11-09. The darwin-lisa **kernel is done and staged**; this is what remains to see it run on the
+Updated 2026-11-09. The darwin-lisa kernel **boots on the real phone** (Xiaomi 11 Lite 5G NE, SM7325,
+Cortex-A78, no PAC) over the existing HakiOS `xl` path — no UEFI, no pmOS, no physical access.
+
+## First on-device boot (2026-11-09)
+
+Swapping our plain-arm64 `kernel.macho.nopac` in for `hakios-kernel` and running it through the xnuloader
+(`fastboot stage` + `oem run`, cmdline `hv_wdt_pet=1 loader_return_after=15 debug=0x8 -v`), the loader found
+our return slot, jumped to the kernel, and the kernel ran and handed its log back:
+
+```
+return slot patched at f7b74118, checkpoint 0
+jumping to f751e488
+kernel returned: log at f7c24524, 274 bytes
+== KERNEL LOG ==
+--- kernel message buffer ---
+[   12.455000]:  vm_cache_geometry_colors: 32
+[   12.455016]: do_cacheid() - 65536 bytes Unknown cache (I:32768 D:32768 (separate)), 16-way assoc, 64 bytes/line
+[   12.455030]: [processor_init] processor 0 belongs to processor set 0 of type 0
+```
+
+So xnu-12377 runs on the A78 far enough to do **VM init, cache detection** (the A78's real 32 KiB+32 KiB
+16-way L1) and **processor_init**, then stops in early `kernel_bootstrap`. The full log is in
+`logs/first-boot-26.log`. This proves the whole stack: the plain-arm64 no-PAC kernel loads via the generic
+XNU boot_args path, the loader's ADT is parsed far enough for early init, and the return-to-loader channel
+(`kernel/loader-console/`) makes it observable over fastboot.
+
+### How to reproduce (needs the phone in the loader)
+
+```sh
+cd ~/Dev/mobile/research/hackios-xnu-kernel
+cp <our>/kernel.macho.nopac hakios-kernel         # swap our kernel in (keep a backup!)
+fastboot reboot && wait-for xnuloader             # a FRESH loader session (one kernel per session)
+xnuloader/mkpayload.py -o run-payload.bin kernel=hakios-kernel \
+  --cmdline "loader_return_after=15 hv_wdt_pet=1 debug=0x8 -v"
+fastboot stage run-payload.bin && fastboot oem run
+# wait for result "returned N 0", then fetch WITHOUT "oem log" first (it re-stages loader-only):
+fastboot get_staged out.txt                       # out.txt = loader log + our kernel log
+```
+
+Key points learned: run the kernel on the loader's generic ADT; `hv_wdt_pet=1` feeds the Qualcomm watchdog
+so it does not hard-reset before the return; one kernel per loader session (reboot between runs); do not call
+`oem log` before `get_staged` on a return (it re-stages the loader log alone).
+
+## What remains to boot further
+
+The kernel stops in early `kernel_bootstrap` (right after processor_init), almost certainly at interrupt
+controller / SMP / platform bring-up on hardware it only partly understands via the loader's ADT. Getting
+further is the SM7325 SoC layer below. This is now a normal debug loop: each change, boot, read the log.
+
+## Older plan notes (kernel side, still accurate)
+
+The darwin-lisa **kernel is done and staged**; this is what remains to see it run on the
 phone (Xiaomi 11 Lite 5G NE, SM7325, Cortex-A78, no PAC).
 
 ## What is ready

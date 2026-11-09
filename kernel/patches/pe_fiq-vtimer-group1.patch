@@ -1,0 +1,22 @@
+--- a/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.744173168 -0400
++++ b/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.754984337 -0400
+@@ -168,6 +168,19 @@
+ 	gicd_write32(GICD_CTLR, gicd_ctlr);
+ 	__builtin_arm_wsr64("ICC_IGRPEN0_EL1", 1);
+ 	__builtin_arm_isb(ISB_SY);
++
++	// darwin-lisa: also route the virtual timer (PPI 27) as Group 1 (IRQ) so it
++	// reaches EL1 under the Qualcomm hypervisor (Group 0 / FIQ is taken to EL2).
++	gicr_write32(GICR_IGROUPR0, gicr_read32(GICR_IGROUPR0) | (1u << 27));
++	gicd_write32(GICD_CTLR, gicd_read32(GICD_CTLR) | (1u << 1) | (1u << 4)); // ENABLE_G1NS | ARE_NS
++	__builtin_arm_wsr64("ICC_BPR1_EL1", 0);
++	__builtin_arm_wsr64("ICC_PMR_EL1", 0xFF);
++	__builtin_arm_wsr64("ICC_IGRPEN1_EL1", 1);
++	__builtin_arm_isb(ISB_SY);
++	{
++		extern void gic_vtimer_install(void);
++		gic_vtimer_install();
++	}
+ }
+ #else
+ void

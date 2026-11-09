@@ -1,0 +1,13 @@
+--- a/osfmk/console/video_console.c	2026-11-09 13:41:16.570100545 -0400
++++ b/osfmk/console/video_console.c	2026-11-09 13:41:16.580738046 -0400
+@@ -1247,6 +1247,10 @@
+ void
+ vcputc(char c)
+ {
++	{	/* darwin-lisa: tee the video console into the loader log for live capture */
++		extern void loader_log_putc(char lc);
++		loader_log_putc(c);
++	}
+ 	vcputc_options(c, false);
+ }
+ 

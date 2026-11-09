@@ -18,12 +18,14 @@ done
 for f in loader_console.c loader_console.h; do
 	cp "$here/../loader-console/$f" "$tree/osfmk/arm64/$f"
 done
+cp "$here/../soc/gic_vtimer.c" "$tree/osfmk/arm64/gic_vtimer.c"
 
 # 2. the edit patches: sleh.c EL0 hook, conf/files.arm64 listing, the loader
 #    accepting the arm64e slice, the PAC-stripping pager, and the loader console.
 for p in sleh-pac-emulate conf-files-pac machdep-grade-arm64e mach_loader-pac-pager \
          pe_kprintf-loader-console pe_gen-loader-console debug-loader-return \
-         prng-seed-bringup pe_init-skip-console machine-routines-virtual-timer serial-console-tee; do
+         prng-seed-bringup pe_init-skip-console machine-routines-virtual-timer serial-console-tee vcputc-tee \
+         pe_fiq-vtimer-group1; do
 	if patch -d "$tree" -p1 --forward --reverse --dry-run <"$here/$p.patch" >/dev/null 2>&1; then
 		echo "already applied: $p"
 	else

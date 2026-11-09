@@ -1,20 +1,17 @@
 /* SPDX-License-Identifier: MIT */
 /*
- * Loader console: route XNU's early console output into a buffer the HakiOS
- * xnuloader can read, so a UniXNU kernel booted over `xl` is observable the same
- * way the HakiOS kernel is. The loader scans the kernel image for a struct with
- * the magic "XNULIVE!" and then polls its log/log_len while the kernel runs
- * (and reads it once more if the kernel hangs). We fill that struct and tee
- * PE_kputc / PE_putc into its buffer. No clean return to the loader is needed to
- * see the log; the loader's live polling captures it.
+ * Return-to-loader debug channel (see loader_console.c). Lets a UniXNU kernel
+ * booted over the HakiOS xnuloader hand its log back to the loader on panic or
+ * after loader_return_after seconds, so it is observable with no serial port.
  */
 #ifndef LOADER_CONSOLE_H
 #define LOADER_CONSOLE_H
 
-/* Install the tee on the kprintf char sink (PE_kputc). Call right after it is set. */
-void loader_console_tap_kputc(void);
+void loader_log_putc(char c);		/* append one char to the log the loader reads */
+void loader_return(void);		/* collect the log and jump back to the loader */
 
-/* Install the tee on the printf char sink (PE_putc). Call right after it is set. */
+/* Install the console tees. Call right after PE_kputc / PE_putc are set. */
+void loader_console_tap_kputc(void);
 void loader_console_tap_putc(void);
 
 #endif /* LOADER_CONSOLE_H */

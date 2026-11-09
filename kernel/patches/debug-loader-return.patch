@@ -1,0 +1,26 @@
+--- a/osfmk/kern/debug.c	2026-11-09 12:07:49.216249595 -0400
++++ b/osfmk/kern/debug.c	2026-11-09 12:07:49.227193227 -0400
+@@ -276,6 +276,7 @@
+ void panic_spin_forever(void) __dead2;
+ void panic_stackshot_release_lock(void);
+ extern void PE_panic_hook(const char*);
++extern void loader_return(void);	/* darwin-lisa: return-to-loader channel */
+ extern int sync_internal(void);
+ 
+ #define NESTEDDEBUGGERENTRYMAX 5
+@@ -1370,6 +1371,7 @@
+ void __attribute__((noinline, optnone))
+ panic_spin_forever(void)
+ {
++	loader_return();	/* darwin-lisa */
+ 	for (;;) {
+ #if defined(__arm__) || defined(__arm64__)
+ 		/* On arm32, which doesn't have a WFE timeout, this may not return.  But that should be OK on this path. */
+@@ -1390,6 +1392,7 @@
+ static void
+ kdp_machine_reboot_type(unsigned int type, uint64_t debugger_flags)
+ {
++	loader_return();	/* darwin-lisa */
+ 	if ((type == kPEPanicRestartCPU) && (debugger_flags & DEBUGGER_OPTION_SKIP_PANICEND_CALLOUTS)) {
+ 		PEHaltRestart(kPEPanicRestartCPUNoCallouts);
+ 	} else {

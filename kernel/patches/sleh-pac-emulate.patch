@@ -1,0 +1,24 @@
+--- a/osfmk/arm64/sleh.c	2026-11-09 10:54:11.618603688 -0400
++++ b/osfmk/arm64/sleh.c	2026-11-09 10:54:11.629234015 -0400
+@@ -64,6 +64,7 @@
+ #include <vm/vm_fault.h>
+ #include <vm/vm_kern.h>
+ #include <vm/vm_map_xnu.h>
++#include <arm64/pac_trap.h>	/* darwin-lisa: EL0 arm64e instruction emulation */
+ 
+ #include <sys/errno.h>
+ #include <sys/kdebug.h>
+@@ -1228,6 +1229,13 @@
+ 
+ #endif /* CONFIG_DTRACE */
+ 
++	/* darwin-lisa: emulate the arm64e instructions the PAC-stripping pager
++	 * cannot rewrite in place (LDRAA/LDRAB beyond the LDUR/LDR offset window,
++	 * and FJCVTZS) when they trap at EL0 on this CPU without pointer auth. */
++	if (pac_emulate_user_trap(state, instr)) {
++		return;
++	}
++
+ 	if (PSR64_IS_KERNEL(get_saved_state_cpsr(state))) {
+ 		if (IS_ARM_GDB_TRAP(instr)) {
+ 			boolean_t interrupt_state;

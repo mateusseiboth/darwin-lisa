@@ -59,6 +59,11 @@ The kexts prelinked into the kernelcache are rewritten statically, at prelink ti
 - [x] UniXNU's Linux toolchain and its iPadOS 26.5.2 profile, built as a **plain arm64 kernel** (no ptrauth) — xnu-12377 links to a standalone MH_EXECUTE, cpusubtype ARM64_ALL, ios 26.0; see docs/phase2-build.md
 - [ ] kernel patches: accept arm64e Mach-O (cpusubtype and ptrauth ABI version), never touch the PAC key registers,
       emulate the reported traps in the undefined-instruction handler
+  - [x] never touch the PAC key registers: the kernel builds plain arm64 (`HAS_APPLE_PAC` off), so it emits no
+        key-register writes or sign/auth code at all
+  - [x] emulate the reported traps (LDRAA/LDRAB/FJCVTZS) in `handle_uncategorized`: `pac_emulate.c` (host-tested) +
+        `pac_trap.c` glue, linked into the kernel (`_pac_emulate_user_trap` in the symbol table); see docs/phase2-emulation.md
+  - [ ] accept arm64e Mach-O in the loader (`bsd/kern/mach_loader.c` cpusubtype/ptrauth-ABI grading)
 - [x] `kernel/pacstrip/pac_rewrite.c`: the rewrite in C, checked against 1 018 759 vectors from `insn.py`
 - [ ] the PAC-stripping pager: a `text_crypter` for every executable mapping of an arm64e Mach-O and of the shared
       cache, calling `pac_rewrite_buffer()`

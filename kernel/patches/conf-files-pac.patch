@@ -1,0 +1,11 @@
+--- a/osfmk/conf/files.arm64	2026-11-09 10:54:25.013450474 -0400
++++ b/osfmk/conf/files.arm64	2026-11-09 10:54:25.023799875 -0400
+@@ -62,6 +62,8 @@
+ osfmk/arm64/gxf_exceptions.s	optional nos_arm_asm
+ osfmk/arm64/lowmem_vectors.c	standard
+ osfmk/arm64/sleh.c			standard
++osfmk/arm64/pac_emulate.c		standard
++osfmk/arm64/pac_trap.c			standard
+ osfmk/arm64/start.s	optional nos_arm_asm config_pmap_ppl
+ osfmk/arm64/pinst.s	optional nos_arm_asm
+ osfmk/arm64/cswitch.s	optional nos_arm_asm

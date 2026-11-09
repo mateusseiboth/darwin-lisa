@@ -52,7 +52,8 @@ SYS_DMG="${SYS_AEA%.aea}"
 # directly, no dyld. Apple's /sbin/launchd is arm64e and dyld-linked, so it needs
 # the whole shared cache resolving before it can print a thing; ours proves the
 # image mounts and userland runs first. Built by the sibling script.
-"$HERE/build-root-26.sh" init-only
+# (out/launchd is reused if already built; the docker rebuild only runs when it is absent)
+[ -x "$OUT/launchd" ] || "$HERE/build-root-26.sh" init-only
 
 # ------------------------------------------------------------- 1. decrypt + list
 # iOS 16 could `7z l` the rootfs straight. iOS 26's rootfs is an AEA1 archive:
@@ -96,22 +97,41 @@ rm -rf "$SYSROOT"; mkdir -p "$SYSROOT"
 OS_DST="$SYSROOT/private/preboot/Cryptexes/OS"
 APP_DST="$SYSROOT/private/preboot/Cryptexes/App"
 mkdir -p "$OS_DST" "$APP_DST"
-# the OS cryptex is laid out under a top-level "root/" inside its dmg; graft its
-# root/ at the target. Everything except the cache and the DriverKit cache.
-7z x -y -o"$EXTRACT/cryptex-os" "$SYS_DMG" 'root' '-xr!com.apple.dyld' '-x!root/System/DriverKit' \
-	> "$EXTRACT/extract-cryptex-os.log" 2>&1 || true
-cp -a "$EXTRACT/cryptex-os/root/." "$OS_DST/"
-# the dyld shared cache at its runtime path; its .symbols stub is never mapped.
-# (the split arm64e cache is also pre-extracted at
-#  ipsw/26.5.2-extracted/23F84__iPad17,1_2_3_4/ if you prefer that copy.)
+# NOTE (23F84, verified): unlike iOS 16, the SystemOS and AppOS cryptex dmgs do NOT
+# wrap their content in a top-level "root/"; the archive top level is "System" + "usr"
+# directly. Graft those at the symlink target.
+# NOTE (decmpfs): the cryptex Mach-O binaries (WebKit/JSC framework stubs, the Safari
+# web daemons browserkitd/webbookmarksd/...) are decmpfs-compressed with LZFSE, which
+# 7-Zip 26 cannot inflate (it writes a 0-byte main fork) AND `ipsw extract --files`
+# cannot either on Linux (it mounts the dmg and hits the same decmpfs EIO apfs-fuse
+# does). So the cryptex RESOURCES (plists, nibs, .car, .loctable) come across fine but
+# the cryptex EXECUTABLES land empty. This is post-boot content (the Safari/web stack):
+# the framework CODE is in the dyld shared cache (below), and launchd/dyld do not need
+# the cryptex binaries. Flagged as the one open item; see userland/README.md.
+# --- the dyld shared cache at its runtime path (the must-have). Prefer the pre-extracted
+# split arm64e set (plain files, no decmpfs); fall back to 7z on the sys dmg. .symbols is
+# never mapped, so it is left out.
 D="$OS_DST/System/Library/Caches/com.apple.dyld"
 mkdir -p "$D"
-7z x -y -o"$EXTRACT/cryptex-cache" "$SYS_DMG" 'root/System/Library/Caches/com.apple.dyld' \
-	'-xr!*.symbols*' > "$EXTRACT/extract-dyld.log" 2>&1 || true
-cp -a "$EXTRACT/cryptex-cache/root/System/Library/Caches/com.apple.dyld/." "$D/"
-# the App cryptex (plain dmg), the same way
-7z x -y -o"$EXTRACT/cryptex-app" "$APP_DMG" 'root' > "$EXTRACT/extract-cryptex-app.log" 2>&1 || true
-cp -a "$EXTRACT/cryptex-app/root/." "$APP_DST/"
+PREEXTRACTED=/home/mateusseiboth/Dev/mobile/ipsw/26.5.2-extracted/$TAG
+if ls "$PREEXTRACTED"/dyld_shared_cache_arm64e* >/dev/null 2>&1; then
+	cp -a "$PREEXTRACTED"/dyld_shared_cache_arm64e* "$D/"
+else
+	7z x -y -o"$EXTRACT/cryptex-cache" "$SYS_DMG" 'System/Library/Caches/com.apple.dyld' \
+		'-xr!*.symbols*' > "$EXTRACT/extract-dyld.log" 2>&1 || true
+	cp -a "$EXTRACT/cryptex-cache/System/Library/Caches/com.apple.dyld/." "$D/"
+fi
+# --- the OS cryptex non-cache content (System + usr, minus the cache and DriverKit).
+# ~76 MB in the catalog: it is almost all framework resources, because every framework's
+# code is in the shared cache, not in loose files.
+7z x -y -o"$EXTRACT/cryptex-os" "$SYS_DMG" 'System' 'usr' \
+	'-xr!com.apple.dyld' '-x!System/DriverKit' > "$EXTRACT/extract-cryptex-os.log" 2>&1 || true
+cp -a "$EXTRACT/cryptex-os/." "$OS_DST/"
+rm -rf "$EXTRACT/cryptex-os"
+# --- the App cryptex (plain dmg): whole top level (System + usr) at the App target.
+7z x -y -o"$EXTRACT/cryptex-app" "$APP_DMG" > "$EXTRACT/extract-cryptex-app.log" 2>&1 || true
+cp -a "$EXTRACT/cryptex-app/." "$APP_DST/"
+rm -rf "$EXTRACT/cryptex-app"
 echo "dyld cache placed: $(ls "$D" | grep -c dyld_shared_cache) parts"
 
 # --------------------------------------------------------------- 4. the init swap
@@ -121,8 +141,10 @@ if [ -d "$SYSROOT/private/var/staged_system_apps" ]; then
 fi
 # Our init first; keep Apple's real launchd for when we switch to the full path.
 mv "$SYSROOT/sbin/launchd" "$SYSROOT/sbin/launchd.darwin"
+chmod 0755 "$SYSROOT/sbin/launchd.darwin"
 install -m 0755 "$OUT/launchd" "$SYSROOT/sbin/launchd"
-printf 'HakiOS iOS 26.5.2 (23F84) full system image, lisa / SM7325\n' > "$SYSROOT/etc/hakios-release"
+# /etc, /var, /tmp are symlinks (manifest-only, not on disk); write through to private/etc.
+printf 'HakiOS iOS 26.5.2 (23F84) full system image, lisa / SM7325\n' > "$SYSROOT/private/etc/hakios-release"
 
 # --------------------------------------------------------------- 5. the image
 # zlib where it saves room, exactly as Apple keeps the root volume; the manifest

@@ -109,6 +109,9 @@ AUDIO = ('Library/Audio/Plug-Ins/', 'Library/Audio/Tunings/D22/', 'Library/Audio
          'System/Library/Audio/UISounds/')
 SKIP_AUDIO = ('System/Library/Audio/UISounds/nano/',)
 KEEP_LANG = ('en', 'Base', 'English', 'en_US', 'en_GB')
+# the iOS-26 cryptex symlinks (System/Cryptexes/* -> ../../private/preboot/Cryptexes/*): structural,
+# kept whatever they point at, because the rootfs and the dyld cache path resolve through them
+CRYPTEX_LINKS = 'System/Cryptexes/'
 
 
 def entries(listing):
@@ -198,8 +201,13 @@ def main():
         if stat.S_ISREG(mode):
             keep = wanted_file(path, size)
         elif stat.S_ISLNK(mode):
-            # a symlink costs nothing: keep every one that lives where we take anything at all
-            keep = '/' not in path or path.startswith(WHOLE) and not path.startswith(SKIP_PREFIX)
+            # a symlink costs nothing: keep every one that lives where we take anything at all.
+            # System/Cryptexes/{OS,App,ExclaveOS,Supplemental} are the structural links iOS 26 ships
+            # (-> ../../private/preboot/Cryptexes/...): the dyld shared cache and dozens of rootfs
+            # framework symlinks resolve THROUGH them, so keep them even though System/ (bare) is not
+            # in WHOLE -- without them /System/Cryptexes/OS/.../com.apple.dyld does not resolve.
+            keep = '/' not in path or path.startswith(CRYPTEX_LINKS) or \
+                path.startswith(WHOLE) and not path.startswith(SKIP_PREFIX)
         else:
             # (the sound plug-ins' too: Library/Audio is skipped but for AUDIO, and without its en.lproj the
             # virtual audio device's port names came out NULL -- mediaserverd died naming the microphone)

@@ -124,3 +124,24 @@ mode. Two ways forward:
 
 Note: the kernel must be **pacstripped then re-sealed** (`scripts/seal-source-crypto-kernel.py` on the
 `.nopac`), since pacstrip edits `__text` after the build's seal.
+
+## Correction: the FIPS "hang" was slow boot, not a blocker
+
+The corecrypto integrity self-test does NOT hang — it passes in ~257 ms. The earlier capture windows were
+too short for the slow boot (software crypto, low boot clock). With a long window the FIPS POST runs and
+passes test after test: integrity, indicator, aes_ecb/cbc, rsa_sig, ecdsa, ecdh, aes_ccm, aes_cmac, hkdf
+(11 passes captured; see logs/boot-fips-passing-26.log). The `corecrypto-integrity-vmaddr` patch idea was
+unnecessary and was dropped; the stock immutable corecrypto works (`__text` is flat-mapped, base+offset == vmaddr).
+
+## The real wall: interrupts (the SM7325 GIC)
+
+With `bootcpu=7` the loader runs on core 0 (answers USB, reports `result: running`) while the kernel runs on
+core 7. The kernel never takes the `loader_return_after` timed return, because that timer needs **timer
+interrupts**, and there is no working interrupt controller: XNU logged `failed to find the interrupt-controller`.
+The live log stops right after `fipspost_post_hkdf`, at the DRBG self-test, which needs **entropy** — and
+entropy is accumulated from **interrupt timing**. No GIC -> no interrupts -> no entropy and no timers, so the
+DRBG and everything scheduler/timer-driven stalls.
+
+So the next real work is the SM7325 interrupt controller (GICv3) + the virtual-timer interrupt (PPI 27): make
+XNU find/drive the GIC the loader's ADT describes. That unblocks entropy, the DRBG, the timed return, and the
+scheduler — i.e. the rest of the boot toward launchd. This is the core of the SM7325 SoC layer.

@@ -286,3 +286,33 @@ match, so the cache would still trap during root mount / code-signing. The gap i
 drive the critical stubs toward zero. Then pacstrip the arm64e kexts (no-PAC A78) and boot (the `xl` loader
 is already largely fileset-ready: it maps LC_SEGMENT_64 + jumps to the top-level LC_UNIXTHREAD, both present;
 no filetype check; 85 MB fits kernel_size/MAX_MEM_SIZE; XNU handles the collection via __PRELINK_INFO).
+
+## Caminho B: reuse HakiOS's proven iOS-16 stack (pivot, 2026-11-09)
+
+The prelink path (matching + building a kernelcache from Apple's binary kexts) reached an 85 MB MH_FILESET
+with the KDK reference (2499/3094 matched, 95 unresolved + 1378 stubbed), but the stubs are in boot-critical
+kexts (apfs/AMFI/platform). Rather than push RELEASE + more matching, we pivoted to HakiOS's approach, which
+is proven on THIS phone for iOS 16: a standalone MH_EXECUTE kernel with HakiOS's OWN built-in drivers + an
+in-RAM APFS root, NO prelink, NO Apple binary kexts. HakiOS reimplemented APFS (bsd/miscfs/apfs/, 15K lines,
+read-write) and ships security stand-ins (miniamfi/kern_minimac) so unsigned userland runs; the arm64e
+userland runs via our pac-pager (PAC stripped at page-in).
+
+Progress:
+- **APFS driver ported + builds** (kernel/apfs/, via kernel/apfs/apfs-wire.py). The 15K-line driver compiled
+  essentially unchanged (VFS/vnode/buf KPIs stable 16->26); one diagnostic thread func stubbed. Kernel links
+  clean, apfs symbols + `options APFS` present.
+- **iOS-26 test root built** (~/Dev/mobile/userland-26/out/root-26.apfs, 4 MB): an mkapfs container with a
+  static no-PAC /sbin/launchd (LC_UNIXTHREAD, no dyld), read-verified by the kernel's own apfs_lib. Proves
+  mount+exec in isolation (no pac-pager/miniamfi needed for this init). The full system-26.apfs recipe is
+  ready (userland-26/scripts/): decrypt the iOS-26 AEA FileSystem/cryptex (keys from Apple's wkms server via
+  `ipsw`), lay the cryptex content + dyld cache at /private/preboot/Cryptexes/{OS,App} (iOS 26 ships those as
+  symlinks into an empty /private/preboot), keep arm64e binaries unmodified.
+- **miniamfi/kern_minimac staged** (kernel/security/) for integration after apfs+platform.
+
+Current blocker (same IOServicePH wall as before the pivot): the kernel boots to
+`IOServicePH ... did 0xf->0xf` (IOUserServer/DriverKit power coordination) and does not reach bsd_init's
+vfs_mountroot. The loader hands the ramdisk over correctly (`ramdisk=` -> a `RAMDisk` memory-map DT node ->
+the stock imageboot/di_root path -> /dev/md0, `rd=md0` auto-added). Next: port HakiOS's core platform/stub
+drivers (hakios.platform.c/stubs.c/version.c/...) to unblock IOKit, and/or resolve the single-wake-source
+idle stall (a bring-up artifact per the timer analysis; real drivers add wake sources). GPU (Adreno) + touch
+(Goodix) are the end-goal minimum but come after the kernel boots to userland.

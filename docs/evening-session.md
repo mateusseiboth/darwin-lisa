@@ -453,3 +453,77 @@ Host tests that pass:
 - `sh darwin-lisa/kernel/drivers/adsp/test/run-tests.sh`
 - `sh darwin-lisa/userland/init/test/run-tests.sh`
 - `python3 -I darwin-lisa/userland/scripts/test_plist_tweaks.py`
+
+## Boot 5 (OPTIONAL): physical sensors over FastRPC (`sensors=1 sensors_rpc=1`, about 15 min)
+
+Only after Boots 1 to 4, and only with a **final2** kernel: final1 does not have the FastRPC file server. It is the
+same kernel as final1 plus `kernel/drivers/adsp/sensors-wire.py` (README there, "Integration"). Nothing is flashed:
+a host run from the flash root, the root and vendor_boot of Step 1 unchanged.
+
+Optional first, with the phone in pmOS (`darwin-lisa/tools/bootos.sh pmos`), so the DSP gets THIS phone's calibration
+instead of the registry of the pmOS firmware package (another lisa's). It reads persist READ-ONLY (`ro,noload`, or
+where pmOS already mounts it) and never writes it. It needs a final2 rebuild afterwards (the files are in the kernel);
+skip it if there is no time to rebuild:
+
+```sh
+python3 -I darwin-lisa/kernel/drivers/adsp/fw-sensors-stage.py dump-persist     # sudo password on the phone
+python3 -I darwin-lisa/kernel/drivers/adsp/fw-sensors-stage.py stage            # "persist dump ... (this phone's own calibration)"
+# then the wires + rebuild of README "Integration" again -> kernel-16k-final2.bak
+darwin-lisa/tools/bootos.sh hakios
+```
+
+The run (phone in the loader):
+
+```sh
+cd ~/Dev/mobile
+KERNEL=kernel-16k-final2.bak XL_SECS=900 XL_SHOT_EVERY=20 XL_TAG=evening-b5 \
+XL_EXTRA_ARGS="display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 adsp=1 battmgr=1 sensors=1 sensors_rpc=1 sensors_fake=2 sensors_wait=150 ufs_write=1 ufs_data=super var_ufs=1" \
+darwin-lisa/tools/run-flashroot.sh
+L=research/hackios-xnu-kernel/logs/evening-b5.log
+```
+
+When the home screen shows, **open Calculator (or Safari), turn Control Center's orientation lock off, and tilt the
+phone**: flat on the table, then upright, then on its side for 20 s each. Keep a hand log of the times.
+
+Checks, in order:
+
+```sh
+grep -a -E 'THE AUDIO DSP (IS UP|DID NOT)|the DSP opens "fastrpcglink-apps-dsp"|IS OPEN both ways' $L
+grep -a -E '^fastrpc: ' $L | head -80                    # the server: SMMU, attach, listener, the first file calls
+grep -a -E '^fastrpc: (fopen|fopen_with_env|opendir|stat|fileExists|fremove|frename) ' $L | head -60
+grep -a -E '^fastrpc: (the sensors PD says|THE SMMU|the DSP calls handle|apps_mem)' $L
+grep -a -E '^ssc: ' $L | head -40
+grep -a -E '^ssc: events:|dlisa-motion: the device is now' $L
+```
+
+Pass:
+
+1. **The file server is up:** in this order, `fastrpc: 317 sensor files (292 KB) to serve`, `stream 0x1805 goes through
+   context N of the SMMU`, `ATTACHED TO THE SENSORS PD`, `THE SENSORS PD'S LISTENER IS UP`, then file calls:
+   `fopen_with_env /vendor/etc/sensors/sns_reg_config -> 0`, `opendir /mnt/vendor/persist/sensors/registry/registry -> 0`,
+   reads of `/sys/devices/soc0/*` and of the JSON or registry files. `the SMMU has refused the DSP nothing`.
+2. **The SSC lists the physical sensors:** `ssc: the sensor core is QMI service 400`, then `has 1 sensor of type
+   "accel"`, `"gyro"`, `"mag"`, and `"ambient_light"` / `"proximity"` (the last two may say `(none)`: lisa has several
+   light/proximity variants and only the fitted one registers), `ssc: service 400 ...; SUIDs: accel gyro mag ...
+   registry`, and `accel enabled (streaming): accepted`.
+3. **The accelerometer moves:** `ssc: events: accel N` with N growing by about 100 every 10 s (10 Hz), and the three
+   mm/s² values following the hand log: flat ≈ (0, 0, 9800), upright ≈ (0, 9800, 0), on its side ≈ (±9800, 0, 0).
+   No `sensors_fake=2: ... made-up values` line (it would mean no real event in `sensors_wait`+60 s).
+4. **The UI rotates:** `dlisa-motion: the device is now ...` lines matching the tilts, and Calculator turns in the shots
+   (`research/hackios-xnu-kernel/logs/evening-b5-shot-*.png`) when the phone is on its side, back when upright.
+
+Failures, and what to write down:
+
+| Line | Meaning | Next |
+|---|---|---|
+| `THE DSP HAS NOT OPENED "fastrpcglink-apps-dsp"` | the channel never came | `the DSP also opened "..."` list of step 9 |
+| `match register N covers stream 0x1805 already` / `DID NOT TAKE` | the boot chain or the hypervisor owns the stream | next run `sensors_rpc_sid=3` (then 4) |
+| `attach ...: REFUSED by the DSP, result R` 30 times | the sensors PD did not take the attach | R, and `THE AUDIO DSP'S LAST WORDS` if any |
+| `attach ...: NOT ANSWERED, error 60` | no response on the channel | `THE SMMU HAS REFUSED THE DSP` line (address, stream) |
+| `the DSP does not open "adsp_default_listener"` | the PD has no listener skeleton | the dlerror text |
+| `the DSP calls handle H method M ... not served here` | a call this server lacks | H, M, sc: easy to add |
+| file calls `-> 2` for a name that should exist | a path the archive lacks | the name: add it to fw-sensors-stage.py |
+| SSC lists only virtual sensors, no `accel` | the registry did not configure the drivers | every `fastrpc:` line, and `ssc: ... (NO registry)` |
+| accel events but no rotation | the iOS side | `dlisa-motion:` lines; `sensors_fake=1` run proves it alone |
+
+When the run ends the phone is back in the loader; park it in pmOS if the battery is low.

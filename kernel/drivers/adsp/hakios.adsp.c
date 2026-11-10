@@ -16,6 +16,9 @@
  *   - battmgr_chgen=1: the firmware's charge-enable property is read and, if 0, set to 1 (see battmgr_charging());
  *     off by default: pmOS charges with Linux's qcom_battmgr, which never sets it;
  *   - a port of our own on the DSP's QRTR, for the sensors' client (dlisa.ssc.c, boot-arg sensors=1);
+ *   - the channel "fastrpcglink-apps-dsp" answered for the sensors PD's file server (dlisa.fastrpc.c, sensors_rpc=1,
+ *     only when sensors-wire.py has put dlisa.fastrpc.h beside this file), and a table for which channel's packets go
+ *     where;
  *   - the old "not with battery=1" refusal is gone: kernel/drivers/battery/dlisa.battery.c (battery=1, the SPMI
  *     ADC estimate) steps aside by itself while the DSP's reports are fresh.
  * Boot-args here: adsp=1 (the DSP up and linked, on a thread beside the system's start), battmgr=1|2,
@@ -136,6 +139,13 @@ extern void dlisa_battery_note_health(int linux_health);
 extern void dlisa_ssc_start(void);
 extern void dlisa_ssc_stop(void);
 extern void dlisa_ssc_fake_init(void);
+/*
+ * darwin-lisa: the sensors PD's FastRPC file server (dlisa.fastrpc.c, boot-arg sensors_rpc=1). sensors-wire.py puts
+ * its header beside this file; without it the DSP's channel "fastrpcglink-apps-dsp" is left unanswered, as before.
+ */
+#if __has_include("dlisa.fastrpc.h")
+#include "dlisa.fastrpc.h"
+#endif
 
 /* What the Wi-Fi's DSP and this one both use (hakios.wifi.c). */
 extern lck_mtx_t hakios_aop_mailbox_lock;
@@ -1876,7 +1886,7 @@ struct glink_packet {
  * carries APR, the audio services' own protocol (below; Android's apr_tal_rpmsg.c asks for no
  * particular intents: what the DSP sends there is a few hundred bytes, up to a few kilobytes).
  */
-enum { CHANNEL_QRTR, CHANNEL_APR, CHANNEL_PMIC, CHANNELS };
+enum { CHANNEL_QRTR, CHANNEL_APR, CHANNEL_PMIC, CHANNEL_FASTRPC, CHANNELS };
 
 struct glink_channel {
 	const char *name;
@@ -1886,6 +1896,7 @@ struct glink_channel {
 	} intents[3];
 	uint32_t theirs;                        /* the DSP's number for it; 0: it has not opened it */
 	bool asked, acknowledged, open;         /* our open sent; acknowledged; both ways done and our intents told */
+	bool off;                               /* darwin-lisa: not answered in this run (fastrpc without sensors_rpc=1) */
 	bool request_answered, request_granted; /* our last request for an intent */
 	struct {
 		uint32_t id, size;
@@ -1914,6 +1925,8 @@ static struct {
 		[CHANNEL_APR] = { .name = "apr_audio_svc", .ours = 2, .intents = { { 0x200, 8 }, { 0x1000, 4 }, { 0x2000, 2 } } },
 		/* the battery manager's (battmgr below): answers of a few dozen bytes, a name of 128 */
 		[CHANNEL_PMIC] = { .name = "PMIC_RTR_ADSP_APPS", .ours = 3, .intents = { { 0x200, 6 }, { 0x1000, 2 }, { 0, 0 } } },
+		/* darwin-lisa: FastRPC's (dlisa.fastrpc.c): the DSP answers each call with 16 or 24 bytes */
+		[CHANNEL_FASTRPC] = { .name = "fastrpcglink-apps-dsp", .ours = 4, .intents = { { 0x40, 16 }, { 0x400, 4 }, { 0, 0 } } },
 	},
 };
 
@@ -2148,7 +2161,7 @@ glink_pump(void)
 			glink_advance(length);
 			channel = NULL;
 			for (unsigned c = 0; c < CHANNELS; c++) {
-				if (strcmp(name, glink.channel[c].name) == 0) {
+				if (strcmp(name, glink.channel[c].name) == 0 && !glink.channel[c].off) {
 					channel = &glink.channel[c];
 				}
 			}
@@ -2630,6 +2643,19 @@ dlisa_adsp_qrtr_send(uint32_t from_port, uint32_t node, uint32_t port, const voi
 		return EINVAL;
 	}
 	return qrtr_out_packet(QRTR_DATA, from_port, node, port, data, length);
+}
+
+/* darwin-lisa: FastRPC's channel, for dlisa.fastrpc.c: whether it is open both ways, and one message on it. */
+bool
+dlisa_adsp_fastrpc_open(void)
+{
+	return glink.up && glink.channel[CHANNEL_FASTRPC].open;
+}
+
+int
+dlisa_adsp_fastrpc_send(const void *data, uint32_t length)
+{
+	return glink_send(&glink.channel[CHANNEL_FASTRPC], data, length);
 }
 
 /* ---- APR: the audio services' protocol, on the channel apr_audio_svc ------------------------------------- */
@@ -3129,6 +3155,26 @@ battmgr_stop(void)
 
 static volatile bool link_wanted, link_runs;
 
+/* darwin-lisa: FastRPC's responses, to dlisa.fastrpc.c when it is built in */
+static void
+fastrpc_input(const uint8_t *data, uint32_t length)
+{
+#ifdef DLISA_FASTRPC
+	dlisa_fastrpc_input(data, length);
+#else
+	(void)data;
+	(void)length;
+#endif
+}
+
+/* What each channel's packets are for (darwin-lisa: a table instead of the chain of tests). */
+static void (*const channel_input[CHANNELS])(const uint8_t *data, uint32_t length) = {
+	[CHANNEL_QRTR] = qrtr_input,
+	[CHANNEL_APR] = apr_input,
+	[CHANNEL_PMIC] = battmgr_input,
+	[CHANNEL_FASTRPC] = fastrpc_input,
+};
+
 static void
 link_thread(__unused void *parameter, __unused wait_result_t result)
 {
@@ -3169,13 +3215,7 @@ link_thread(__unused void *parameter, __unused wait_result_t result)
 			if (packet == NULL) {
 				break;
 			}
-			if (from == CHANNEL_QRTR) {
-				qrtr_input(packet->data, packet->length);
-			} else if (from == CHANNEL_PMIC) {
-				battmgr_input(packet->data, packet->length);
-			} else {
-				apr_input(packet->data, packet->length);
-			}
+			channel_input[from](packet->data, packet->length);
 			kfree_data(packet, sizeof(*packet) + packet->length);
 		}
 	}
@@ -3291,6 +3331,11 @@ step_link(void)
 		channel->theirs = channel->our_intent_count = 0;
 		bzero(channel->their_intents, sizeof(channel->their_intents));
 	}
+#ifdef DLISA_FASTRPC
+	glink.channel[CHANNEL_FASTRPC].off = !dlisa_fastrpc_wanted();
+#else
+	glink.channel[CHANNEL_FASTRPC].off = true;
+#endif
 	apr_in = apr_out = 0;
 	audio_up = false;
 	bzero(glink.others, sizeof(glink.others));
@@ -3423,6 +3468,9 @@ void
 hakios_adsp_stop(void)
 {
 	dlisa_ssc_stop();                       /* darwin-lisa: the sensors' client lets go of its port first */
+#ifdef DLISA_FASTRPC
+	dlisa_fastrpc_stop();                   /* darwin-lisa: and the sensors PD's file server of its SMMU context */
+#endif
 	battmgr_stop();
 	hakios_sound_dsp_down();               /* the amplifiers, the stream and the port first, while the DSP still listens */
 	hakios_mic_dsp_down();                 /* and what the microphones' path has asked for */
@@ -3449,6 +3497,9 @@ void
 hakios_adsp_quiesce(void)
 {
 	hakios_sound_quiesce();                /* the amplifiers off, whatever the DSP's state */
+#ifdef DLISA_FASTRPC
+	dlisa_fastrpc_quiesce();                /* darwin-lisa: the FastRPC stream's SMMU context put back */
+#endif
 	if (!dsp_started) {
 		return;
 	}
@@ -3476,6 +3527,15 @@ run_steps(void)
 	printf("adsp: over after step %u; %s\n", done, last_write);
 }
 
+/* darwin-lisa: the sensors PD's file server, before the sensors' client looks for the sensor core it serves */
+static void
+fastrpc_start(void)
+{
+#ifdef DLISA_FASTRPC
+	dlisa_fastrpc_start();
+#endif
+}
+
 static void
 whole_thread(__unused void *parameter, __unused wait_result_t result)
 {
@@ -3496,6 +3556,7 @@ whole_thread(__unused void *parameter, __unused wait_result_t result)
 		hakios_sound_dsp_up();         /* (boot-arg sound=N: the speakers' path, hakios.sound.c) */
 		hakios_mic_dsp_up();           /* (boot-arg mic=N: the microphones' path, hakios.mic.c) */
 		battmgr_start();                /* (darwin-lisa: how the battery is, from the DSP, with battmgr=1) */
+		fastrpc_start();                /* (darwin-lisa: the sensors PD's files, with sensors_rpc=1) */
 		dlisa_ssc_start();              /* (darwin-lisa: the sensors, with sensors=1) */
 	} else if (step >= STEP_LINKED && dsp_started && glink.up) {
 		/* darwin-lisa: no audio services, but GLINK (and maybe QRTR) up: the battery and the sensors do not need APR */
@@ -3503,6 +3564,7 @@ whole_thread(__unused void *parameter, __unused wait_result_t result)
 		    "answer (step %u); node %u, %u services; it stays on for the battery and the sensors\n", qrtr_hellos ? ", QRTR" : "",
 		    (now_us() - began) / 1000, step + 1, qrtr_peer, services);
 		battmgr_start();
+		fastrpc_start();
 		dlisa_ssc_start();
 	} else {
 		tell("adsp: THE AUDIO DSP DID NOT COME UP: step %u failed (%s); see the kernel's own log for the steps\n", step + 1,

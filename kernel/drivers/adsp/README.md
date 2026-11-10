@@ -11,7 +11,8 @@ Status (2026-11-10, offline only; nothing here has run on the phone yet):
 | --- | --- |
 | 1. ADSP boot: PIL through TrustZone, SMP2P, GLINK over SMEM, QRTR | Ported from HakiOS (proven on redwood, the same SM7325). lisa's DT has every address unchanged. Compiles with the 26 build's flags, links against the current kernel. Firmware staged |
 | 2. battmgr: fuel gauge, health, cycles, current with lisa's sign, charger status | Done in code, feeds HakiosBattery. Charging needs no host command (see "Charging") |
-| 3. Sensors through the SSC | Kernel QMI/protobuf client + iOS rotation hook done and host-tested. The sensor core will most likely NOT give physical sensors without a FastRPC file server (see "Sensors"). `sensors_fake=2` tests the iOS rotation path in the same boot either way |
+| 3. Sensors through the SSC | Kernel QMI/protobuf client + iOS rotation hook done and host-tested |
+| 4. The sensors PD's FastRPC file server (`sensors_rpc=1`) | Written 2026-11-10 evening, offline: protocol + file server host-tested (237 checks), kernel side syntax- and link-checked, staging + wire scripts tested. NOT in final1; needs a final2 build and has never run on the phone (see "Sensors: FastRPC") |
 
 ## Files
 
@@ -27,6 +28,12 @@ Status (2026-11-10, offline only; nothing here has run on the phone yet):
 | `../battery/dlisa.battery.c` | Now also the sink of the fuel gauge: the ADC estimate is not passed on while a DSP report is less than 60 s old; new sysctls `battery_source`, `battery_current_ma`, `battery_temp_tenths`, `battery_status`, `battery_health`, `battery_cycles` |
 | `../battery/hakios.battery.cpp` | HakiosBattery now sets `BatteryHealth` (Good/Fair/Poor) and `ChargeStatus` (too hot / too cold) from the gauge's health |
 | `../../../userland/motion/` | `dlisa-motion.c` + `build-motion.sh`: backboardd's device orientation from `kern.hakios.sensors` |
+| `dlisa.fastrpc_proto.h` | FastRPC's wire formats (invoke payload, message, response, the listener's packing) and the file server the sensors PD reads (remotectl, apps_std, apps_mem, adspmsgd_apps) over the linked-in archive with a RAM overlay for writes. Pure C, host-tested |
+| `dlisa.fastrpc.c` | The kernel's side (`sensors_rpc=1`): an SMMU context for stream 0x1805, the payload memory, attach to the sensors PD, the listener thread; sysctl `kern.hakios.sensors_rpc` |
+| `dlisa.fastrpc.h` | Its interface with `hakios.adsp.c`. Present in the tree (sensors-wire.py) = the hooks are compiled in |
+| `fw-sensors-stage.py` | `stage` (vendor `etc/sensors` + registry + socinfo into `research/hackios-xnu-kernel/fw-sensors/`, git-ignored, packed as `sensors.fs`), `check`, `header` (the `.incbin` header), `dump-persist` (the phone's persist `sensors/`, read-only, from pmOS over SSH) |
+| `sensors-wire.py` | After `adsp-wire.py`: copies the three files and `hakios.adsp.c`, adds `dlisa.fastrpc.c` under `hakios_adsp`, generates `bsd/dev/dlisa.sensors_fs.h`. Idempotent, `XNU_WORK=` for a dry run |
+| `test/run-fastrpc-tests.sh` | Host tests: `fastrpc-test.c` (the proto, gcc+UBSan, clang ASan+UBSan, valgrind), `sensors-stage-test.sh` + `sensors-archive-test.c` (staging, and the archive read back through the server) |
 
 ## Where the firmware lives (2026-11-10, the evening integration)
 
@@ -50,6 +57,7 @@ All inert unless given.
 | `sensors=1` | Start the SSC client once the DSP is linked (`sensors_wait=S` default 90, `sensors_rate=Hz` 5/10/25/50/100, `sensors_rot=90/180/270`) |
 | `sensors_fake=1` | Made-up gravity turning a quarter every 15 s (`sensors_fake_secs=N`), no DSP needed |
 | `sensors_fake=2` | The same, but only if no real accelerometer event came within `sensors_wait`+60 s |
+| `sensors_rpc=1` | The sensors PD's FastRPC file server (dlisa.fastrpc.c): answer the DSP's channel `fastrpcglink-apps-dsp`, attach, serve the files. `sensors_rpc_sid=3/4/5` (default 5, the SMMU stream 0x1800+N), `sensors_rpc_wait=S` (60, for the channel), `sensors_rpc_tries=N` (30 attaches, 2 s apart), `sensors_rpc_trace=N` (400 file calls in the log) |
 | HakiOS's | `adsp_step=N` (steps 1..N, one by one, for debugging), `adsp_wait=S`, `adsp_listen=S`, `adsp_again=1`, `adsp_keep=1` |
 
 `battery=1` (the SPMI ADC estimate) can stay on: it steps aside while the gauge reports, and takes over again if the
@@ -166,19 +174,105 @@ sensors PD on the ADSP reads its registry and the drivers' JSON (`/usr/share/qco
 AK0991x, STK3A6x, SX932x/SX933x) from the host through FastRPC's file service. Without it the physical sensors are not
 configured. Sensors do not work in pmOS on lisa either.
 
-What a working accelerometer needs, with sizes:
+That was the state before 2026-11-10 evening. The next section is what replaced it.
 
-| Piece | Size |
-| --- | --- |
-| GLINK channel `fastrpcglink-apps-dsp` in `hakios.adsp.c` | small, the channel table already takes more |
-| An apps-SMMU context for stream 0x1803 (the DT's compute-cb 3), so the DSP reads our buffers. HakiOS `hakios.sound.c` does this for 0x1801 | about 300 lines, reusable |
-| FastRPC invoke and reverse-invoke (the listener) protocol in the kernel | about 600 lines |
-| Attach to the sensors PD, serve `apps_std` (fopen/fread/fseek/fclose/opendir/stat) from `/fw/sensors/` | about 800 lines |
-| Stage the registry and config files | small |
+## Sensors: FastRPC (how Android serves the sensors PD on this vendor, and what this kernel does instead)
 
-About 1,700 to 2,000 lines and one to two weeks with several device sessions. The unknowns: whether the hypervisor's
-stage 2 lets the DSP's stream 0x1803 reach our memory (it did for 0x1801 on redwood), and the FastRPC version lisa's
-firmware speaks. Once that exists, `dlisa.ssc.c` and the rotation hook work as they are.
+### Findings (read from the stock OS2.0.8.0 vendor, its NON-HLOS/persist images, and the references)
+
+- **The firmware matches the vendor.** pmOS's `adsp.mbn` (what `fw-adsp/` holds) and the stock package's
+  `NON-HLOS.bin:/image/adsp.*` are the same build, `ADSP.HT.5.5-00832.1-LAHAINA-1_20210510`; the only differences are
+  the signing stamps (`OEM_IMAGE_UUID_STRING`, 2024-06-05 vs 2025-08-18) in b21 and the hash segment. The sensor
+  drivers are built in (b21: `sns_icm4x6xx`, `sns_icm4x6xa`, `sns_ak0991x`, `sns_stk3a6x`, `sns_registry_parser`, ...).
+  `vendor/dsp` (dspso.bin) has no sensor library: nothing is loaded from the host for the sensors.
+- **Who serves it on Android:** `vendor.sensors` = `/vendor/bin/sscrpcd sensorspd` (class early_hal). sscrpcd dlopens
+  `libssc_default_listener.so` if `/sys/kernel/boot_slpi` exists, else `libadsp_default_listener.so` (lisa: the latter,
+  no SLPI), and calls `adsp_default_listener_start("sensorspd")`: libadsprpc opens `createstaticpd:sensorspd` on the
+  ADSP, which is `FASTRPC_INIT_ATTACH_SENSORS` in the vendor's adsprpc driver: an invoke of handle 1 method 0
+  (`FASTRPC_RMID_INIT_ATTACH`) with the tgid, sent with pid 0 and `fl->pd = 2`, so every later message's ctx ends in 2
+  and goes to the sensors PD. Then `remotectl open "adsp_default_listener"` + its `register()`, the listener's
+  `init2()` (handle 3, method 3) and the `next2()` loop (method 4; `get_in_bufs2`, method 5, for large requests).
+- **The channel and the SMMU:** GLINK channel `fastrpcglink-apps-dsp` on the ADSP (both the vendor DT and mainline's
+  sc7280.dtsi). The vendor DT (`vendor_boot.img`, dtb "Yupik") gives the ADSP's FastRPC context banks as
+  `qcom,msm_fastrpc_compute_cb10..12` = streams **0x1803, 0x1804, 0x1805** (mask 0), IOVA pool 0x80000000 + 0x78000000,
+  and cb12 (0x1805) `shared-cb`: libadsprpc asks for the shared context bank for the sensors PD
+  (`DSPRPC_SMMU_SUPPORT sharedcb=1`), so on Android the sensors PD's buffers go through **0x1805**. The DSP is given
+  addresses with the context bank's number in bits 32..35 (`buf->phys += cb << 32`): 5 << 32 here.
+- **The protocol version:** the classic one both drivers share: `struct fastrpc_msg` (pid, tid, ctx, handle, sc, addr,
+  size; 40 bytes), the payload of `fastrpc_get_args()` (remote args, invoke bufs, phy pages, fdlist 16, crclist 64, poll
+  word, then the arguments 128-aligned), responses `{ctx, retval}` or the vendor's v2 `{ctx, retval, flags,
+  early_wake_time, version}`. The reverse calls arrive packed as `listener_buf.h` packs them.
+- **What the PD calls back** (its strings in b21, the IDLs, hexagonrpcd's tables): `apps_std` — `fopen`/
+  `fopen_with_env(ADSP_LIBRARY_PATH)`, `fread`, `fseek`, `flen`, `fclose`, `opendir`/`readdir`/`closedir` (the registry
+  directory), `stat`, `fileExists`, and for the registry's writes `fwrite`, `frename` (`rename error %i`), `fremove`,
+  `mkdir`; `apps_mem` `request_map64` (pages for its heap); `print_string`.
+- **The files it opens:** `/vendor/etc/sensors/sns_reg_config` (version 6; lists `/sys/devices/soc0/{hw_platform,
+  platform_subtype,platform_subtype_id,platform_version,soc_id,revision}` and the output
+  `/mnt/vendor/persist/sensors/registry/registry`), the 57 JSON of `/vendor/etc/sensors/config` (each with a `config`
+  header of hw_platform and soc_id: lisa's are `QRD`/`LISA` and 475), the registry directory, `sns_reg_version`,
+  `sensors_list.txt`, `temp.json`, the property files `/mnt/vendor/persist/sensors/registry/file1|file2`, and Xiaomi's
+  panel files for the light sensor (`/sys/class/backlight/panel0-backlight/brightness`,
+  `/sys/class/mi_display/disp-DSI-0/{panel_info,dynamic_fps}`).
+- **The registry:** the stock package's `persist.img` is the factory one: `sensors/registry/registry/sensors_registry`
+  is empty and `sns_reg_version` says 0, so on a new phone the DSP builds the registry from the JSON and writes it to
+  persist. A used phone's persist holds the built registry with its calibration (`*.fac_cal`). pmOS's
+  `firmware-xiaomi-lisa` package ships such a registry (250 files, 112 KB, another lisa's) and socinfo values (`QRD`,
+  475, `65536`, `1.0`) for hexagonrpcd's layout: they are the default source here.
+
+### What this kernel does (dlisa.fastrpc.c + dlisa.fastrpc_proto.h)
+
+The same as sscrpcd + libadsprpc + the adsprpc driver, in one kernel thread, started after the link and before the
+SSC client:
+
+1. answers the DSP's channel `fastrpcglink-apps-dsp` (only with `sensors_rpc=1`; otherwise it stays unanswered, as
+   in final1);
+2. takes a free SMMU match register and context for stream 0x1805 under `hakios_smmu_lock`, with our page tables: 1 MB
+   of payload at IOVA 0x80000000 and room for 31 MB of `apps_mem` heap pages behind it (the Wi-Fi's proven way);
+3. attach (pid 0, PD 2), `remotectl open "adsp_default_listener"`, `register`, close, `init2`; 30 tries 2 s apart;
+4. the `next2` loop, serving each reverse call from the archive linked into the kernel (`fw-sensors-stage.py`: 317
+   files, 292 KB: 57 JSON + `sns_reg_config`, the registry, socinfo). Writes go to an overlay in RAM (4 MB at most):
+   **persist is never written**. Paths are normalised, Android's aliases folded (`/system/vendor`, `/persist`), `..`
+   refused; writes only under `/mnt/vendor/persist` and `/data/vendor/sensors`;
+5. `dlisa.ssc.c` then finds service 400 as before, and now also enables sensors told of late (the registry is read
+   meanwhile): the missing types are asked again every 10 s for two minutes.
+
+Sizes: dlisa.fastrpc_proto.h ~1,700 lines, dlisa.fastrpc.c ~800, hakios.adsp.c +70, dlisa.ssc.c +60; the kernel grows
+by ~0.5 MB (the archive is 299,113 bytes); nothing in the root.
+
+### Integration (final2)
+
+1. `python3 -I kernel/drivers/adsp/fw-sensors-stage.py stage` (done: `research/hackios-xnu-kernel/fw-sensors/`, the
+   pmOS registry). For this phone's own calibration: `dump-persist` first (pmOS, read-only), then `stage`.
+2. In the toolchain container, as root, after battery-wire.py and adsp-wire.py (and the other final1 wires):
+   `python3 -I kernel/drivers/adsp/sensors-wire.py` (twice: the second all `[skip]`), the rebuild, `grep error:`.
+   Check `llvm-nm` for `_dlisa_fastrpc_start` and `_dlisa_sensors_fs`.
+3. The root needs nothing new (`libdlisa-motion.dylib` is in final1's root already).
+4. Device test: `docs/evening-session.md`, "Boot 5 (OPTIONAL)".
+
+### Verified offline (2026-11-10)
+
+- `test/run-fastrpc-tests.sh`: 237 checks of the proto (payload bytes, messages, responses, packing, archive
+  validation, every apps_std/remotectl/apps_mem method, the overlay, refusals), clean under gcc+UBSan, clang
+  ASan+UBSan and valgrind; the staging test; the real 317-file archive read back file by file and directory by
+  directory through the server (`sensors-archive-test`).
+- `test/run-tests.sh` (dlisa.ssc.c) passes with the new late-sensor test.
+- `check-syntax.sh`: 0 errors in hakios.adsp.c, dlisa.ssc.c, dlisa.fastrpc.c, the battery files; hakios.adsp.c also
+  without dlisa.fastrpc.h (the hooks compiled out), dlisa.fastrpc.c also with the generated archive header.
+- Objects built with the tree's exact flags (archive assembled in): every undefined symbol of dlisa.fastrpc.o and the
+  new hakios.adsp.o is defined by the current kernel or by them; dlisa.fastrpc's globals collide with nothing.
+- `sensors-wire.py` dry-run twice on a copy of the tree's config/conf files: first applies, second skips all.
+
+Not verifiable offline: whether the hypervisor grants stream 0x1805 a context (it granted the Wi-Fi's 0x1c00), the
+attach's answer, the exact calls the PD makes, its heap requests.
+
+### Still to do
+
+- iOS light and proximity: virtual HID services in backboardd (an ALS service for CoreBrightness, a proximity
+  service for `BKHIDProximityEventProcessor`), about 300 lines in `libdlisa.dylib`'s way. Not started: it waits for real
+  values in `kern.hakios.sensors` (Boot 5 shows whether they come).
+- Apps' CoreMotion (raw accelerometer, gyro) needs locationd or a CoreMotion hook per app: out of scope.
+- The overlay is RAM only: a registry the DSP writes is rebuilt every boot (seconds). Keeping it on the data volume
+  is possible later; persist stays untouched either way.
 
 ## Risks
 
@@ -193,3 +287,9 @@ firmware speaks. Once that exists, `dlisa.ssc.c` and the rotation hook work as t
 - `sensors_fake=2` rotates rotatable apps every 15 s after about 2.5 minutes if the real sensors do not work. The
   lock and home screens are portrait-only on iPhone, so the GPU and WiFi tests in the same session are not affected.
 - 20.8 MB more in the kernel (45 MB, under the payload's 63 MiB), none in the root image.
+- FastRPC (`sensors_rpc=1`, final2 only): the SMMU context is written once per boot and put back on stop and on the
+  panic path. If the DSP faults on our memory the SMMU records it (stall-disable, as the Wi-Fi's); the worst case is
+  the sensors PD crashing, which can take the ADSP down with it (and the battery gauge). The default boot-args do not
+  include `sensors_rpc=1`, so Boots 1 to 4 are unaffected even with a final2 kernel.
+- The registry is another lisa's unless `dump-persist` ran: accelerometer/gyro offsets of a few hundredths of g, the
+  light sensor's calibration off. The orientation does not care.

@@ -355,6 +355,7 @@ static const struct {
 static struct {
 	struct suid suid[WANTED];
 	bool have[WANTED];
+	bool enabled[WANTED];           /* an enable request has gone out for it */
 	uint32_t node, port, ours;
 	uint16_t transaction;
 	volatile uint32_t responses, last_result;
@@ -732,6 +733,41 @@ pump(uint32_t ms, uint32_t after)
 	}
 }
 
+/* Every wanted sensor that has a SUID and no enable request yet gets one; how many went out. */
+static uint32_t
+ssc_enable_new(uint32_t hz)
+{
+	uint32_t sent = 0;
+
+	for (unsigned w = 0; w < WANTED && ssc.wanted; w++) {
+		uint32_t before;
+		int error;
+
+		if (!ssc.have[w] || ssc.enabled[w] || wanted_types[w].sensor < 0) {
+			continue;
+		}
+		before = os_atomic_load(&ssc.responses, acquire);
+		error = ssc_enable(w, hz);
+		ssc.enabled[w] = error == 0;
+		sent += error == 0;
+		tell("ssc: %s enabled (%s): %s\n", wanted_types[w].type, wanted_types[w].on_change ? "on change" : "streaming",
+		    error ? "NOT SENT" : pump(2000, before) ? (ssc.last_result == 0 ? "accepted" : "REFUSED") : "NO RESPONSE");
+	}
+	return sent;
+}
+
+/* The wanted types without a SUID yet: bit w of wanted_types[]. */
+static uint32_t
+ssc_missing(void)
+{
+	uint32_t missing = 0;
+
+	for (unsigned w = 0; w < WANTED; w++) {
+		missing |= ssc.have[w] ? 0 : 1u << w;
+	}
+	return missing;
+}
+
 /* ---- the client's thread ------------------------------------------------------------------------------------ */
 
 static void
@@ -801,21 +837,27 @@ ssc_thread(__unused void *parameter, __unused wait_result_t result)
 	    ssc.have[1] ? " gyro" : "", ssc.have[2] ? " mag" : "", ssc.have[3] ? " light" : "", ssc.have[4] ? " proximity" : "",
 	    ssc.have[5] ? " registry" : " (NO registry)");
 	tell("ssc: %s\n", sensors_state);
-	for (unsigned w = 0; w < WANTED && ssc.wanted; w++) {
-		int error;
-
-		if (!ssc.have[w] || wanted_types[w].sensor < 0) {
-			continue;
-		}
-		before = os_atomic_load(&ssc.responses, acquire);
-		error = ssc_enable(w, hz);
-		tell("ssc: %s enabled (%s): %s\n", wanted_types[w].type, wanted_types[w].on_change ? "on change" : "streaming",
-		    error ? "NOT SENT" : pump(2000, before) ? (ssc.last_result == 0 ? "accepted" : "REFUSED") : "NO RESPONSE");
-	}
+	ssc_enable_new(hz);
+	/*
+	 * Sensors may be told of later (sensors_rpc=1: the sensors PD reads its registry over FastRPC meanwhile): they come
+	 * as SUID events (the questions asked for updates); for two minutes the missing types are asked again every 10 s.
+	 */
 	for (unsigned round = 0; ssc.wanted; round++) {
 		pump(100, ANY_TIME);
-		if (round % 100 == 99) {
-			log_values();
+		if (round % 100 != 99) {
+			continue;
+		}
+		log_values();
+		for (unsigned w = 0; w < WANTED && round < 1200 && ssc.wanted; w++) {
+			if (ssc_missing() & 1u << w) {
+				ssc_ask_suid(wanted_types[w].type);
+				pump(300, ANY_TIME);
+			}
+		}
+		if (ssc_enable_new(hz) != 0) {
+			state("service %u at %u:%u; SUIDs:%s%s%s%s%s%s (some told of late)", SSC_SERVICE, ssc.node, ssc.port,
+			    ssc.have[0] ? " accel" : "", ssc.have[1] ? " gyro" : "", ssc.have[2] ? " mag" : "", ssc.have[3] ? " light" : "",
+			    ssc.have[4] ? " proximity" : "", ssc.have[5] ? " registry" : " (NO registry)");
 		}
 	}
 out:

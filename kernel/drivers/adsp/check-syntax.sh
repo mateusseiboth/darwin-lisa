@@ -1,5 +1,5 @@
 #!/bin/sh
-# Syntax-only compile of the ADSP/battmgr/sensors kernel files with the EXACT flags of the last xnu-12377 build
+# Syntax-only compile of the ADSP/battmgr/sensors/FastRPC kernel files with the EXACT flags of the last xnu-12377 build
 # (the build record XNU writes next to the objects: bsd/DEVELOPMENT/.CFLAGS, iokit/DEVELOPMENT/.CXXFLAGS), in the
 # toolchain image. Nothing is written to the tree or the build directory: -fsyntax-only, run from the object dir
 # because the flags use it as the include path for meta_features.h. The record is the make line unquoted
@@ -23,6 +23,7 @@ def words(path):
             joined.append(cur); cur = ''
     return joined
 jobs = [('bsd/DEVELOPMENT', '.CFLAGS', 'c', 'adsp/hakios.adsp.c'), ('bsd/DEVELOPMENT', '.CFLAGS', 'c', 'adsp/dlisa.ssc.c'),
+        ('bsd/DEVELOPMENT', '.CFLAGS', 'c', 'adsp/dlisa.fastrpc.c'),
         ('bsd/DEVELOPMENT', '.CFLAGS', 'c', 'battery/dlisa.battery.c'),
         ('iokit/DEVELOPMENT', '.CXXFLAGS', 'c++', 'battery/hakios.battery.cpp')]
 with open(out, 'w') as f:

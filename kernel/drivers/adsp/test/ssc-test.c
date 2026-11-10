@@ -193,6 +193,30 @@ main(void)
 		    sensors.proximity);
 	}
 
+	/*
+	 * sensors the core tells of after the first round (with sensors_rpc=1 the registry is still being read over FastRPC
+	 * then): ssc_enable_new() enables each found and not yet enabled one, once
+	 */
+	{
+		struct bytes s = { .n = 0 }, u = { .n = 0 };
+		uint32_t enabled;
+
+		ssc.enabled[0] = true;                          /* (the accelerometer, enabled above) */
+		ssc.wanted = true;                              /* (as on the client's thread) */
+		put1(&s, 0x0a); put1(&s, 4); put(&s, "gyro", 4);
+		uid(&u, 0x5555, 0x6666);
+		field_bytes(&s, 2, &u);
+		n = indication(message, SUID_LOOKUP, SUID_LOOKUP, MSG_SUID_EVENT, &s);
+		on_message(message, n);
+		CHECK(ssc.have[1], "gyro SUID taken later");
+		enabled = ssc_enable_new(10);
+		CHECK(enabled == 2, "the gyro and the proximity sensor enabled: %u", enabled);
+		CHECK(ssc.enabled[1] && ssc.enabled[4] && !ssc.enabled[2], "enabled: the found ones only");
+		CHECK(ssc_enable_new(10) == 0, "none twice");
+		CHECK(ssc_missing() == (1u << 2 | 1u << 3 | 1u << 5), "still missing: mag, light, registry (%#x)", ssc_missing());
+		ssc.wanted = false;
+	}
+
 	/* a truncated message must not be read past its end */
 	{
 		n = indication(message, 0x1111, 0x2222, MSG_STD_SENSOR_EVENT, &(struct bytes){ .n = 0 });

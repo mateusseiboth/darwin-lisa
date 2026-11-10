@@ -351,3 +351,28 @@ So our APFS driver mounts the real, full iOS 26.5.2 filesystem and runs userland
 halt. NEXT: exercise Apple's real arm64e launchd (`/sbin/launchd.darwin`) through miniamfi +
 the pac-pager (keep `/bin/sh` or point init at launchd.darwin); then the touch/GPU boot-args
 and the deferred Metal stack for the UI.
+
+## dyld shared cache (2026-11-09): WALL #1 solved, WALL #2 = kernel shared-region
+
+Apple's real launchd/dyld runs under the pac-pager; the only thing between us and Apple
+userland is loading the dyld shared cache. Two walls, found with on-device evidence:
+
+- **WALL #1 (SOLVED, userland):** code-signing page-size mismatch. The cache is signed with
+  pageSize shift 14 (16 KB page hashes — real iOS runs 16 KB kernel pages); our lisa kernel
+  runs 4 KB pages, so `cs_validate_codedirectory` rejects shift 14 (EBADEXEC,
+  "disallowing unsupported code signature page shift: 14"). Fix: `userland/scripts/resign-cache-4k.py`
+  re-signs the 35 cache files to 4 KB-page SHA256 hashes. After it, registration + preflight pass.
+  (Fold into build-system-26.sh ONLY on the 4 KB path — do not re-sign if the kernel moves to 16 KB.)
+
+- **WALL #2 (open, KERNEL):** dyld validates the cache but can't MAP it. The kernel reserves
+  0x180000000-0x2ffffffff for the arm64e shared region and denies user MAP_FIXED there (EACCES);
+  the cache's map0 base is 0x180000000. Private mapping is therefore impossible; the system-wide
+  `shared_region_map_and_slide_2_np` owns that range but doesn't populate it
+  (`vm_shared_region_start_address()` -> KERN_FAILURE). Also the pac-pager strips PAC only on the
+  exec'd main binary, not on the shared-region-mapped cache. Work: osfmk/vm/vm_shared_region.c +
+  bsd/vm/vm_unix.c `_shared_region_map_and_slide`, and extend the pac-pager to the cache.
+
+**Decision (page size):** (A) wire the arm64e shared-region map + cache PAC-strip on the 4 KB kernel
+(keep the re-sign), or (B) rebuild the kernel at 16 KB pages (PAGE_SHIFT=14) — matches iOS, dissolves
+WALL #1, likely fixes the shared region by design; larger change, re-validate APFS/pac-pager, still
+needs the cache PAC-strip.

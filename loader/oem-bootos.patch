@@ -1,0 +1,160 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -601,6 +601,60 @@
+ }
+ 
+ /*
++ * "fastboot oem bootos:TARGET": the host picks what U-Boot starts next, with no button pressed.
++ *
++ * No reset is involved, so nothing has to survive one (every reset on lisa is a PMIC hard reset, ABL's log says
++ * "Reset Type: Hard Reset"). The loader leaves a one-shot request in the last page of its payload window, which the
++ * device tree keeps reserved (hakios-payload@f0000000) and nothing else uses, gives the USB controller and the
++ * watchdog back the way it found them, and exits to U-Boot; U-Boot's osel_check (board/qualcomm/hakios-lisa.env)
++ * reads the request, clears it and runs the target. Only before any kernel has run in this session: a kernel leaves
++ * the hardware as it pleases, and then "fastboot reboot" first gives a fresh session.
++ */
++#define OSEL_ADDR           (PAYLOAD_BASE + PAYLOAD_MAX_SIZE - 0x1000ULL)  /* 0xf3fff000: U-Boot's osel_addr */
++#define OSEL_MAGIC          0x4c45534fu                                    /* "OSEL" */
++
++static int kernel_was_run;      /* "oem run"/"oem selftest" happened in this session */
++
++static void
++osel_write(uint32_t code)
++{
++	volatile uint32_t *osel = (volatile uint32_t *)(uintptr_t)OSEL_ADDR;
++
++	osel[0] = code != 0 ? OSEL_MAGIC : 0;
++	osel[1] = code;
++	osel[2] = ~code;
++	__asm__ volatile ("dsb sy" ::: "memory");
++}
++
++/* U-Boot's osel_N: 1 postmarketOS, 2 the UFS as a USB disk, 3 U-Boot's fastboot, 4 U-Boot's menu; 0: none */
++static uint32_t
++bootos_code(const char *target)
++{
++	static const char *const names[] = { "pmos", "ums", "uboot", "menu" };
++
++	for (uint32_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
++		if (str_eq(target, names[i])) {
++			return i + 1;
++		}
++	}
++	return 0;
++}
++
++static void
++uninstall_exception_hook(void)
++{
++	static const efi_guid cpu_guid = EFI_CPU_ARCH_GUID;
++	efi_cpu_arch *cpu;
++
++	if (EFI_ERROR(BS->locate_protocol(&cpu_guid, NULL, (void **)&cpu))) {
++		return;
++	}
++	for (int64_t type = 0; type <= 3; type += 3) {
++		cpu->register_interrupt_handler(cpu, type, NULL);
++	}
++}
++
++/*
+  * Return-from-kernel support.
+  *
+  * Boot services are never exited: UEFI stays resident outside XNU's memory
+@@ -2515,6 +2569,36 @@
+ 	wdt_armed = (r_pet == 0);
+ }
+ 
++/*
++ * Before the loader exits to U-Boot: the watchdog back off, as the loader found it (status ctl=0 at every start on
++ * lisa), since nothing after U-Boot pets it. Control 2 keeps it configured and disabled (Linux hh_virt_wdt: 3 enables,
++ * 2 disables); 0 is the state it is found in. Returns 1 when the hypervisor reports it stopped, else re-arms it and
++ * returns 0, so a loader that could not stop it never leaves.
++ */
++static int
++wdt_release(void)
++{
++	uint64_t ctl = 1, since = 0;
++
++	if (!wdt_armed) {
++		return 1;
++	}
++	smc_call(VIRT_WDT_CONTROL, 2, 0, NULL, NULL);
++	if (smc_call(VIRT_WDT_STATUS, 0, 0, &ctl, &since) != 0 || (ctl & 1) != 0) {
++		smc_call(VIRT_WDT_CONTROL, 0, 0, NULL, NULL);
++		ctl = 1;
++		if (smc_call(VIRT_WDT_STATUS, 0, 0, &ctl, &since) != 0 || (ctl & 1) != 0) {
++			smc_call(VIRT_WDT_CONTROL, 3, 0, NULL, NULL);
++			wdt_set_ms(WDT_BITE_MS);
++			print("watchdog: would not stop (ctl=%x): staying in the loader\n", ctl);
++			return 0;
++		}
++	}
++	print("watchdog: stopped (ctl=%x) for U-Boot\n", ctl);
++	wdt_armed = 0;
++	return 1;
++}
++
+ /* ------------------------------------------------------------------------ */
+ /* UEFI exception hook: put the fault into the log instead of on the screen  */
+ 
+@@ -3811,7 +3895,8 @@
+ 	{
+ 		if (busy && (starts_with(cmd, "oem ramdisk") || starts_with(cmd, "download:") || starts_with(cmd, "oem run") ||
+ 		    starts_with(cmd, "oem selftest") || starts_with(cmd, "oem hang") || starts_with(cmd, "oem recording") ||
+-		    starts_with(cmd, "oem sound") || starts_with(cmd, "oem clearscreen") || starts_with(cmd, "oem memmap"))) {
++		    starts_with(cmd, "oem sound") || starts_with(cmd, "oem clearscreen") || starts_with(cmd, "oem memmap") ||
++		    starts_with(cmd, "oem bootos:"))) {
+ 			fb_reply("FAIL", "a kernel is running (oem stop ends it)");
+ 		} else if (starts_with(cmd, "oem stop")) {
+ 			/* the kernel looks at this once a second and comes back as it does when its time is up */
+@@ -3973,6 +4058,7 @@
+ 			uint64_t cp = selftest ? CHECKPOINT_SELFTEST : parse_number(arg, 10);
+ 
+ 			set_result("running", cp, 0);
++			kernel_was_run = 1;
+ 			fb_reply("OKAY", "");
+ 			log_len = 0;
+ 			print("== XNULOADER run (usb) ==\n");
+@@ -3995,6 +4081,33 @@
+ 				compose_logs(NULL, 0);
+ 			}
+ 			fb_reply("OKAY", "");
++		} else if (starts_with(cmd, "oem bootos:")) {
++			/* see bootos_code(): the request for U-Boot, then back to it (no reset) */
++			uint32_t code = bootos_code(cmd + 11);
++			efi_status (EFIAPI *efi_exit)(efi_handle, efi_status, uint64_t, char16 *) =
++			    (efi_status (EFIAPI *)(efi_handle, efi_status, uint64_t, char16 *))BS->exit;
++
++			if (code == 0) {
++				fb_reply("FAIL", "bootos: pmos, ums, uboot or menu");
++			} else if (kernel_was_run) {
++				fb_reply("FAIL", "bootos: a kernel ran; fastboot reboot first");
++			} else if (!wdt_release()) {
++				fb_reply("FAIL", "bootos: the watchdog would not stop");
++			} else {
++				osel_write(code);
++				print("bootos: target %d, back to U-Boot\n", (uint64_t)code);
++				fb_reply("OKAY", "");
++				BS->stall(200000);              /* the answer is on its way before the controller goes */
++				USB->free_transfer_buffer(usb_rx_buf);
++				USB->free_transfer_buffer(usb_tx_buf);
++				USB->stop();
++				USB = NULL;
++				uninstall_exception_hook();
++				efi_exit(IMAGE, 0, 0, NULL);
++				/* Exit does not come back; if it did, the request must not outlive this loader */
++				osel_write(0);
++				reboot();
++			}
+ 		} else if (starts_with(cmd, "reboot") || starts_with(cmd, "oem reboot")) {
+ 			fb_reply("OKAY", "");
+ 			BS->stall(200000);
+@@ -4353,6 +4466,7 @@
+ 	print("platform %s\n", PLAT->name);
+ 
+ 	install_exception_hook();
++	osel_write(0);          /* no request from an earlier loader may reach U-Boot (oem bootos sets one) */
+ 	wdt_arm();
+ 
+ 	int have_payload = parse_payload(&pi, 0);

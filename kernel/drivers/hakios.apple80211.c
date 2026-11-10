@@ -30,7 +30,18 @@
  * when the station has joined or failed, event 9 says so, and ASSOCIATE_RESULT (21) gives the
  * outcome as one of Apple80211's result numbers, which the framework turns into its errors:
  * 1 success, 21 "invalid PMK" (a wrong passphrase), 9 a timeout, 2 anything else.
+ *
+ * darwin-lisa, Darwin userland 26 (23F84): IO80211.framework still ends in these ioctls when the
+ * interface's IOService refuses its user client (HakiosWLAN does), and still reads the same kernel
+ * events. Four requests changed shape (read out of IO80211 of 26: _performAssociation, _getScanData,
+ * Apple80211GetWithIOCTL, _addScanResultToList); each is told apart from 16.5's by its length:
+ *   ASSOCIATE      908 bytes: from the authentication on, every field 4 bytes later (assoc_layouts)
+ *   SCAN_REQ       5528 bytes: 16.5's 5456 and then a scan's UUID and SCAN_MIN_TIMESTAMP (not used)
+ *   SCAN_RESULT    2272 bytes (also CURRENT_NETWORK): room for 2048 bytes of elements, then the scan's UUID
+ *                  and a TIMESTAMP (mach_continuous_time() of when the access point was last heard)
+ *   STATE          the state in an 8-byte buffer { version, state }, not in the request's value
  */
+#include <kern/clock.h>
 #include <kern/kalloc.h>
 #include <kern/locks.h>
 #include <libkern/libkern.h>
@@ -163,6 +174,30 @@ struct apple80211_assoc {
 	uint8_t rest[0x250 - 0x88];
 };
 
+/* ASSOCIATE (20) as Darwin userland 26 has it: 908 bytes; the authentication is two words now */
+struct apple80211_assoc_26 {
+	uint32_t version;
+	uint16_t mode, unused_0;
+	uint32_t auth_lower, auth_upper;
+	uint32_t ssid_length;
+	uint8_t ssid[32];
+	uint8_t bssid[6], unused_1[2];
+	uint32_t key_version, key_length, key_cipher;
+	uint16_t key_flags, key_index;
+	uint8_t key[64];
+	uint8_t rest[0x38c - 0x8c];
+};
+
+/* SCAN_RESULT (11) and CURRENT_NETWORK (103) as Darwin userland 26 has them: 2272 bytes */
+struct apple80211_scan_result_26 {
+	uint8_t head[0x8c];                     /* as 16.5's, up to its elements (elements_length is room for 2048) */
+	uint8_t elements[2048];
+	uint8_t scan_uuid[0x44];
+	uint64_t timestamp;                     /* TIMESTAMP */
+	uint8_t unknown_0, unused_0[3];
+	uint32_t unknown_1;
+};
+
 #define CIPHER_PMK              6
 #define CIPHER_PASSPHRASE       10
 
@@ -179,6 +214,11 @@ struct apple80211_link_changed {
 
 _Static_assert(sizeof(struct apple80211_assoc) == 592 && offsetof(struct apple80211_assoc, key) == 0x48,
     "the association request as Darwin userland 16.5 has it");
+_Static_assert(sizeof(struct apple80211_assoc_26) == 908 && offsetof(struct apple80211_assoc_26, ssid_length) == 0x10 &&
+    offsetof(struct apple80211_assoc_26, bssid) == 0x34 && offsetof(struct apple80211_assoc_26, key_cipher) == 0x44 &&
+    offsetof(struct apple80211_assoc_26, key) == 0x4c, "the association request as Darwin userland 26 has it");
+_Static_assert(sizeof(struct apple80211_scan_result_26) == 2272 && offsetof(struct apple80211_scan_result_26, timestamp) == 0x8d0,
+    "a scan's result as Darwin userland 26 has it");
 _Static_assert(sizeof(struct apple80211_link_changed) == 32 && offsetof(struct apple80211_link_changed, reason) == 0x14,
     "the link event as Darwin userland 16.5 reads it");
 _Static_assert(sizeof(struct apple80211_channels) == 4824, "the channel list as Darwin userland 16.5 has it");
@@ -240,6 +280,27 @@ give(const struct apple80211req *request, const void *data, size_t length)
 	       request->req_len);
 }
 
+/* ... in 26's form: 16.5's head and elements, and when it was last heard */
+static int
+give_network_26(const struct apple80211req *request, const struct apple80211_scan_result *result, const struct hakios_sta_bss *bss)
+{
+	struct apple80211_scan_result_26 *answer = kalloc_data(sizeof(*answer), Z_WAITOK | Z_ZERO);
+	uint64_t age = 0;
+	int error;
+
+	_Static_assert(sizeof(answer->head) == offsetof(struct apple80211_scan_result, elements), "the same head");
+	if (answer == NULL) {
+		return ENOMEM;
+	}
+	memcpy(answer->head, result, sizeof(answer->head));
+	memcpy(answer->elements, result->elements, result->elements_length);
+	nanoseconds_to_absolutetime((uint64_t)bss->age_ms * NSEC_PER_MSEC, &age);
+	answer->timestamp = mach_continuous_time() - age;
+	error = give(request, answer, sizeof(*answer));
+	kfree_data(answer, sizeof(*answer));
+	return error;
+}
+
 /* An access point in the form a scan's result has; the caller has said how much room for elements there is. */
 static int
 give_network(const struct apple80211req *request, const struct hakios_sta_bss *bss)
@@ -278,7 +339,8 @@ give_network(const struct apple80211req *request, const struct hakios_sta_bss *b
 			}
 		}
 	}
-	error = give(request, result, sizeof(*result));
+	error = request->req_len >= sizeof(struct apple80211_scan_result_26) ? give_network_26(request, result, bss) :
+	    give(request, result, sizeof(*result));
 	kfree_data(result, sizeof(*result));
 	return error;
 }
@@ -395,10 +457,15 @@ get(struct apple80211req *request)
 	}
 	hakios_sta_state(state);
 	switch (request->req_type) {
-	case 13:                                /* the state: APPLE80211_S_INIT 0, _SCAN 1, _AUTH 2, _ASSOC 3, _RUN 4 */
-		request->req_val = state->phase == HAKIOS_STA_JOINED ? 4 : state->phase == HAKIOS_STA_JOINING ? 2 :
-		    state->phase == HAKIOS_STA_SCANNING ? 1 : 0;
+	case 13: {                              /* the state: APPLE80211_S_INIT 0, _SCAN 1, _AUTH 2, _ASSOC 3, _RUN 4 */
+		uint32_t answer[2] = { 1, state->phase == HAKIOS_STA_JOINED ? 4 : state->phase == HAKIOS_STA_JOINING ? 2 :
+			               state->phase == HAKIOS_STA_SCANNING ? 1 : 0 };
+
+		request->req_val = (int32_t)answer[1];
+		/* (26 reads it from a buffer of { version, state }; 16.5 from the value) */
+		error = request->req_len >= sizeof(answer) ? give(request, answer, sizeof(answer)) : 0;
 		break;
+	}
 	case 1:                                 /* its name; the length goes back in the request */
 		if (state->phase != HAKIOS_STA_JOINED) {
 			error = ENXIO;
@@ -462,7 +529,8 @@ set_scan(const struct apple80211req *request, char *said, size_t said_size)
 	unsigned unknown = 0;
 	int error;
 
-	if (request->req_len != sizeof(*asked)) {
+	/* (16.5's is 5456 bytes, 26's 5528: the same up to there, then a UUID and a time this driver does not use) */
+	if (request->req_len < sizeof(*asked)) {
 		return EINVAL;
 	}
 	if (!hakios_sta_present()) {
@@ -511,25 +579,96 @@ out:
 	return error;
 }
 
+/*
+ * Where the fields of an association request are, in each shape Darwin has sent it; the longest that the request's
+ * length holds is the one. The fields are read into struct apple80211_assoc (16.5's) and used from there.
+ */
+struct assoc_layout {
+	const char *name;
+	uint32_t least;                         /* req_len from which a request has this shape */
+	uint32_t copied;                        /* what is read of it: up to the end of the key */
+	uint16_t ssid_length, ssid, bssid, auth_lower, auth_upper, auth_width, key_length, key_cipher, key;
+};
+
+#define ASSOC_LAYOUT(NAME, TYPE, LEAST, WIDTH) { NAME, LEAST, offsetof(TYPE, key) + 64, offsetof(TYPE, ssid_length), \
+	offsetof(TYPE, ssid), offsetof(TYPE, bssid), offsetof(TYPE, auth_lower), offsetof(TYPE, auth_upper), WIDTH, \
+	offsetof(TYPE, key_length), offsetof(TYPE, key_cipher), offsetof(TYPE, key) }
+
+static const struct assoc_layout assoc_layouts[] = {
+	ASSOC_LAYOUT("26", struct apple80211_assoc_26, sizeof(struct apple80211_assoc_26), 4),
+	ASSOC_LAYOUT("16.5", struct apple80211_assoc, offsetof(struct apple80211_assoc, rest), 2),
+};
+
+static const struct assoc_layout *
+find_assoc_layout(uint32_t length)
+{
+	for (unsigned i = 0; i < sizeof(assoc_layouts) / sizeof(assoc_layouts[0]); i++) {
+		if (length >= assoc_layouts[i].least) {
+			return &assoc_layouts[i];
+		}
+	}
+	return NULL;
+}
+
+static uint32_t
+assoc_field(const uint8_t *raw, uint16_t at, uint16_t width)
+{
+	uint32_t value = 0;
+	uint16_t half = 0;
+
+	if (width == 2) {
+		memcpy(&half, raw + at, sizeof(half));
+		return half;
+	}
+	memcpy(&value, raw + at, sizeof(value));
+	return value;
+}
+
+/* The request as LAYOUT has it, into ASKED (16.5's shape). 0 or an errno. */
+static int
+read_assoc(const struct apple80211req *request, const struct assoc_layout *layout, struct apple80211_assoc *asked)
+{
+	uint8_t *raw = kalloc_data(layout->copied, Z_WAITOK | Z_ZERO);
+	int error;
+
+	if (raw == NULL) {
+		return ENOMEM;
+	}
+	if ((error = copyin(request->req_data, raw, layout->copied)) == 0) {
+		asked->ssid_length = assoc_field(raw, layout->ssid_length, 4);
+		memcpy(asked->ssid, raw + layout->ssid, sizeof(asked->ssid));
+		memcpy(asked->bssid, raw + layout->bssid, sizeof(asked->bssid));
+		asked->auth_lower = (uint16_t)assoc_field(raw, layout->auth_lower, layout->auth_width);
+		asked->auth_upper = (uint16_t)assoc_field(raw, layout->auth_upper, layout->auth_width);
+		asked->key_length = assoc_field(raw, layout->key_length, 4);
+		asked->key_cipher = assoc_field(raw, layout->key_cipher, 4);
+		memcpy(asked->key, raw + layout->key, sizeof(asked->key));
+	}
+	memset_s(raw, layout->copied, 0, layout->copied);
+	kfree_data(raw, layout->copied);
+	return error;
+}
+
 static int
 set_join(const struct apple80211req *request, char *said, size_t said_size)
 {
+	const struct assoc_layout *layout = find_assoc_layout(request->req_len);
 	struct apple80211_assoc *asked;
 	struct hakios_sta_join *what;
 	int error;
 
-	if (request->req_len < offsetof(struct apple80211_assoc, rest)) {
+	if (layout == NULL) {
 		return EINVAL;
 	}
 	asked = kalloc_data(sizeof(*asked), Z_WAITOK | Z_ZERO);
 	what = kalloc_data(sizeof(*what), Z_WAITOK | Z_ZERO);
-	if (asked == NULL || what == NULL || (error = copyin(request->req_data, asked, offsetof(struct apple80211_assoc, rest))) != 0) {
+	if (asked == NULL || what == NULL || (error = read_assoc(request, layout, asked)) != 0) {
 		error = asked == NULL || what == NULL ? ENOMEM : error;
 		goto out;
 	}
 	/* (lengths and kinds only: the name, the access point and the key stay out of the log) */
-	snprintf(said, said_size, " (a join: a name of %u bytes, %s access point, authentication %#x/%#x, a key of %u bytes of kind %u)",
-	    asked->ssid_length, asked->bssid[0] | asked->bssid[1] | asked->bssid[2] | asked->bssid[3] | asked->bssid[4] |
+	snprintf(said, said_size, " (a join, %s's shape: a name of %u bytes, %s access point, authentication %#x/%#x, a key of %u "
+	    "bytes of kind %u)", layout->name, asked->ssid_length, asked->bssid[0] | asked->bssid[1] | asked->bssid[2] | asked->bssid[3] | asked->bssid[4] |
 	    asked->bssid[5] ? "a given" : "any", asked->auth_lower, asked->auth_upper, asked->key_length, asked->key_cipher);
 	if (asked->ssid_length == 0 || asked->ssid_length > sizeof(what->ssid)) {
 		error = EINVAL;

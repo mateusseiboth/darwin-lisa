@@ -10,6 +10,12 @@
  * Any other APFS file is read out once by apfs_lib -- the same code as the volume's when
  * mounted, compressed or not -- into memory of its own, and kept: firmware is asked for once
  * or twice a session and its driver keeps it while the phone runs, so nothing gives it back.
+ *
+ * darwin-lisa: when no RAM disk has the file and the root is the flash's own (ufs_root=1
+ * ufs_part=NAME, kernel/drivers/ufs), fw/NAME of the root itself, read through the UFS driver
+ * (the root image is the APFS container at the start of that partition). A boot from the flash
+ * alone has no RAM disk, and the root image carries fw/ (userland-26/out/sysroot-26/fw). Always a
+ * copy; *disk_out is 2 then. Boot-arg image_ufs=0 leaves the root out.
  */
 #include <kern/kalloc.h>
 #include <kern/locks.h>
@@ -19,11 +25,17 @@
 #include <sys/stat.h>
 #include <sys/systm.h>
 #include <miscfs/apfs/apfs_lib.h>
+#include <pexpert/pexpert.h>
 
 extern dev_t mdevlookup(int devid);
 extern int mdevgetkernelrange(dev_t dev, vm_offset_t *base, uint64_t *size);
 
 const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
+#ifdef HAKIOS_UFS
+extern int hakios_ufs_read_partition(const char *name, uint64_t offset, uint8_t *dst, uint64_t len, uint64_t *bytes);
+#endif
+
+#define UFS_ROOT_DISK   2               /* what *disk_out says for the flash's root (md0 and md1 are 0 and 1) */
 
 /* ---- APFS ---- */
 
@@ -53,11 +65,16 @@ static struct {
 	uint64_t  size;
 } kept[64];
 
+/*
+ * fw/NAME of the container SOURCE reads. BASE: where it lies in memory (a RAM disk), so that a file in one
+ * piece is used in place; NULL (the flash): always a copy.
+ */
 static const uint8_t *
-apfs_file(int disk, const uint8_t *base, uint64_t length, const char *dir, const char *name, uint64_t *size)
+apfs_file(int disk, const struct apfs_dev *source, const uint8_t *base, const char *dir, const char *name, uint64_t *size)
 {
-	struct mem_dev m = { .base = base, .length = length };
-	struct apfs_dev dev = { .ctx = &m, .size = length, .read = mem_read, .read_data = mem_read };
+	struct apfs_dev dev = *source;
+	uint64_t length = source->size;
+	uint8_t magic[4];
 	struct apfs_nx *nx = NULL;
 	struct apfs_vol *vol = NULL;
 	struct apfs_inode ino;
@@ -68,7 +85,7 @@ apfs_file(int disk, const uint8_t *base, uint64_t length, const char *dir, const
 	uint32_t i;
 	int error;
 
-	if (length < 4096 || memcmp(base + 32, "NXSB", 4) != 0) {
+	if (length < 4096 || dev.read(dev.ctx, 32, magic, sizeof(magic)) != 0 || memcmp(magic, "NXSB", 4) != 0) {
 		return NULL;
 	}
 	snprintf(path, sizeof(path), "/%s/%s", dir, name);
@@ -112,7 +129,7 @@ apfs_file(int disk, const uint8_t *base, uint64_t length, const char *dir, const
 		uint64_t addr = 0;
 
 		/* in one piece as it is: where it lies, no copy */
-		if (apfs_file_in_place(vol, &ino, &addr) == 0 && addr <= length / nx->block_size &&
+		if (base != NULL && apfs_file_in_place(vol, &ino, &addr) == 0 && addr <= length / nx->block_size &&
 		    fsize <= length - addr * nx->block_size) {
 			apfs_nx_close(nx);
 			*size = fsize;
@@ -163,6 +180,39 @@ out:
 	return data;
 }
 
+#ifdef HAKIOS_UFS
+static int
+ufs_root_read(void *ctx, uint64_t off, void *buf, size_t len)
+{
+	return hakios_ufs_read_partition((const char *)ctx, off, buf, len, NULL);
+}
+
+/* fw/NAME of the flash's root (ufs_root=1 ufs_part=NAME), or NULL */
+static const uint8_t *
+ufs_root_file(const char *dir, const char *name, uint64_t *size, int *disk_out)
+{
+	char part[36] = "";
+	uint32_t root = 0, allowed = 1;
+	uint64_t bytes = 0;
+	struct apfs_dev dev = { .read = ufs_root_read, .read_data = ufs_root_read };
+	const uint8_t *data;
+
+	if (!PE_parse_boot_argn("ufs_root", &root, sizeof(root)) || root != 1 ||
+	    (PE_parse_boot_argn("image_ufs", &allowed, sizeof(allowed)) && allowed == 0) ||
+	    !PE_parse_boot_argn("ufs_part", part, sizeof(part)) || part[0] == 0 ||
+	    hakios_ufs_read_partition(part, 0, NULL, 0, &bytes) != 0 || bytes == 0) {
+		return NULL;
+	}
+	dev.ctx = part;
+	dev.size = bytes;
+	data = apfs_file(UFS_ROOT_DISK, &dev, NULL, dir, name, size);
+	if (data != NULL && disk_out != NULL) {
+		*disk_out = UFS_ROOT_DISK;
+	}
+	return data;
+}
+#endif
+
 const uint8_t *
 hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out)
 {
@@ -171,11 +221,16 @@ hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_o
 		uint64_t length = 0;
 		const uint8_t *data;
 		dev_t dev = mdevlookup(disk);
+		struct mem_dev m;
+		struct apfs_dev source = { .ctx = &m, .read = mem_read, .read_data = mem_read };
 
 		if (dev == (dev_t)-1 || mdevgetkernelrange(dev, &base, &length) != 0) {
 			continue;
 		}
-		data = apfs_file(disk, (const uint8_t *)base, length, dir, name, size);
+		m.base = (const uint8_t *)base;
+		m.length = length;
+		source.size = length;
+		data = apfs_file(disk, &source, (const uint8_t *)base, dir, name, size);
 		if (data != NULL) {
 			if (disk_out != NULL) {
 				*disk_out = disk;
@@ -183,5 +238,9 @@ hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_o
 			return data;
 		}
 	}
+#ifdef HAKIOS_UFS
+	return ufs_root_file(dir, name, size, disk_out);
+#else
 	return NULL;
+#endif
 }

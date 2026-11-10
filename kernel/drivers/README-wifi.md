@@ -163,3 +163,10 @@ ath11k is linked (`wifi-ath11k-wire.sh`: HakiOS `tools/mk-ath11k.sh`, Linux 7.0.
 - Next: wifid (left out by LEAN: com.apple.wifid.plist / wifiFirmwareLoader in lean-daemons.txt) talking to
   `hakios.apple80211.c` for scan + join with `wifi_station=1`; credentials go in /fw/network (SSID, passphrase) or
   through wifid.
+
+## Join on iOS 26 (prepared offline, 2026-11-10)
+
+`wifi-join/README.md`: the 26 request shapes in `hakios.apple80211.c` (ASSOCIATE 908, SCAN_REQ 5528, SCAN_RESULT 2272,
+STATE as a buffer), firmware from the flash root in `hakios.image.c` (no RAM disk needed), the kept network given by
+init26 (`kern.hakios.wifi_network`), wifid back in the root (gated on `wifi=1`), and `tools/wifi-run.sh` for
+credentials typed at test time. Wire: `wifi-join/wifi-join-wire.py` after this file's wires.

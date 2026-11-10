@@ -16,6 +16,7 @@
 #include "ld-disable.c"
 #include "identity-stamp.c"
 #include "rtc-offset.c"
+#include "time-zone.c"
 #include "wifi-net.c"
 
 static const char BANNER[] =
@@ -164,6 +165,30 @@ bootArgNumber(const char *name, unsigned dflt)
 		}
 	}
 	return dflt;
+}
+
+/* the value of boot-arg NAME= as text (up to the next space) into OUT (SIZE bytes); 1, or 0 when absent or too long */
+static int
+bootArgText(const char *name, char *out, size_t size)
+{
+	const char *a = bootArgs();
+	size_t n = strlen(name);
+
+	for (const char *p = a; *p != 0; p++) {
+		if ((p == a || p[-1] == ' ') && strncmp(p, name, n) == 0 && p[n] == '=') {
+			size_t length = 0;
+
+			for (p += n + 1; p[length] != 0 && p[length] != ' '; length++) {
+			}
+			if (length + 1 > size) {
+				return 0;
+			}
+			memcpy(out, p, length);
+			out[length] = 0;
+			return 1;
+		}
+	}
+	return 0;
 }
 
 /*
@@ -835,9 +860,11 @@ main(int argc, char **argv, char **envp)
 	cacheProbe();
 	memProbe();
 	mountVar();
-	/* darwin-lisa: the clock's kept offset (rtc=1) and the kept Wi-Fi network (wifi=1), init/rtc-wifi-boot.c */
+	/* darwin-lisa: the clock's kept offset (rtc=1), the time zone (tz=) and the kept Wi-Fi network (wifi=1),
+	 * init/rtc-wifi-boot.c */
 	applySavedRtcOffset();
 	startRtcKeeper();
+	applyTimeZone();
 	giveWifiNetwork();
 	/* darwin-lisa: diagnostics jobs that run as mobile (com.darwinlisa.*) write to the console, which is the log */
 	if (findConsoleArg()) {

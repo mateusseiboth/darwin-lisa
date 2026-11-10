@@ -24,7 +24,8 @@ pmos_ssh() {
 }
 
 before=$(date -u +%s)
-read -r name count < <(pmos_ssh 'printf "%s %s\n" "$(cat /sys/class/rtc/rtc0/name)" "$(cat /sys/class/rtc/rtc0/since_epoch)"')
+# the count first: rtc0's name has spaces ("rtc-pm8xxx c440000.spmi:pmic@0:rtc@6100")
+read -r count name < <(pmos_ssh 'printf "%s %s\n" "$(cat /sys/class/rtc/rtc0/since_epoch)" "$(cat /sys/class/rtc/rtc0/name)"')
 after=$(date -u +%s)
 [[ $count =~ ^[0-9]+$ ]] || { echo "rtc-offset: rtc0 gave no count ($name $count)" >&2; exit 1; }
 now=$(( (before + after) / 2 ))

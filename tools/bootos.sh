@@ -99,13 +99,17 @@ wait_pmos_ssh() {
 
 # The phone sits in pmOS to charge between runs. Once it suspends, USB loses its link and nothing reaches it until
 # someone presses Power, so hold a sleep inhibitor for as long as pmOS runs (the reboot to the loader ends it).
+# The inhibitor runs as its own transient unit: a nohup'd child of the SSH session is killed when the session closes.
 hold_awake() {
-	local cmd='nohup systemd-inhibit --what=sleep:idle:handle-lid-switch --who=darwin-lisa --why="parked by bootos.sh" --mode=block sleep infinity >/dev/null 2>&1 &'
+	local cmd='systemctl stop darwin-lisa-awake 2>/dev/null; systemctl reset-failed darwin-lisa-awake 2>/dev/null; systemd-run --quiet --collect --unit=darwin-lisa-awake systemd-inhibit --what=sleep:idle:handle-lid-switch --who=darwin-lisa --why=parked-by-bootos --mode=block sleep infinity'
 	if [[ -n ${PMOS_PASS:-} ]]; then
 		printf '%s\n' "$PMOS_PASS" | pmos_ssh "sudo -S -p '' sh -c '$cmd'" || say "warning: could not hold pmOS awake"
 	else
 		pmos_ssh "sudo -n sh -c '$cmd'" || say "warning: could not hold pmOS awake (no PMOS_PASS)"
 	fi
+	sleep 1
+	pmos_ssh 'systemd-inhibit --list --no-pager | grep -q darwin-lisa' ||
+		die "warning: could not hold pmOS awake (no darwin-lisa inhibitor listed)"
 	say "pmOS held awake (sleep inhibitor until the next reboot)"
 }
 

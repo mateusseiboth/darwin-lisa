@@ -21,7 +21,8 @@ kernel writes to it while iOS runs.
 |---|---|---|---|
 | kernel | `research/hackios-xnu-kernel/kernel-16k-final1.bak` (= `kernel26.nopac` now) | 45,521,816 | `67b9c3b3c9e714ccfe5121303c883c607541bfad568b1b7239b824266b5ddf0c` |
 | root | `userland-26/out/system-26.apfs.full` (copy `system-26.apfs.full-08898bde`) | 4,831,838,208 | `08898bde7b97221965b6c4665db894458a3d08e5c002e4f2db53c4a464598f42` |
-| vendor_boot | `out/vendor_boot-lisa-combined.img` (copy `out/vendor_boot-lisa-final1-390aee3e.img`) | 45,817,856 | `390aee3e48ff82f770569e5add37890d285e701404f6f705c4af5a5855d9fce2` |
+| vendor_boot (flashed first, replaced) | `out/vendor_boot-lisa-final1-390aee3e.img` | 45,817,856 | `390aee3e48ff82f770569e5add37890d285e701404f6f705c4af5a5855d9fce2` |
+| vendor_boot (**on the phone**, adds `noidle=1 battmgr_sign=1`, see "What the session found") | `out/vendor_boot-lisa-combined.img` (copy `out/vendor_boot-lisa-final2-898cbef8.img`) | 45,817,856 | `898cbef8dbf973570394667062f0cd79d410df0cde95b893f402bc569708bc85` |
 | its HKUB | `out/loader-usb-lisa-combined.hkub` | 45,608,960 | `8eeec77247c31d29f9e93c6432a80926b87bbf71d9e5f4c403adecdb3cc2a7a0` |
 | its loader | `out/loader-combined.efi` | | `220880a7a7a867a0a512c5532cef29d0d0912dfaf3b24c9d4c95e93eb16bec30` |
 | its payload | `out/combined-payload.bin` | 45,522,376 | `879426dd39e440869ed8681d107fbd4e972d0421173f6aa1a2112029bbf3e75f` |
@@ -65,6 +66,87 @@ fbwidth=1080 fbheight=2400 rtc=1 adsp=1 battmgr=2
 ```
 
 (`epoch=1794336680` is 2026-11-10 14:51 local time. It is only the fallback if the RTC gives nothing.)
+
+The flashed build (898cbef8, `EXTRA_ARGS="noidle=1 battmgr_sign=1" darwin-lisa/loader/build-combined.sh`, log
+`darwin-lisa/logs/build-combined-final2.log`) has a 375-character line: the one above with `epoch=1794340061` and
+` noidle=1 battmgr_sign=1` at the end (`out/final2-cmdline-898cbef8.txt`).
+
+## What the session found (2026-11-10, 15:30 to 16:00)
+
+**Idle sleep panics the kernel.**
+
+- What happened (Boot 1a, `research/hackios-xnu-kernel/logs/evening-b1a.log`):
+  - at 47 s powerd sent `kPMMinutesToSleep = 2147483647`;
+  - on iOS's XNU that means "idle sleep after idleMilliSeconds", which is 1000 ms here;
+  - the idle timer expired: `sleep reason Idle Sleep`, ON to SLEEP;
+  - then `panic: Attempting to sleep before all CPUs are registered @sched_prim.c:8105` and MACH Reboot;
+  - the kernel was dead and the loader went on serving the host.
+- HakiOS 16's kernel refused system sleep by default (`gSleepDisabledFlag = 1`, `xnu/hakios.patch`). The 26 kernel
+  does not.
+- Workaround, no rebuild: stock XNU's `noidle=1` boot-arg, which keeps the idle timer from being armed. It is in the
+  flashed autoboot line, and **every host run needs it** (`MORE="noidle=1"` for `gpu-run.sh`, add it to `XL_EXTRA_ARGS`
+  for `wifi-run.sh` and `run-flashroot.sh`). With it, Boot 1b ran past the point.
+- Durable fix, not wired or built yet: `darwin-lisa/kernel/drivers/power/nosleep-wire.py`. It refuses every system
+  sleep unless `syssleep=1`. Test: `sh darwin-lisa/kernel/drivers/power/test/run-tests.sh`.
+
+**The battery current's sign.** The firmware reports a positive current while it charges (+697641 uA, status 1), so
+HakiosBattery said "on a charger, not charging". `battmgr_sign=1` is in the flashed line.
+
+**GPU host runs.** Use `GEOM="lisa=1"`, not `GEOM="fbwidth=1080 fbheight=2400"`. `lisa=1` gives the geometry, touch
+(with `touch_chip=goodix`, which `gpu-run.sh`'s touch group lacks) and cpufreq in 6 characters, so `dlisa_noidle=1`
+still fits. For the probe, use `MORE="noidle=1 dlisa_noidle=1"`.
+
+**Metal (Boot 3, step 3a).** It fails with `MTLCreateSystemDefaultDevice_block_invoke:834: failed assertion
+'MTLCreateSystemDefaultDevice doesn't know what to do with more than one device'`, while the registry has a single
+IOAcceleratorES ("sgx", HakiosMetalProbe). Boot 4 (CA) was skipped until this is fixed offline.
+
+**Tools.**
+
+- `tools/bootos.sh`: the pmOS awake hold died with the SSH session (`nohup ... &`). It now runs as the transient unit
+  `darwin-lisa-awake` (systemd-run), and the script fails when `systemd-inhibit --list` does not show it.
+- `tools/rtc-offset.sh`: pmOS's rtc0 name has a space (`rtc-pm8xxx c440000.spmi:pmic@0:rtc@6100`), so the count
+  is read first now.
+
+**`battmgr_sign=1` was wrong, and is out again (final3).**
+
+- lisa's firmware reports the current negative while the battery takes charge. In pmOS, VBAT rose 4.18 to 4.26 V
+  with `current_now` at -18 to -246 mA.
+- On a PC port (SDP, 494 mA) iOS draws more than that and the battery net-discharges. The firmware then reports
+  +0.46 to +0.70 A, and capacity and VBAT fall.
+- The default `battmgr_sign=-1` is right. A real charging test needs a wall charger.
+
+**The time zone (init26 `tz=`).** The skeleton's `/private/var/db/timezone/localtime` points at US/Pacific, and the
+`zoneinfo` link it goes through did not exist. With `tz=NAME`, init26 now does this at every boot (`time-zone.c`,
+`applyTimeZone()` in `rtc-wifi-boot.c`):
+
+- it makes `zoneinfo -> /usr/share/zoneinfo.default` when missing;
+- it checks that the zone file exists;
+- it repoints `localtime` at `/var/db/timezone/zoneinfo/NAME`.
+
+On the phone (gpu-probe-1624): `init26: TZ the zone is America/Campo_Grande now (it was
+/var/db/timezone/zoneinfo/US/Pacific)`. Root `33050eb2` has it (launchd `78333aeb`), and the autoboot line has
+`tz=America/Campo_Grande`.
+
+**What is on the phone at the end.**
+
+| What | sha256 |
+|---|---|
+| vendor_boot_a | final3 `80a8f505` (`out/vendor_boot-lisa-final3-80a8f505.img`): kernel final1, `noidle=1 tz=America/Campo_Grande`, 384 characters |
+| root | `33050eb2` (`userland-26/out/system-26.apfs.full-33050eb2`): 3f5c456a (the one-device Metal plug-ins) + the tz init |
+
+**Kernel final2 does not boot.** It panics in early startup: `UBSAN trap taken in early startup code
+@ubsan_minimal.c:81`, right after the version banner (log `gpu-probe-1620.log`). final4 (`cd0ccba2`, kernel final2)
+was flashed and then rolled back to final3.
+
+**Metal on final1 with the one-device plug-ins.**
+
+- 3a passes: one `IOAcceleratorES "sgx"`, and `MTLCreateSystemDefaultDevice() = "HakiOS Adreno 642L ..."`.
+  metal_test's sub-tests did not start, because it re-execs `/redwood/bin/metal_test`.
+- 3b (CA) fails. backboardd aborts on every launch with `+[MTLLoader
+  sliceIDForDevice:legacyDriverVersion:airntDriverVersion:]:692: failed assertion 'Target device architecture is nil'`:
+  the plug-in device has no `-architecture`. Logs `gpu-probe-1624.log`, `gpu-ca-1625.log`.
+
+**Known issue:** the status bar is the classic layout (carrier, centred time), not Split1080.
 
 ## The decisions
 
@@ -215,7 +297,7 @@ cd ~/Dev/mobile
 RTC=$(cat darwin-lisa/logs/evening-rtc-offset.txt)
 KERNEL=kernel-16k-final1.bak XL_SECS=1500 XL_SHOT_EVERY=20 XL_TAG=evening-b1 \
 WIFI_ARGS="wifi=1 wifi_loud=1 rtc=1 $RTC" \
-XL_EXTRA_ARGS="display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 adsp=1 battmgr=2 sensors=1 sensors_fake=2 init_run=/usr/libexec/usermanagerd:--init init_run_secs=60" \
+XL_EXTRA_ARGS="display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 adsp=1 battmgr=2 sensors=1 sensors_fake=2 init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 noidle=1" \
 darwin-lisa/tools/wifi-run.sh             # type the network's name and passphrase at the prompts
 L=research/hackios-xnu-kernel/logs/evening-b1.log
 ```
@@ -354,8 +436,8 @@ criteria and every fallback are in `gpu-device-test.md` "Boot 1".
 
 ```sh
 cd ~/Dev/mobile
-GEOM="fbwidth=1080 fbheight=2400" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh print probe   # check the line
-GEOM="fbwidth=1080 fbheight=2400" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh run probe
+GEOM="lisa=1" MORE="noidle=1 dlisa_noidle=1" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh print probe   # check the line
+GEOM="lisa=1" MORE="noidle=1 dlisa_noidle=1" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh run probe
 L=$(ls -t research/hackios-xnu-kernel/logs/gpu-probe-*.log | grep -v -- -at- | head -1)
 grep -a 'adreno:' $L | grep -E 'built into the kernel|step [0-9]+: (done|FAILED)|IS ALIVE|FIRMWARE IS LOADED|ZAP SHADER|TAKES COMMANDS|0x600dc0de|STAYS ON|NOT STARTED'
 grep -a -E 'init26: RUN .*gputest|gputest:|HakiosGPU: submission|probe: (ok|FAIL)|probe: [0-9]+ failure' $L | head -80
@@ -376,7 +458,7 @@ Pass:
 Only after Boot 3 passed steps 1 and 2.
 
 ```sh
-GEOM="fbwidth=1080 fbheight=2400" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh run ca
+GEOM="lisa=1" MORE="noidle=1" KERNEL=kernel-16k-final1.bak darwin-lisa/kernel/drivers/gpu/gpu-run.sh run ca
 L=$(ls -t research/hackios-xnu-kernel/logs/gpu-ca-*.log | grep -v -- -at- | head -1)
 grep -a -E 'HakiosMetal\[backboardd|function constants:|HakiosGPU: [0-9]+ submissions|fps:|MiniIOMobileFramebuffer: [0-9]+ frames' $L | head -60
 grep -a -E 'backboardd.*(crash|exited|abort)|DLISA abort.*backboardd|metallib_url' $L | head
@@ -477,7 +559,7 @@ The run (phone in the loader):
 ```sh
 cd ~/Dev/mobile
 KERNEL=kernel-16k-final2.bak XL_SECS=900 XL_SHOT_EVERY=20 XL_TAG=evening-b5 \
-XL_EXTRA_ARGS="display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 adsp=1 battmgr=1 sensors=1 sensors_rpc=1 sensors_fake=2 sensors_wait=150 ufs_write=1 ufs_data=super var_ufs=1" \
+XL_EXTRA_ARGS="display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 adsp=1 battmgr=1 sensors=1 sensors_rpc=1 sensors_fake=2 sensors_wait=150 ufs_write=1 ufs_data=super var_ufs=1 noidle=1" \
 darwin-lisa/tools/run-flashroot.sh
 L=research/hackios-xnu-kernel/logs/evening-b5.log
 ```

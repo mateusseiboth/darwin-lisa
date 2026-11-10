@@ -4,6 +4,7 @@
  *
  *   applySavedRtcOffset()  rtc=1: the offset kept on the data volume -> kern.hakios.rtc_offset (the calendar moves)
  *   startRtcKeeper()       rtc=1: a child that saves the kernel's offset whenever it changes (the system set the time)
+ *   applyTimeZone()        tz=NAME: /private/var/db/timezone/localtime points at NAME's zone (time-zone.c)
  *   giveWifiNetwork()      wifi=1: a RAM disk's fw/network kept on the data volume, then the kept one ->
  *                          kern.hakios.wifi_network (the radio joins it once it is up). wifi_forget=1 forgets it,
  *                          wifi_seed=0 leaves RAM disks alone
@@ -143,6 +144,71 @@ startRtcKeeper(void)
 		printf("init26: RTC the kernel's offset is saved when it changes, looked at every %d s (pid %d)\n",
 		    RTC_KEEP_SECONDS, pid);
 	}
+}
+
+/* ---- the time zone ---- */
+
+#define TZ_LOCALTIME            "/private/var/db/timezone/localtime"
+#define TZ_ZONEINFO_LINK        "/private/var/db/timezone/zoneinfo"
+#define TZ_ZONEINFO_DEFAULT     "/usr/share/zoneinfo.default"
+
+/* PATH becomes a symlink to TARGET through PATH.new and a rename: the old link stays if anything fails. 0, or -1 */
+static int
+replaceSymlink(const char *target, const char *path)
+{
+	char temporary[160];
+	size_t n = strlen(path);
+
+	if (n + sizeof(".new") > sizeof(temporary)) {
+		return -1;
+	}
+	memcpy(temporary, path, n);
+	memcpy(temporary + n, ".new", sizeof(".new"));
+	unlink(temporary);
+	if (symlink(target, temporary) != 0) {
+		return -1;
+	}
+	if (rename(temporary, path) != 0) {
+		unlink(temporary);
+		return -1;
+	}
+	return 0;
+}
+
+static void
+applyTimeZone(void)
+{
+	char name[TZ_NAME_MOST + 2], link[160], now[160];
+	struct stat st;
+	ssize_t n;
+
+	if (!bootArgText("tz", name, sizeof(name))) {
+		return;
+	}
+	if (!isTimeZoneName(name) || buildTimeZoneLink(link, sizeof(link), name) == 0) {
+		printf("init26: TZ tz=%s is not a zone's name: the zone is left alone\n", name);
+		return;
+	}
+	/* the zone files: the root's own set, unless iOS has pointed this link at a newer one */
+	if (lstat(TZ_ZONEINFO_LINK, &st) != 0 && symlink(TZ_ZONEINFO_DEFAULT, TZ_ZONEINFO_LINK) != 0) {
+		printf("init26: TZ %s: %s: the zone is left alone\n", TZ_ZONEINFO_LINK, strerror(errno));
+		return;
+	}
+	if (stat(link, &st) != 0) {
+		printf("init26: TZ no zone file %s: %s: the zone is left alone\n", link, strerror(errno));
+		return;
+	}
+	n = readlink(TZ_LOCALTIME, now, sizeof(now) - 1);
+	if (n > 0 && isTimeZoneLinkTo(now, (size_t)n, name)) {
+		printf("init26: TZ the zone is %s already\n", name);
+		return;
+	}
+	now[n > 0 ? n : 0] = 0;
+	if (replaceSymlink(link, TZ_LOCALTIME) != 0) {
+		printf("init26: TZ %s: %s: the zone is left alone\n", TZ_LOCALTIME, strerror(errno));
+		return;
+	}
+	printf("init26: TZ the zone is %s now (it was %s)\n", name, n > 0 ? now : "not set");
 }
 
 /* ---- the Wi-Fi network ---- */

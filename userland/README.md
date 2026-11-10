@@ -61,3 +61,26 @@ with 7z and inflate with an LZVN/LZFSE decmpfs decoder.
 - `tools/fbtest.c` + `tools/build-fbtest.sh`: draws through IOSurface/CoreGraphics/IOMobileFramebuffer of iOS 26
   (`/usr/local/bin/fbtest`). `tools/cmquery.c`: containermanagerd query/console tail diagnostics.
 - See `kernel/drivers/display/README.md` for the whole picture.
+
+## Window-server chain additions (2026-11-10)
+
+- `inject/` — **libdlisa.dylib**, our code inside stock daemons (the iOS 26 counterpart of HakiOS's libhakios).
+  `inject/dlisa-inject.conf` (installed as `/etc/dlisa-inject.conf`) names the programs; init26 hands it to the
+  kernel's `kern.exec_inject` (`kernel/execaids/`), which adds `DYLD_INSERT_LIBRARIES` at exec (launchd does not pass
+  DYLD_ variables from a job). `inject/build-inject.sh` builds it (arm64, chained fixups, ad hoc) and
+  `inject/arm64e-mark.py` relabels it arm64e (dyld only inserts a library of the process's own architecture; lld
+  writes cpusubtype ALL) and re-hashes the signature. What it does per program:
+  - containermanagerd: `+[MCMUserIdentityCache personasAreSupported]` -> NO (HakiOS's 16.5 fix), plus tracing of
+    the command dispatcher.
+  - lsd: repeats lsd's own user container lookup (class 10, primary persona, flags 0x900000001) from inside lsd and
+    prints containermanagerd's answer; CoreServices branches straight into libsystem_containermanager, so the
+    lookup cannot be interposed.
+  - everyone it is in: stderr points at the console, and boot-arg `dlisa_oslog=all` / `dlisa_oslog=A,B` copies
+    every os_log message of those programs to the console (`os_log_set_hook` + `os_log_copy_message_string`).
+    `OS_ACTIVITY_DT_MODE` does nothing on a customer build (libtrace honours it only on an internal one).
+- `scripts/plist-tweaks.py` — LaunchDaemon edits, applied to `out/sysroot-26` in place (originals kept in
+  `out/plist-orig/`): `EnablePressuredExit` off for containermanagerd (+ the system one). This was a wrong lead
+  (the SIGTERM it guarded against was never sent; the real cause was the kernel's connection-port check, see
+  `kernel/pg16k/connport-wire.py`), kept because it is harmless; revert it if it ever matters.
+- The lsd / containermanagerd chain was a kernel problem in the end (`kernel/drivers/display/README.md`, "The window
+  server chain after the display"); with it fixed lsd gets its container and backboardd draws the boot progress bar.

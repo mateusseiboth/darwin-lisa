@@ -333,6 +333,42 @@ runEarlyTasks(void)
 	}
 }
 
+/*
+ * /etc/dlisa-inject.conf: one "LIBRARY NAME NAME ..." per line. The kernel starts the programs with these file
+ * names with the library inserted (sysctl kern.exec_inject, kernel/execaids; launchd will not pass DYLD_
+ * variables from a job description). The library is libdlisa.dylib (userland/inject/).
+ */
+static void
+configureInject(void)
+{
+	char conf[1024];
+	int fd = open("/etc/dlisa-inject.conf", O_RDONLY, 0);
+	ssize_t n;
+
+	if (fd < 0) {
+		return;
+	}
+	n = read(fd, conf, sizeof(conf) - 1);
+	close(fd);
+	while (n > 0 && (conf[n - 1] == '\n' || conf[n - 1] == ' ')) {
+		n--;
+	}
+	if (n <= 0) {
+		return;
+	}
+	conf[n] = 0;
+	for (ssize_t i = 0; i < n; i++) {
+		if (conf[i] == '\n') {
+			conf[i] = ';';     /* the kernel separates the groups with ";" */
+		}
+	}
+	if (sysctlbyname("kern.exec_inject", NULL, NULL, conf, (size_t)n + 1) != 0) {
+		printf("init26: kern.exec_inject: %s\n", strerror(errno));
+		return;
+	}
+	printf("init26: library insertion: %s\n", conf);
+}
+
 static void
 handOff(char **envp)
 {
@@ -391,6 +427,7 @@ main(int argc, char **argv, char **envp)
 	if (findConsoleArg()) {
 		chmod("/dev/console", 0666);
 	}
+	configureInject();
 	runEarlyTasks();
 
 	handOff(envp);

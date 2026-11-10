@@ -15,6 +15,7 @@ failed build leaves the previous `kernel.macho` in place. After every rebuild, g
 | `dyldpager-wire.py` | `vm_dyld_pager.c`: compile the arm64e chained-fixup formats without `HAS_APPLE_PAC`, with a `signPointer()` that stores the plain pointer | dyld page-in linking of arm64e binaries failed with `fixup_page(): unknown pointer_format 12` (ARM64E_USERLAND24), and launchd died with SIGBUS. |
 | `mmappac-wire.py` | `mmap()`: executable private file mappings go through the PAC-rewriting apple-protect pager | dylibs and bundles dyld loads from disk outside the cache (UserEventAgent/configd plugins) trapped on `BRAA x16, x17` (EXC_BAD_INSTRUCTION, 0xd71f0a11). mach_loader's pager only covers binaries the kernel execs. |
 | `watchdogvm-wire.py` | `kern.hv_vmm_present` reads 1 for watchdogd only | No IOWatchdog kext on this port. watchdogd `__os_crash`es (SIGTRAP) unless it sees a VM ("no watchdog KEXT found, exiting...", exit 0, not restarted). launchd marks it `_PanicOnCrash`, so each crash panicked the kernel. |
+| `connport-wire.py` | `mach_port_is_connection_for_service()` answers "no policy" (KERN_SUCCESS, filter id 0) when no mach message filter is registered, instead of KERN_NOT_SUPPORTED | Every XPC listener of iOS 26 asks the kernel whether a new client's connection port derives from its service port. Only Apple's Sandbox kext registers the message filter that question needs, so the answer was always 46: libxpc logged "Failed to verify check-in connection port ... (kr=46)" / "Bogus check-in attempt. Ignoring." and dropped every client. All first messages to launchd services came back XPC_INTERRUPTED_REPLY (lsd -> containermanagerd, runningboardd -> cfprefsd): lsd aborted and runningboardd, backboardd and SpringBoard waited for ever. |
 | `ramfs-wire.py` (+ `ramfs/ramfs.c`) | HakiOS's in-memory read-write filesystem, registered as `ramfs` (xnu-12377 port: `<vm/vm_kern_xnu.h>`) | The data volume. The APFS driver mounts read only and nothing may be written to flash, so init26 mounts ramfs on /private/var. |
 
 `mach_loader.c` `pac_page_transform` stays at 4096 bytes (the apple-protect pager calls
@@ -46,3 +47,7 @@ was found.
 `diag-proclife-wire.py` prints `DLISA exec`/`DLISA exit` per process, which is the only view of
 the boot once logd takes launchd's log off the console.
 `diag-sctrace-wire.py` traces every BSD syscall of pid 1. It is heavy; use it only for dyld/launchd start-up.
+`diag-kill-wire.py` prints kill(2) of a single process with SIGTERM/SIGKILL/SIGHUP/SIGINT, every SIGTERM that
+reaches psignal or the EVFILT_SIGNAL knotes, and an EVFILT_SIGNAL knote that fires on a non-signal hint.
+`diag-kevent-wire.py` prints refused kevent registrations (at most 300) and every EVFILT_SIGNAL(SIGTERM) event
+delivered to user space. Both were written chasing "Bogus check-in attempt" (it turned out to be connport, above).

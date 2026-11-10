@@ -145,5 +145,42 @@ frame (`dlisa_vc_quiet`, `kernel/patches/vcputc-tee.patch`); its output still re
 
 `cpufreq=1` (optionally `cpufreq_max=MHz`) makes the boot several times faster but **the kernel stops a few minutes
 into every such boot** (heartbeat lines stop at ~4-5 min, at 2400 and at 1324 MHz alike, with 400 MB still free);
-without it the same boot runs for 30 minutes. Not understood yet (thermal limits on the prime core are the first
-suspect); leave it off for long runs.
+without it the same boot runs for 45 minutes. **Cause (offline analysis, to be confirmed on the device): WFI at idle.**
+The kernel has one core and no device interrupt; the virtual timer is its only wake source, and this hypervisor does
+not wake a vCPU parked in WFI when the virtual timer fires (`docs/phase3-ondevice.md`, "Timer-at-idle"). At the
+firmware's clock the core never runs out of work during a boot; at 1.3-2.4 GHz it does once the daemons settle,
+`cpu_idle()` executes WFI, and the core never wakes. The loader then sees no heartbeat for 50 s, calls the kernel hung
+and the live log stops (the last kernel lines are ordinary activity, no heartbeat after them). Not the watchdogs (the
+loader pets the hypervisor's until `loader_return_after`+60 s), not the timebase (19.2 MHz counter, independent of the
+core clock), not voltage (EPSS sets it with the row, as in Linux's qcom-cpufreq-hw; the addresses match lisa's DTB).
+Fix prepared: `kernel/patches/cpu-idle-no-wfi.patch` (idle polls instead of WFI; not yet in `apply.sh`), or boot-arg
+`wfi=0` on the current kernel. It matters without cpufreq too: a settled system (an idle SpringBoard) hangs the same
+way.
+
+## The window server chain after the display (2026-11-10, second night)
+
+What stood between the working display path and backboardd drawing, in the order it was found:
+
+1. **lsd's user container lookup came back `XPC_INTERRUPTED_REPLY`** ("Could not get user container URL! Must
+   abort."). The cause was general, not containermanagerd's: every iOS 26 XPC listener asks the kernel whether a new
+   client's connection port derives from its service port (`mach_port_is_connection_for_service`), and xnu answers
+   KERN_NOT_SUPPORTED unless a mach message filter is registered, which only Apple's Sandbox kext does. libxpc logged
+   "Failed to verify check-in connection port ... (kr=46)" / "Bogus check-in attempt. Ignoring." and dropped every
+   client of every launchd service. Fix: `kernel/pg16k/connport-wire.py` (no filter = no policy, KERN_SUCCESS).
+2. **backboardd aborted at every start** in libxpc: `assertion failure: "matched == (match_result.error_code ==
+   AICMR_MATCH)" -> 0`. XPC session peer requirements are checked with AMFI request 0x66, which miniamfi did not
+   answer. Fix: `kernel/security/amfi-lcmatch-wire.py` (every process matches).
+3. HakiOS's `personasAreSupported -> NO` for containermanagerd is carried in `userland/inject/libdlisa.dylib`; it was
+   not the cause of (1) and is kept because 16.5 needed it.
+
+Tools written on the way (all kept):
+
+* `kernel/execaids/execaids-wire.py`: `kern.exec_inject` (DYLD_INSERT_LIBRARIES by program name; init26 sets it
+  from `/etc/dlisa-inject.conf`) and `applog=1 applog_name=A,B` (OS_ACTIVITY_DT_MODE by name). `applog_console=1`
+  (HakiOS's /dev/null -> /dev/console for spawned programs) makes every launchd spawn fail with EACCES on iOS 26,
+  so it is opt-in.
+* `userland/inject/` (libdlisa.dylib): boot-arg `dlisa_oslog=all|NAME,NAME` copies the os_log of the programs it is
+  in to the console. This is what found (1): `oslog[cfprefsd] ... Bogus check-in attempt`.
+* `kernel/drivers/keystore/` (MiniAppleKeyStore from HakiOS, boot-arg `keystore=1`): containermanagerd and others
+  log "failed to open connection to AppleKeyStore" without it. Not the cause of (1); harmless with it.
+* `kernel/pg16k/diag-kill-wire.py`, `diag-kevent-wire.py`: signal / kevent diagnostics (see that README).

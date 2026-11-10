@@ -86,6 +86,20 @@ miniamfi_vnode_check_signature(__unused struct vnode *vp, __unused struct label 
 #define AMFI_SYSCALL_QUERY_BOOTARG_STATE 0x60
 #define AMFI_BOOTARG_STATE_NOT_ENFORCING 0x86ULL
 
+/*
+ * Request 0x66, "does this process match this launch constraint" (amfi_launch_constraint_matches_process()). libxpc
+ * asks it for the peer requirement of an XPC session and asserts that the answer's error code says the same as the
+ * call: AICMR_MATCH (0) for a match. Nothing is enforced here, so every process matches.
+ */
+#define AMFI_SYSCALL_LAUNCH_CONSTRAINT_MATCH 0x66
+struct amfi_lc_match_args {
+	uint8_t     token[32];          /* audit_token_t of the process */
+	user_addr_t requirement;
+	uint32_t    length;
+	user_addr_t result;             /* { uint32_t error_code; char message[1024]; } */
+	uint32_t    size;
+};
+
 static int
 miniamfi_policy_syscall(__unused struct proc *p, int call, user_addr_t arg)
 {
@@ -97,6 +111,16 @@ miniamfi_policy_syscall(__unused struct proc *p, int call, user_addr_t arg)
 	uint64_t state = AMFI_BOOTARG_STATE_NOT_ENFORCING;
 	int error;
 
+	if (call == AMFI_SYSCALL_LAUNCH_CONSTRAINT_MATCH) {
+		struct amfi_lc_match_args lc;
+		uint32_t match = 0;     /* AICMR_MATCH */
+
+		error = copyin(arg, &lc, sizeof(lc));
+		if (error == 0 && lc.result != USER_ADDR_NULL && lc.size >= sizeof(match)) {
+			error = copyout(&match, lc.result, sizeof(match));
+		}
+		return error;
+	}
 	if (call == AMFI_SYSCALL_QUERY_BOOTARG_STATE) {
 		return copyout(&state, arg, sizeof(state));
 	}

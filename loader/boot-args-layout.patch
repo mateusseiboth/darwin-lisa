@@ -1,0 +1,26 @@
+--- a/xnuloader/loader.c	2026-11-10 17:19:47.120393678 -0400
++++ b/xnuloader/loader.c	2026-11-10 17:19:47.131633757 -0400
+@@ -60,7 +60,13 @@
+ 	uint64_t v_baseAddr, v_display, v_rowBytes, v_width, v_height, v_depth;
+ };
+ 
+-#define BOOT_LINE_LENGTH 608
++/*
++ * darwin-lisa: xnu-12377's struct boot_args (pexpert/arm64/boot.h) has a 1024-byte command line. With 608 here the
++ * kernel read bootFlags and memSizeActual from bytes this loader never wrote (stale RAM from the previous run): a
++ * garbage memSizeActual overflowed scale_setup() ("UBSAN trap taken in early startup code") and bit 0 of bootFlags
++ * is the dark boot flag.
++ */
++#define BOOT_LINE_LENGTH 1024
+ 
+ struct boot_args {
+ 	uint16_t revision;
+@@ -3415,7 +3421,7 @@
+ 
+ 	/* --- boot_args ------------------------------------------------------ */
+ 	struct boot_args *ba = (struct boot_args *)ba_pa;
+-	memset(ba, 0, sizeof(*ba));
++	memset(ba, 0, PAGE_SIZE_MAX);	/* the whole boot_args page: nothing of a previous run is left for the kernel to read */
+ 	ba->revision = 2;
+ 	ba->version = 2;
+ 	ba->virtBase = KERNEL_VIRT_BASE;

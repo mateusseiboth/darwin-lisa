@@ -25,7 +25,7 @@ cp "$here/../soc/gic_vtimer.c" "$tree/osfmk/arm64/gic_vtimer.c"
 for p in sleh-pac-emulate conf-files-pac machdep-grade-arm64e mach_loader-pac-pager \
          pe_kprintf-loader-console pe_gen-loader-console debug-loader-return \
          prng-seed-bringup pe_init-skip-console machine-routines-virtual-timer machine-routines-decrementer-floor serial-console-tee vcputc-tee \
-         bcm2837-gic-v3 pe_fiq-vtimer-group1 trustcache-skip cpu-idle-no-wfi; do
+         bcm2837-gic-v3 pe_fiq-vtimer-group1 trustcache-skip cpu-idle-no-wfi boot-args-loader-layout; do
 	if patch -d "$tree" -p1 --forward --reverse --dry-run <"$here/$p.patch" >/dev/null 2>&1; then
 		echo "already applied: $p"
 	else

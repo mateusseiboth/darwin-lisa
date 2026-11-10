@@ -120,7 +120,12 @@ SOC=$(sed -n 's/^#define IDENTITY_\(PLATFORM_NAME\|CHIP_ID\|BOARD_ID\|REGULATORY
 [[ -n $SOC ]] || SOC="none in the header, so the defaults: t8015 0x8015 0x06 A1865"
 echo "build-standalone: identity SoC and board: $SOC"
 cp "$M/darwin-lisa/loader/data-regions.h" "$W/build/xnuloader/"
-for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch identity-soc.patch; do
+# boot-args-layout.patch (xnu-12377's 1024-byte boot_args command line, the whole boot_args page zeroed) is opt-in until
+# a session at the phone has booted it: LOADER_BOOTARGS_FIX=1. The kernel copes with the old layout either way
+# (kernel/patches/boot-args-loader-layout.patch).
+LOADER_PATCHES="oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch identity-soc.patch"
+[ "${LOADER_BOOTARGS_FIX:-0}" = 1 ] && LOADER_PATCHES="$LOADER_PATCHES boot-args-layout.patch"
+for p in $LOADER_PATCHES; do
 	(cd "$W/build" && patch -s -p1 --forward <"$M/darwin-lisa/loader/$p")
 done
 (cd "$W/build/xnuloader" && bash build.sh >/dev/null)

@@ -1,0 +1,70 @@
+--- a/osfmk/arm/arm_init.c	2026-11-10 17:18:47.837319413 -0400
++++ b/osfmk/arm/arm_init.c	2026-11-10 17:20:04.695465138 -0400
+@@ -340,6 +340,59 @@
+ }
+ 
+ /*
++ * darwin-lisa: the xnuloader writes a boot_args whose command line is 608 bytes (an older xnu's
++ * BOOT_LINE_LENGTH); this kernel's is 1024. The loader's bootFlags and memSizeActual therefore sit
++ * right after its 608th byte (boot_args offsets 720 and 728), and the kernel's own bootFlags and memSizeActual are
++ * bytes the loader never writes: whatever the previous run left in that page. A non-zero
++ * memSizeActual becomes max_mem_actual, and stale bytes there overflowed scale_setup()
++ * (task_max_base * scale, "UBSAN trap taken in early startup code"); bit 0 of bootFlags is
++ * kBootFlagsDarkBoot. The loader's layout is recognised by its own memSizeActual, which it sets
++ * to memSize; otherwise values that cannot be right are dropped.
++ */
++#define DLISA_LOADER_LINE_LENGTH 608
++/* the loader's bootFlags: right after its command line, 8-byte aligned (716 -> 720) */
++#define DLISA_LOADER_FLAGS_OFFSET \
++	((__builtin_offsetof(boot_args, CommandLine) + DLISA_LOADER_LINE_LENGTH + 7) & ~(size_t)7)
++
++__startup_func
++static bool
++dlisa_is_loader_boot_args(const boot_args *ba, uint64_t *flags, uint64_t *actual)
++{
++	const char *line = ba->CommandLine;
++	unsigned int n = 0;
++
++	while (n < DLISA_LOADER_LINE_LENGTH && line[n] != '\0') {
++		n++;
++	}
++	if (n == DLISA_LOADER_LINE_LENGTH) {
++		return false;
++	}
++	memcpy(flags, (const char *)ba + DLISA_LOADER_FLAGS_OFFSET, sizeof(*flags));
++	memcpy(actual, (const char *)ba + DLISA_LOADER_FLAGS_OFFSET + sizeof(*flags), sizeof(*actual));
++	return *actual == ba->memSize;
++}
++
++__startup_func
++static void
++dlisa_fixup_boot_args(boot_args *ba)
++{
++	uint64_t flags = 0, actual = 0;
++
++	if (dlisa_is_loader_boot_args(ba, &flags, &actual)) {
++		ba->bootFlags = flags;
++		ba->memSizeActual = actual;
++		return;
++	}
++	if ((ba->bootFlags & ~(uint64_t)kBootFlagsDarkBoot) != 0) {
++		ba->bootFlags = 0;
++	}
++	if (ba->memSizeActual != 0 && (ba->memSizeActual < ba->memSize ||
++	    ba->memSizeActual > (1ULL << 40) || (ba->memSizeActual & PAGE_MASK) != 0)) {
++		ba->memSizeActual = 0;
++	}
++}
++
++/*
+  *		Routine:		arm_init
+  *		Function:		Runs on the boot CPU, once, on entry from iBoot.
+  */
+@@ -363,6 +416,7 @@
+ 	/* If kernel integrity is supported, use a constant copy of the boot args. */
+ 	const_boot_args = *args;
+ 	BootArgs = args = &const_boot_args;
++	dlisa_fixup_boot_args(&const_boot_args);	/* darwin-lisa: the xnuloader's boot_args layout */
+ 
+ #if APPLEVIRTUALPLATFORM
+ 	reset_vector_vaddr = (vm_offset_t) &LowResetVectorBase;

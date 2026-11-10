@@ -19,6 +19,8 @@
 # libdlisa.dylib). metal_test stays arm64. Nothing of xnu-deps/host/bin is used.
 #
 #   DEST=DIR      where the bundle goes (default: the sysroot's /System/Library/Extensions)
+#   BUNDLE=NAME   the bundle's name (default HakiosMetal). The kernel's accelerator names HakiosMetal with metal=1, or
+#                 another with metal_plugin=NAME (gpu-wire.py): the probe one goes in as HakiosMetalProbe beside the ca one
 #   DEST_BIN=DIR  where metal_test goes (default: the sysroot's /usr/local/bin)
 # Then rebuild the USB image: (cd ~/Dev/mobile/userland-26 && LEAN=1 bash scripts/mkimage-trim.sh)
 set -eu
@@ -28,6 +30,7 @@ SDK=$M/research/iOS-SDKs/iPhoneOS26.5.sdk
 DEST=${DEST:-$M/userland-26/out/sysroot-26/System/Library/Extensions}
 DEST_BIN=${DEST_BIN:-$M/userland-26/out/sysroot-26/usr/local/bin}
 PLUGIN=${PLUGIN:-probe}
+BUNDLE=${BUNDLE:-HakiosMetal}
 MESA=${MESA:-}
 MB=${MESA_BUILD:-$M/userland-26/gpu-build/mesa}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -96,9 +99,10 @@ clang $T -O1 -w -fobjc-arc -Wno-deprecated-declarations -fuse-ld=lld \
     -framework OpenGLES -lMobileGestalt -Wl,-adhoc_codesign -o metal_test "$H/userland/src/metal_test.m"
 
 python3 -I "$HERE/../../../../userland/inject/arm64e-mark.py" "$WORK/HakiosMetal"
-mkdir -p "$DEST/HakiosMetal.bundle" "$DEST_BIN"
-install -m 755 "$WORK/HakiosMetal" "$DEST/HakiosMetal.bundle/HakiosMetal"
-install -m 644 "$H/userland/src/HakiosMetal.plist" "$DEST/HakiosMetal.bundle/Info.plist"
+mkdir -p "$DEST/$BUNDLE.bundle" "$DEST_BIN"
+# (the executable keeps its name, which Info.plist's CFBundleExecutable gives; only the bundle's directory changes)
+install -m 755 "$WORK/HakiosMetal" "$DEST/$BUNDLE.bundle/HakiosMetal"
+install -m 644 "$H/userland/src/HakiosMetal.plist" "$DEST/$BUNDLE.bundle/Info.plist"
 install -m 755 "$WORK/metal_test" "$DEST_BIN/metal_test"
-echo "HakiosMetal.bundle ($PLUGIN${MESA:+, with the compiler}) -> $DEST/HakiosMetal.bundle; metal_test -> $DEST_BIN/metal_test"
-file "$DEST/HakiosMetal.bundle/HakiosMetal" "$DEST_BIN/metal_test" 2>/dev/null || true
+echo "$BUNDLE.bundle ($PLUGIN${MESA:+, with the compiler}) -> $DEST/$BUNDLE.bundle; metal_test -> $DEST_BIN/metal_test"
+file "$DEST/$BUNDLE.bundle/HakiosMetal" "$DEST_BIN/metal_test" 2>/dev/null || true

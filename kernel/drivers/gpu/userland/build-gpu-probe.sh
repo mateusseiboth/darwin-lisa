@@ -1,6 +1,6 @@
 #!/bin/sh
-# Build hakios-metal-probe (HakiOS's hakios-metal/tools/probe.cpp) for iOS 26 and put it in the iOS 26 sysroot as
-# /usr/local/bin/hakios-metal-probe: the GPU test that comes before any Metal or CoreAnimation. It opens the kernel's
+# Build hakios-metal-probe (HakiOS's hakios-metal/tools/probe.cpp) and gputest (gputest.c) for iOS 26 and put them in
+# the iOS 26 sysroot as /usr/local/bin/hakios-metal-probe and /usr/local/bin/gputest. The probe is the GPU test that comes before any Metal or CoreAnimation. It opens the kernel's
 # HakiosGPU user client, copies and fills buffers with the command processor, runs compute kernels and draws the first
 # triangles into a 64x64 target, every result checked word by word ("probe: ok ..." / "probe: FAIL ...").
 #
@@ -38,4 +38,11 @@ docker run --rm -v $M:/work:ro darwin-lisa/unixnu-toolchain:latest sh -c '
 mkdir -p "$DEST"
 install -m 755 "$OUT" "$DEST/hakios-metal-probe"
 echo "hakios-metal-probe -> $DEST/hakios-metal-probe"
-file "$DEST/hakios-metal-probe" 2>/dev/null || true
+# gputest (gputest.c here): the probe and metal_test in order under one init_run= entry. Fedora's clang 22 builds it here.
+HERE=$(cd "$(dirname "$0")" && pwd)
+clang -target arm64-apple-ios16.0 -isysroot "$M/$SDK26" -O1 -Wall -fuse-ld=lld -Wl,-adhoc_codesign \
+    -o "$OUT.gputest" "$HERE/gputest.c"
+install -m 755 "$OUT.gputest" "$DEST/gputest"
+rm -f "$OUT.gputest"
+echo "gputest -> $DEST/gputest"
+file "$DEST/hakios-metal-probe" "$DEST/gputest" 2>/dev/null || true

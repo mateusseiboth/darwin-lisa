@@ -20,6 +20,12 @@ iOS 26 kernel; this directory holds the rest.
 | `mesa/mk-mesa-darwin.sh` | The Darwin Mesa build for `MESA=1`: Mesa 25.0.7 + HakiOS's patches + the AIR front end + `air-*.patch`, the 13 compiler archives, in `~/Dev/mobile/userland-26/gpu-build/mesa` (418 MB). Runs on the host (Fedora clang 22, ld64.lld): nothing of `xnu-deps/host/bin` is used or changed. Built. |
 | `mesa/air-read-sampler.patch` | The AIR front end takes AIR 2.8's `air.get_read_sampler` and the read form that carries it. |
 | `tools/metal-initlimits.py` | Runs Metal's `-[_MTLDevice initLimits]` under unicorn for every `featureProfile`. |
+| `gpu-run.sh` | The device boots of `docs/gpu-device-test.md` (the run book), as host runs with only boot-args changed; checks the 460-character line. |
+| `userland/gputest.c` | The probe and `metal_test` in order under one `init_run=` entry. |
+
+**Device test: `darwin-lisa/docs/gpu-device-test.md`.** Since the third round `gpu-wire.py` also builds the stock
+firmware into the kernel (step 7, `bsd/dev/hakios.adreno_fw.h`, generated in xnu-work only, never in git: the flash
+root is not read by `hakios_image_file()`), and adds boot-arg `metal_plugin=` (step 6).
 
 Wire order on a fresh tree: `../adreno-wire.py`, `../display/display-wire.py`, then `gpu-wire.py` last. Both earlier
 scripts rewrite a file `gpu-wire.py` guards, so after rerunning either one, rerun `gpu-wire.py` too.

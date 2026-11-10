@@ -25,7 +25,11 @@ fi
 # LEAN=1: also leave out the LaunchDaemons listed in lean-daemons.txt (memory; see that file).
 LEAN_LIST="$HERE/lean-daemons.txt"
 LD=System/Library/LaunchDaemons
-if [ "${LEAN:-0}" = 1 ] && [ "${FULL:-0}" != 1 ]; then
+# FULL=1 LEAN=1: the flash root without the lean daemons (out/system-26.apfs.full-lean). That is the root that
+# reaches the home screen: without locationd the CoreLocation migrator does not hang DataMigrator for 20 min, and
+# ClarityBoard/checkerboard do not compete with SpringBoard for the display.
+if [ "${LEAN:-0}" = 1 ]; then
+	[ "${FULL:-0}" = 1 ] && IMG=system-26.apfs.full-lean
 	while read -r f; do
 		case "$f" in ''|'#'*) continue;; esac
 		TRIM+=("$LD/$f")

@@ -325,6 +325,103 @@ startVarSync(void)
 	}
 }
 
+/* the system's build (ProductBuildVersion in SystemVersion.plist) into BUF; "23F84" when it cannot be read */
+static void
+readBuildVersion(char *buf, size_t size)
+{
+	static const char key[] = "<key>ProductBuildVersion</key>";
+	static char plist[4096];
+	int fd = open("/System/Library/CoreServices/SystemVersion.plist", O_RDONLY, 0);
+	ssize_t n = fd >= 0 ? read(fd, plist, sizeof(plist) - 1) : -1;
+
+	strcpy(buf, "23F84");
+	if (fd >= 0) {
+		close(fd);
+	}
+	if (n <= 0) {
+		return;
+	}
+	plist[n] = 0;
+	for (char *p = plist; *p != 0; p++) {
+		if (strncmp(p, key, sizeof(key) - 1) != 0) {
+			continue;
+		}
+		for (p += sizeof(key) - 1; *p != 0 && *p != '>'; p++) {
+		}
+		if (*p == 0) {
+			return;
+		}
+		size_t len = 0;
+		for (p++; p[len] != 0 && p[len] != '<' && len + 1 < size; len++) {
+		}
+		if (len > 0) {
+			memcpy(buf, p, len);
+			buf[len] = 0;
+		}
+		return;
+	}
+}
+
+/*
+ * DataMigrator (com.apple.datamigrator, the progress bar under the Apple logo) migrates the data volume when the
+ * build it last migrated, LastSystemVersion in the com.apple.migration preferences, is not this one, or when the
+ * sentinel /private/var/datamigrator/migrate is there. On a new /private/var that is every boot, and here its plugins
+ * cannot run (com.apple.migrationpluginwrapper aborts and launchd throttles it), so it waits out each plugin's
+ * watchdog: about 20 minutes, never finishing. A restored phone has the record; write it at every boot, for root (the
+ * migrator's own user), mobile and the any-user domain, and drop the sentinel and the migrator's context. var_migrate=1: leave both.
+ * Returns the number of failures.
+ */
+static int
+markMigrationDone(void)
+{
+	static const struct {
+		const char *path;
+		int uid;
+	} prefs[] = {
+		{ "/private/var/root/Library/Preferences/com.apple.migration.plist", 0 },
+		{ "/private/var/mobile/Library/Preferences/com.apple.migration.plist", 501 },
+		{ "/private/var/preferences/com.apple.migration.plist", 0 },
+	};
+	char build[32], plist[1024];
+	int bad = 0, made = 0;
+
+	if (bootArgNumber("var_migrate", 0) == 1) {
+		printf("init26: VAR var_migrate=1: DataMigrator's record is left as it is\n");
+		return 0;
+	}
+	readBuildVersion(build, sizeof(build));
+	strcpy(plist, "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+	    "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n"
+	    "<plist version=\"1.0\">\n<dict>\n\t<key>LastSystemVersion</key>\n\t<string>");
+	strcpy(plist + strlen(plist), build);
+	strcpy(plist + strlen(plist), "</string>\n\t<key>DMLastMigrationResults</key>\n\t<dict>\n\t\t<key>buildVersion</key>\n\t\t<string>");
+	strcpy(plist + strlen(plist), build);
+	strcpy(plist + strlen(plist), "</string>\n\t\t<key>success</key>\n\t\t<true/>\n\t</dict>\n</dict>\n</plist>\n");
+	for (unsigned i = 0; i < sizeof(prefs) / sizeof(prefs[0]); i++) {
+		/* the migrator writes this domain itself as it starts (its reboot count): written over at every boot */
+		int fd = open(prefs[i].path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+		size_t len = strlen(plist);
+		if (fd < 0 || write(fd, plist, len) != (ssize_t)len || chown(prefs[i].path, prefs[i].uid, prefs[i].uid) != 0) {
+			printf("init26: VAR %s: %s\n", prefs[i].path, strerror(errno));
+			bad++;
+		} else {
+			made++;
+		}
+		if (fd >= 0) {
+			close(fd);
+		}
+	}
+	if (unlink("/private/var/datamigrator/migrate") == 0) {
+		printf("init26: VAR DataMigrator's sentinel removed\n");
+	}
+	/* its context (the user data disposition of a migration asked for on the next reboot) */
+	if (unlink("/private/var/mobile/Library/Preferences/com.apple.DataMigration.plist") == 0) {
+		printf("init26: VAR DataMigrator's context removed\n");
+	}
+	printf("init26: VAR DataMigrator: build %s recorded as migrated (%d written, %d failed)\n", build, made, bad);
+	return bad;
+}
+
 /*
  * The data volume. On an iPhone /private/var is the APFS Data volume, created at
  * restore from the rootfs's private/var. Here, without var_ufs=1, /private/var is
@@ -414,6 +511,7 @@ mountVar(void)
 		printf("init26: VAR /private/var/keybags: %s\n", strerror(errno));
 		bad++;
 	}
+	bad += markMigrationDone();
 	printf("init26: VAR /private/var is %s: %d entries made, %d already there, %d failed\n",
 	    kept ? "the data volume on the flash" : "ramfs", made, there, bad);
 	if (kept) {

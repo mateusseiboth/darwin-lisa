@@ -78,6 +78,7 @@ keeps the volume consistent either way.
 | `var_ufs=1` | init26 | mount `/dev/ufs_data` (HFS) on `/private/var`; ramfs if that fails |
 | `var_sync=N` | init26 | sync every N s (default 30; 0 = never) |
 | `var_grow=1` | init26 | grow the volume to the whole device once (A to B migration, section 7) |
+| `var_migrate=1` | init26 | do not write DataMigrator's "already migrated" record (default: written at every boot) |
 | `ufs_data_restore_ms=N` | kernel | with `ufs_native=1`: when the kernel's list goes back in after writes (0 = end of run) |
 | `ufs_write_first=N` | kernel | can only raise the floor; normally not needed |
 
@@ -284,6 +285,39 @@ journaled HFS+ read-only.
 | not using it | drop `var_ufs=1` (and `ufs_write=1 ufs_data=super`): ramfs as before. Nothing else changes |
 | vendor_boot_a | `backups/vendor_boot_a-before-datavol.img` (A0), via pmOS `dd` or ABL `fastboot flash vendor_boot_a` |
 | root | `userland-26/out/system-26.apfs.full` (flash-boot.md C2) |
+
+### Status on the phone (2026-11-10)
+
+Done, option A, all writes read back:
+
+| What | Where | sha256 |
+|---|---|---|
+| loader with the data region | vendor_boot_a (later replaced by the standalone image `vendor_boot-lisa-standalone.img`, 53b2e254) | 7c1f3182 |
+| kernel (datavol.patch + HFS Plus built in) | `kernel26.nopac` = `kernel-16k-datavol-hfs.bak` | 58ec7fde |
+| empty HFSX volume | super bytes 4831838208.. | 63d252f1 (as written) |
+| root with the new init | super bytes 0..4831838207 | 8b84a329, then the presentation roots 964f2343, 09af3c4c, d5383125 |
+
+- A1 was replaced by a short negative run on the flashed loader (`ufs_data=nonexistent`): the loader prints
+  `no such region or partition: no write will be served`, the kernel `no write will be asked for`, init falls back to
+  ramfs. `bootos.sh uboot` did not bring up U-Boot's fastboot (the loader came back), so the RAM test of the loader was
+  skipped.
+- Boot 1 (host-run, `run-flashroot.sh` with `XL_FW_RAMDISK`): the loader and kernel lines of A6, then
+  `hfs: Initializing the journal`, `hfs: mounted Data on device ufs_data`,
+  `VAR /private/var is HFS Plus from /dev/ufs_data (4096 MB), kept between boots`, `178 entries made`. About 2.3 GB free,
+  VBAT 4.1 V. No clonefile/ENOTSUP/F_PUNCHHOLE/snapshot/purgeable failures in the log.
+- **The slow first boot is DataMigrator, not LaunchServices.** The bar is com.apple.datamigrator (it links
+  ProgressUI). Its plugin host com.apple.migrationpluginwrapper aborts and launchd throttles it, and the migrator waits
+  out each plugin's 20 minute watchdog (stackshot on the volume: `migration might be hung or deadlocked. Plugin:
+  com.apple.locationd.migrator ... (20 minutes) ... (erase)`). It decides by `LastSystemVersion` in the
+  `com.apple.migration` preferences of **mobile** (`/private/var/mobile/Library/Preferences/com.apple.migration.plist`,
+  where it also keeps `DMUserDataDisposition`), plus the sentinel `/private/var/datamigrator/migrate`. A boot that is
+  cut off never records the build, so every boot migrated again from 0% (boots 1 to 3: 81% at 11 min, 86% at 18 min).
+- init26 now writes that record at every boot (`LastSystemVersion` = ProductBuildVersion, `DMLastMigrationResults`
+  = {buildVersion, success}) for mobile, root and /private/var/preferences, and removes the sentinel and the migrator's
+  context file. `var_migrate=1` leaves them alone. With it (boot 4) no progress bar is drawn at all.
+- Standalone (autoboot) runs: the kernel log the host can fetch stops after about 5.8 KB, so the init and HFS lines are
+  only seen in host-run boots. Host polls (`oem log`, screenshots) make the loader draw its fastboot text into the
+  panel memory, which a static iOS screen does not repaint.
 
 ## 5. What to watch for on the first boots: APFS-only calls on /private/var
 

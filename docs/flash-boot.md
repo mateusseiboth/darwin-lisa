@@ -181,8 +181,10 @@ Every `_b` is 0 bytes and 2.06 GiB is free. **system_b is empty**, so it was nev
 
 ### C. Write the root (branch 2b: super)
 
-Sizes: the full image `userland-26/out/system-26.apfs.new` is 4,825,059,328 B (1,177,993 blocks), which fits in super
-(2,228,224 blocks) and leaves 4.0 GiB after it. The trimmed image (3.75 GiB) would leave 4.75 GiB. Use the full one.
+Sizes: the full image is built from the current sysroot with `FULL=1 userland-26/scripts/mkimage-trim.sh`
+(`userland-26/out/system-26.apfs.full`: nothing left out, Applications/ and PosterBoard included, padded to a 32 MiB
+multiple). On 2026-11-10 it is 4,831,838,208 B (144 x 32 MiB, sha256 `195ae6b547baf4c8...`), which fits in super
+(2,228,224 blocks) and leaves 4.0 GiB after it. (`system-26.apfs.new` is stale: from before pacstrip/unzbm/init/inject.) The trimmed image (3.75 GiB) would leave 4.75 GiB. Use the full one.
 Since the flash root never passes through fastboot, the 4 GiB download cap doesn't apply. The data volume stays on
 ramfs at first; the 4.0 GiB tail of super can later hold a persistent `/private/var` (kernel `ufs_write=1
 ufs_write_first=1177993`).
@@ -213,9 +215,9 @@ sudo dd if=/dev/sdX20 of=backups/lisa-super-$(date +%Y%m%d).img bs=8M status=pro
 ```sh
 sudo tools/ums-guard.sh /dev/sdX 20              # only sdX20 writable
 sudo python3 -I darwin-lisa/tools/darwin-write.py plan  --disk /dev/sdX --part super --expect backups/lisa-identity-*.json \
-     userland-26/out/system-26.apfs.new         # all checks, nothing written
+     userland-26/out/system-26.apfs.full        # all checks, nothing written
 sudo DARWIN_WRITE=yes python3 -I darwin-lisa/tools/darwin-write.py write --disk /dev/sdX --part super \
-     --expect backups/lisa-identity-*.json userland-26/out/system-26.apfs.new
+     --expect backups/lisa-identity-*.json userland-26/out/system-26.apfs.full
 sudo eject /dev/sdX
 ```
 
@@ -224,8 +226,8 @@ if super holds a partition table or ext4, writes only through `/dev/sdX20`, then
 range back and compares sha256. Expect about 2-4 minutes over USB 2. The log is `darwin-lisa/logs/darwin-write.log`.
 
 Fallback if ums doesn't work: from pmOS, `scp` the image to `/home/mateus/` (userdata has room). Then run
-`sudo dd if=system-26.apfs.new of=/dev/disk/by-partlabel/super bs=8M conv=fsync` and
-`sudo head -c 4825059328 /dev/disk/by-partlabel/super | sha256sum`. If pmOS has python3, run `darwin-write.py`
+`sudo dd if=system-26.apfs.full of=/dev/disk/by-partlabel/super bs=8M conv=fsync` and
+`sudo head -c 4831838208 /dev/disk/by-partlabel/super | sha256sum`. If pmOS has python3, run `darwin-write.py`
 there with `--disk /dev/sda`.
 
 ### D. Boot the root from flash (after the kernel owner frees the tree)
@@ -241,6 +243,10 @@ the usual line:
    Keep `rd=md0`: without it, bsd_init's seal check panics and launchd leaves Restore mode. The loader adds it only
    when it uploads a RAM disk, so put it in `XL_CMDLINE` yourself.
 3. The same plus `ufs_native=1` (31 requests in flight instead of one through the loader mailbox).
+
+`darwin-lisa/tools/run-flashroot.sh` drives test 2: a fresh loader session, no `xl ramdisk`, the UFS root arguments
+plus the current speed arguments, the live log in `logs/flashroot.log`, a screenshot every 60 polls
+(`logs/flashroot-shot-*.png`) and the `[MEM]` lines. `XL_UFS_ARGS` / `XL_EXTRA_ARGS` override the arguments.
 
 Multi-core: the mailbox needs the loader alive on core 0 (`bootcpu=7`, so `cpus` is at most 7). If the kernel takes
 core 0, use `ufs_native=1 ufs_loader=0` instead (read-only, untested).

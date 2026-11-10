@@ -1,0 +1,151 @@
+--- a/xnuloader/loader.c	2026-11-10 10:37:39.654449425 -0400
++++ b/xnuloader/loader.c	2026-11-10 10:38:21.581090401 -0400
+@@ -2733,6 +2733,7 @@
+ 	uint32_t resident_size;
+ 	const char *kernel_version;     /* kernel.ver: the version of the kernel in this payload (tools/kernel-version.py) */
+ 	int usb_mode;
++	uint64_t autoboot;              /* autoboot=N (with usb): run this payload after N s unless a host speaks first */
+ };
+ 
+ static uint64_t
+@@ -2812,6 +2813,8 @@
+ 			pi->checkpoint = parse_number(text, 10);  /* where the kernel should stop and come back */
+ 		} else if (str_eq(e->name, "usb")) {
+ 			pi->usb_mode = 1;                         /* stay in the loader and take commands over USB */
++		} else if (str_eq(e->name, "autoboot")) {
++			pi->autoboot = parse_number(text, 10);    /* darwin-lisa: a boot with no host (autoboot.patch) */
+ 		}
+ 		p += sizeof(*e) + ((e->size + 15) & ~15u);
+ 	}
+@@ -3881,6 +3884,25 @@
+  */
+ static uint64_t usb_data_timeout;
+ 
++/*
++ * darwin-lisa autoboot (loader/autoboot.patch): a payload with "usb" and "autoboot=N" is the phone's own boot, with
++ * no PC. The loader comes up for the host as always, and if no fastboot command arrives within N seconds it runs
++ * the payload it came with, as "oem run" would: same watching core, same watchdog, USB still up for a host that
++ * plugs in later. The first command from a host cancels it for the rest of the session, so the host-driven flow
++ * (bootos.sh, run-*.sh) is what it was. When an auto-booted run ends and no host has spoken, the phone restarts
++ * (U-Boot's menu, then this again), so it never sits in the loader with nobody to talk to it.
++ */
++static uint64_t autoboot_deadline;      /* CNTVCT at which the wait ends; 0: no auto-boot pending */
++static int autoboot_host_spoke;         /* a host sent a command in this session */
++static int autoboot_restart_pending;    /* the auto-booted run is over: the next expiry restarts the phone */
++#define AUTOBOOT_EXPIRED        (-2)    /* usb_wait(): the auto-boot wait is over */
++
++static int
++autoboot_expired(void)
++{
++	return autoboot_deadline != 0 && READ_SYSREG(CNTVCT_EL0) >= autoboot_deadline;
++}
++
+ static int64_t
+ usb_wait(uint8_t endpoint)
+ {
+@@ -3902,6 +3924,12 @@
+ 		if (run_active && READ_SYSREG(CNTVCT_EL0) - began > 3 * freq) {
+ 			return -1;
+ 		}
++		if (autoboot_expired()) {
++			if (endpoint != 0xff) {
++				USB->abort_xfer(endpoint);
++			}
++			return AUTOBOOT_EXPIRED;
++		}
+ 		if (usb_data_timeout != 0 && READ_SYSREG(CNTVCT_EL0) - began > usb_data_timeout * freq) {
+ 			USB->abort_xfer(endpoint);
+ 			return -1;
+@@ -3985,6 +4013,10 @@
+ 	/* a kernel runs on another core, with a live block or without one (running_live alone is NULL without) */
+ 	int busy = run_active;
+ 
++	/* a host is here: no auto-boot in this session (loader/autoboot.patch) */
++	autoboot_deadline = 0;
++	autoboot_host_spoke = 1;
++
+ 	{
+ 		if (busy && (starts_with(cmd, "oem ramdisk") || starts_with(cmd, "download:") || starts_with(cmd, "oem run") ||
+ 		    starts_with(cmd, "oem selftest") || starts_with(cmd, "oem hang") || starts_with(cmd, "oem recording") ||
+@@ -4249,6 +4281,48 @@
+ 	fb_command(cmd);
+ }
+ 
++/*
++ * The auto-boot wait is over and no host spoke: run the payload the loader came with, as "oem run" does. When that
++ * run ends with still no host, restart after AUTOBOOT_RESTART_SECONDS (a host that speaks meanwhile keeps the
++ * loader). Called with autoboot_deadline set and expired.
++ */
++#define AUTOBOOT_RESTART_SECONDS 10
++
++static void
++autoboot_fire(void)
++{
++	uint64_t freq = READ_SYSREG(CNTFRQ_EL0);
++
++	if (autoboot_host_spoke) {
++		autoboot_deadline = 0;
++		return;
++	}
++	if (autoboot_restart_pending) {
++		/* the restart wait after an auto-booted run is over */
++		print("autoboot: no host after the run: restarting\n");
++		flush_log();
++		BS->stall(200000);
++		ST->rt->reset_system(0 /* EfiResetCold */, 0, 0, NULL);
++		return;
++	}
++	autoboot_deadline = 0;
++	set_result("running", 0, 0);
++	log_len = 0;
++	print("== XNULOADER run (autoboot: no host) ==\n");
++	if (!run_kernel(0, 0)) {
++		set_result("not-started", 0, 0);
++		compose_logs(NULL, 0);
++	}
++	if (autoboot_host_spoke) {
++		return;         /* a host came during the run: the loader is its */
++	}
++	/* the next expiry restarts instead of running again: a second run in one session does not work */
++	print("autoboot: the run is over (%s): restarting in %d s unless a host speaks\n", last_result,
++	    (uint64_t)AUTOBOOT_RESTART_SECONDS);
++	autoboot_restart_pending = 1;
++	autoboot_deadline = READ_SYSREG(CNTVCT_EL0) + AUTOBOOT_RESTART_SECONDS * freq;
++}
++
+ static void
+ usb_command_loop(void)
+ {
+@@ -4258,10 +4332,17 @@
+ 		int64_t n;
+ 
+ 		if (!usb_connected) {
+-			usb_wait(0xff); /* returns on the next cable state change */
++			/* returns on the next cable state change, or when the auto-boot wait is over */
++			if (usb_wait(0xff) == AUTOBOOT_EXPIRED) {
++				autoboot_fire();
++			}
+ 			continue;
+ 		}
+ 		n = usb_rx(usb_rx_buf, 511);
++		if (n == AUTOBOOT_EXPIRED) {
++			autoboot_fire();
++			continue;
++		}
+ 		if (n <= 0) {
+ 			continue;
+ 		}
+@@ -4564,6 +4645,13 @@
+ 
+ 	int have_payload = parse_payload(&pi, 0);
+ 	if (have_payload && pi.usb_mode && usb_start()) {
++		if (pi.autoboot != 0) {
++			/* (capped: a wild value must not make the phone wait for good) */
++			uint64_t secs = pi.autoboot > 600 ? 600 : pi.autoboot;
++
++			print("autoboot: iOS starts in %d s; any fastboot command from a host keeps the loader\n", secs);
++			autoboot_deadline = READ_SYSREG(CNTVCT_EL0) + secs * READ_SYSREG(CNTFRQ_EL0);
++		}
+ 		flush_log();
+ 		usb_command_loop();
+ 	}

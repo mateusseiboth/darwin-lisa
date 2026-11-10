@@ -456,6 +456,10 @@ that boot happened, remove `/private/var/db/dlisa-identity` once.
 
 ### 7.3 The build
 
+**Evening update:** `build-combined.sh` now defaults to `kernel-16k-final1.bak`, `lisa=1` (`LISA_DEFAULTS=1`),
+`wifi=1` (`WIFI=1`) and `FEATURES="rtc=1 adsp=1 battmgr=2"`: a 351-character line. The session is
+`docs/evening-session.md`; what follows is the provisional build.
+
 ```sh
 darwin-lisa/loader/build-combined.sh                                 # provisional: kernel-16k-gpu1.bak
 KERNEL=research/hackios-xnu-kernel/<final>.bak EXTRA_ARGS="rtc=1 battmgr=1" darwin-lisa/loader/build-combined.sh

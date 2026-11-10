@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # darwin-lisa: the combined image of the one test session (docs/presentation-build.md, section 7).
 #
-#   darwin-lisa/loader/build-combined.sh
-#   KERNEL=research/hackios-xnu-kernel/<final>.bak EXTRA_ARGS="rtc=1 battmgr=1" darwin-lisa/loader/build-combined.sh
+#   darwin-lisa/loader/build-combined.sh                         (the evening build: kernel-16k-final1.bak)
+#   KERNEL=research/hackios-xnu-kernel/<other>.bak EXTRA_ARGS="..." darwin-lisa/loader/build-combined.sh
 #   -> out/vendor_boot-lisa-combined.img (+ loader-usb-lisa-combined.hkub, loader-combined.efi,
 #      combined-payload.bin, combined-cmdline.txt)
 #
@@ -11,12 +11,22 @@
 # and identity-soc.patch, and the standalone boot-args. Every variable of build-standalone.sh can
 # still be set (AUTOBOOT, DATAVOL, FW_RAMDISK, PRESENT_EPOCH, ...). The identity header is Apple data: it stays out of
 # git, in darwin-lisa/.work/identity (xnuloader/mkidentity.py makes it from DeviceTree.d16ap of the iPhone14,4 IPSW).
+#
+# The evening build (docs/evening-session.md) is the default now: kernel-16k-final1.bak, lisa=1 (the kernel's built-in
+# hardware arguments: LISA_DEFAULTS=1), the Wi-Fi radio up (WIFI=1: it joins the network kept on the data volume),
+# and FEATURES="rtc=1 adsp=1 battmgr=2" (the PMIC clock, the audio DSP with the fuel gauge and charging). The GPU and
+# the sensors stay off: they are tested in host runs. FEATURES= (empty), WIFI=0 or LISA_DEFAULTS=0 take them out;
+# EXTRA_ARGS comes after FEATURES.
 set -euo pipefail
 M=$(cd "$(dirname "$0")/../.." && pwd)
-export KERNEL=${KERNEL:-$M/research/hackios-xnu-kernel/kernel-16k-gpu1.bak}
+export KERNEL=${KERNEL:-$M/research/hackios-xnu-kernel/kernel-16k-final1.bak}
 export IDENTITY=${IDENTITY:-$M/darwin-lisa/.work/identity/identity-d16.h}
 export GEOMETRY=${GEOMETRY-1080x2400}
 export NAME=${NAME:-combined}
+export LISA_DEFAULTS=${LISA_DEFAULTS:-1}
+export WIFI=${WIFI:-1}
+FEATURES=${FEATURES-rtc=1 adsp=1 battmgr=2}
+export EXTRA_ARGS="$FEATURES${EXTRA_ARGS:+ $EXTRA_ARGS}"
 [[ -f $IDENTITY ]] || { echo "build-combined: no identity $IDENTITY (xnuloader/mkidentity.py)" >&2; exit 1; }
 # the identity's own SoC and board (identity-soc.py), or the loader would still say t8015 / 0x8015 under an iPhone14,4
 grep -q '^#define IDENTITY_CHIP_ID' "$IDENTITY" || { echo "build-combined: $IDENTITY has no SoC block:" \

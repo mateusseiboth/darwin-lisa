@@ -80,4 +80,3 @@ com.apple.terminusd.plist
 com.apple.threadradiod.plist
 com.apple.timezoneupdates.tzd.plist
 com.apple.wifiFirmwareLoader.plist
-com.apple.wifid.plist

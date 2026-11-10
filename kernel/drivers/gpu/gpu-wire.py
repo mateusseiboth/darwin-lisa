@@ -65,8 +65,12 @@ require(os.path.join(T, "iokit/conf/files"), "iokit/Kernel/MiniIOSurface.cpp", "
 require(os.path.join(T, "iokit/Kernel/MiniIOSurface.h"), "uint32_t                        drawn;", "MiniIOSurface without the GPU's fence")
 
 # 1. the source
-shutil.copyfile(os.path.join(HERE, "hakios.gpu.cpp"), os.path.join(T, "iokit/Kernel/hakios.gpu.cpp"))
-print("  [ok]   copied iokit/Kernel/hakios.gpu.cpp")
+src, dst = os.path.join(HERE, "hakios.gpu.cpp"), os.path.join(T, "iokit/Kernel/hakios.gpu.cpp")
+if os.path.exists(dst) and read(dst) == read(src):
+    print("  [skip] iokit/Kernel/hakios.gpu.cpp: same")
+else:
+    shutil.copyfile(src, dst)
+    print("  [ok]   copied iokit/Kernel/hakios.gpu.cpp")
 
 # 2. iokit/conf/files
 append_once(os.path.join(T, "iokit/conf/files"), "iokit/Kernel/hakios.gpu.cpp",

@@ -1083,7 +1083,15 @@ hakios_adsp_fw_free(const uint8_t *data, uint64_t size)
 	kfree_data(ours, size);
 }
 
-/* A file of fw/ in the small image (ADSP=1 userland/build.sh puts fw-audio/ there), else of /fw on the root (above). */
+#if __has_include("hakios.adsp_fw.h")
+#include "hakios.adsp_fw.h"     /* darwin-lisa: adsp-wire.py (fw-adsp-stage.py header): the firmware built into the kernel */
+#endif
+
+/*
+ * A file of fw/ in the small image (ADSP=1 userland/build.sh puts fw-audio/ there) or of the flash root's fw/
+ * (hakios.image.c), else the one built into the kernel (darwin-lisa: the root has no room for 20 MB of firmware),
+ * else of /fw on the root (above). Built-in files are used where they lie, like a RAM disk's, and never given back.
+ */
 extern const uint8_t *hakios_image_file(const char *dir, const char *name, uint64_t *size, int *disk_out);
 static const uint8_t *
 image_file(const char *name, uint64_t *size)
@@ -1095,6 +1103,18 @@ image_file(const char *name, uint64_t *size)
 			return data;
 		}
 	}
+#ifdef HAKIOS_ADSP_BUILTIN_FW
+	for (unsigned i = 0; i < sizeof(adsp_builtin_fw) / sizeof(adsp_builtin_fw[0]); i++) {
+		if (strcmp(name, adsp_builtin_fw[i].name) == 0) {
+			*size = adsp_builtin_fw[i].size;
+			if (i == 0) {
+				printf("adsp: %u: fw/%s and the %u segments after it: built into the kernel\n", step, name,
+				    (unsigned)(sizeof(adsp_builtin_fw) / sizeof(adsp_builtin_fw[0]) - 1));
+			}
+			return adsp_builtin_fw[i].data;
+		}
+	}
+#endif
 	{
 		const uint8_t *data = root_file(name, size);
 

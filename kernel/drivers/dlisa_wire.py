@@ -32,7 +32,11 @@ def fail(tag, why):
 
 
 def copy(source, relative):
-    shutil.copyfile(source, path(relative))
+    target = path(relative)
+    if os.path.exists(target) and open(target, "rb").read() == open(source, "rb").read():
+        print(f"  [skip] {os.path.basename(source)} -> {relative}: same")
+        return
+    shutil.copyfile(source, target)
     print(f"  [ok]   copied {os.path.basename(source)} -> {relative}")
 
 

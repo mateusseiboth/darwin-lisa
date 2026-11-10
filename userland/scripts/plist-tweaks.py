@@ -38,6 +38,9 @@ def withoutKeys(*keys):
 TWEAKS = {
     "com.apple.containermanagerd.plist": withoutKeys("EnablePressuredExit"),
     "com.apple.containermanagerd.system.plist": withoutKeys("EnablePressuredExit"),
+    # wifid loads only on a device tree with a "wlan" node (or marconi-wifi, centauri-alpha...), which the
+    # loader's does not have. init26 disables it for every boot without wifi=1 (init/wifi-net.c).
+    "com.apple.wifid.plist": withoutKeys("_LimitLoadToDeviceTree"),
 }
 
 

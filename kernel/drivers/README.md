@@ -20,3 +20,8 @@ mount). The kernel BUILDS/links clean with these on top of the APFS port (22.41 
 
 GPU (Adreno) + touch (Goodix) are the end-goal (as on iOS 16) but are OPTIONAL drivers that come after the
 kernel boots to userland.
+
+`bootargs/lisa-defaults-wire.py` (pexpert/gen/bootargs.c): with `lisa=1` on the line, the phone's hardware boot-args
+(touch, processor clock, panel geometry, Wi-Fi interrupt mode and address) come from a list built into the kernel when
+the line does not name them; the line always wins, and without `lisa=1` nothing changes. Host test:
+`bootargs/test/run-tests.sh`. Why: the loader keeps 607 characters of the line (`docs/evening-session.md`).

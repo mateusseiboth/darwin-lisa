@@ -19,6 +19,7 @@
 import os
 import re
 import shutil
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -105,4 +106,42 @@ elif " BSD_EXTRAS_DEV ]" not in dev[0] or "hakios_battery" not in dev[0]:
 else:
     write(board, s.replace(dev[0], dev[0].replace(" BSD_EXTRAS_DEV ]", " hakios_adsp BSD_EXTRAS_DEV ]")))
     print("  [ok]   MASTER.arm64.bcm2837 += hakios_adsp")
+
+# 5. the DSP's firmware built into the kernel (darwin-lisa, the evening integration): the root has ~6 MB free before
+#    the data volume in super, and the firmware is 20.8 MB (10.5 MB compressed). Copied into bsd/dev/hakios.adsp_fw/
+#    and assembled in by bsd/dev/hakios.adsp_fw.h (.incbin; both generated here, never in git: Qualcomm's blobs).
+#    hakios.adsp.c still asks the RAM disks and the flash root's fw/ first, so a firmware RAM disk overrides it.
+#    FW_ADSP=DIR picks the staged set (default fw-adsp-stage.py's); FW_ADSP= (empty) removes the built-in set.
+FW = os.environ.get("FW_ADSP", "/home/mateusseiboth/Dev/mobile/research/hackios-xnu-kernel/fw-adsp")
+fw_copy = os.path.join(T, "bsd/dev/hakios.adsp_fw")
+fw_header = os.path.join(T, "bsd/dev/hakios.adsp_fw.h")
+if not FW:
+    if os.path.exists(fw_header):
+        os.remove(fw_header)
+        print("  [ok]   bsd/dev/hakios.adsp_fw.h removed: no firmware built in (adsp=1 reads /fw of the root)")
+    else:
+        print("  [skip] no firmware built in (FW_ADSP empty)")
+else:
+    names = ["adsp.mdt"] + sorted(n for n in os.listdir(FW) if n.startswith("adsp.b") and len(n) == 8)
+    os.makedirs(fw_copy, exist_ok=True)
+    changed = 0
+    for name in names:
+        src, dst = os.path.join(FW, name), os.path.join(fw_copy, name)
+        with open(src, "rb") as f:
+            data = f.read()
+        if os.path.exists(dst) and open(dst, "rb").read() == data:
+            continue
+        with open(dst, "wb") as f:
+            f.write(data)
+        changed += 1
+    print(f"  [ok]   bsd/dev/hakios.adsp_fw/: {changed} of {len(names)} files copied from {FW}" if changed else
+          f"  [skip] bsd/dev/hakios.adsp_fw/: the same {len(names)} files already")
+    result = subprocess.run([sys.executable, "-I", os.path.join(HERE, "fw-adsp-stage.py"), "header", fw_copy, fw_header],
+                            capture_output=True, text=True)
+    if result.returncode != 0:
+        print(result.stdout + result.stderr)
+        print("  [FAIL] bsd/dev/hakios.adsp_fw.h: fw-adsp-stage.py header refused the set")
+        sys.exit(2)
+    print("  [skip] bsd/dev/hakios.adsp_fw.h: the same already" if "the same already" in result.stdout else
+          "  [ok]   bsd/dev/hakios.adsp_fw.h: the firmware built into the kernel")
 print("### ADSP WIRE DONE")

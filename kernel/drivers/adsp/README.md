@@ -19,14 +19,24 @@ Status (2026-11-10, offline only; nothing here has run on the phone yet):
 | --- | --- |
 | `hakios.adsp.c` | HakiOS `drivers/audio/hakios.adsp.c` with the darwin-lisa changes listed in its header: battmgr opt-in (`battmgr=1`), battmgr no longer waits for APR, the DSP is kept once GLINK is up, lisa's current sign, health, Linux's notification request, our own QRTR ports for the sensors client, `vm_kern_xnu.h` for xnu-12377 |
 | `dlisa.ssc.c` | The sensor core client (QMI service 400 over the DSP's QRTR, protobuf payloads), `sensors_fake`, sysctls `kern.hakios.sensors` (binary) and `kern.hakios.sensors_state` (text) |
-| `adsp-wire.py` | Wires both into xnu-work as tag `hakios_adsp`, and re-copies the two battery files. Idempotent, `XNU_WORK=` for a dry run |
-| `fw-adsp-stage.py` | `stage` (pmOS `adsp.mbn` split into `adsp.mdt` + `adsp.b02..b36` in `research/hackios-xnu-kernel/fw-adsp/`, git-ignored), `check DIR` (the driver's own checks), `install DIR DEST` |
-| `install-root.sh SYSROOT` | Puts the firmware in `SYSROOT/fw/`, `libdlisa-motion.dylib` in `SYSROOT/usr/local/lib/`, and the inject line in `SYSROOT/private/etc/dlisa-inject.conf` |
+| `adsp-wire.py` | Wires both into xnu-work as tag `hakios_adsp`, re-copies the two battery files, and builds the firmware into the kernel (step 5: `bsd/dev/hakios.adsp_fw/` + `hakios.adsp_fw.h`, generated, never in git; `FW_ADSP=` empty leaves it out). Idempotent, `XNU_WORK=` for a dry run |
+| `fw-adsp-stage.py` | `stage` (pmOS `adsp.mbn` split into `adsp.mdt` + `adsp.b02..b36` in `research/hackios-xnu-kernel/fw-adsp/`, git-ignored), `check DIR` (the driver's own checks), `install DIR DEST`, `header DIR OUT` (the `.incbin` header the kernel build takes; host test `test/fw-builtin-test.sh`) |
+| `install-root.sh SYSROOT` | Puts `libdlisa-motion.dylib` in `SYSROOT/usr/local/lib/`, and the inject line in `SYSROOT/private/etc/dlisa-inject.conf` |
 | `check-syntax.sh` | `-fsyntax-only` of the four kernel files with the exact flags of the last build (`bsd/DEVELOPMENT/.CFLAGS`, `iokit/DEVELOPMENT/.CXXFLAGS`) in the toolchain image |
 | `test/run-tests.sh` | Host test of `dlisa.ssc.c`'s wire formats (the request bytes, reports, packed/unpacked floats, rotation, proximity, truncated input) |
 | `../battery/dlisa.battery.c` | Now also the sink of the fuel gauge: the ADC estimate is not passed on while a DSP report is less than 60 s old; new sysctls `battery_source`, `battery_current_ma`, `battery_temp_tenths`, `battery_status`, `battery_health`, `battery_cycles` |
 | `../battery/hakios.battery.cpp` | HakiosBattery now sets `BatteryHealth` (Good/Fair/Poor) and `ChargeStatus` (too hot / too cold) from the gauge's health |
 | `../../../userland/motion/` | `dlisa-motion.c` + `build-motion.sh`: backboardd's device orientation from `kern.hakios.sensors` |
+
+## Where the firmware lives (2026-11-10, the evening integration)
+
+In the kernel. The root had about 6 MB free before the data volume that starts right after it in `super`, and the
+firmware is 20.8 MB (10.5 MB compressed in the root), so `adsp-wire.py` assembles `adsp.mdt` and the 35 segments into
+the kernel's `__TEXT,__const` with `.incbin` (each on a 4 KB boundary). `image_file()` still asks the RAM disks and the
+flash root's `fw/` first, so a firmware RAM disk overrides the built-in set; the log then says which. The kernel grows
+from 23.4 to about 45 MB: the loader's payload holds 63 MiB, and the kernel's extent stays under the resident RAM
+disk's place (128 MB above the virtual base). A side effect: `tools/wifi-run.sh`, which copies the root's `fw/` into a
+32 MiB RAM disk, keeps fitting.
 
 ## Boot-args
 
@@ -77,7 +87,8 @@ SSC service (libqmi's), the SSC message ids 512/513/514/768/1025, the battmgr no
    Check with `llvm-nm` that `_hakios_adsp_init`, `_dlisa_ssc_start` and `_dlisa_battery_note_health` are in the kernel.
 3. `sh userland/motion/build-motion.sh` (built already), then, after `userland/inject/build-inject.sh` (it rewrites
    the inject conf): `sh kernel/drivers/adsp/install-root.sh ~/Dev/mobile/userland-26/out/sysroot-26`, then re-image the
-   root. Adds 20 MB of firmware.
+   root. The firmware is NOT put in the root any more (it is in the kernel, see below); `ADSP_FW_ROOT=1` puts it in
+   `SYSROOT/fw/` as before.
 4. Boot-args for the combined session: `adsp=1 battmgr=2 sensors=1 sensors_fake=2` (keep `battery=1`).
 
 ## Device test plan
@@ -181,4 +192,4 @@ firmware speaks. Once that exists, `dlisa.ssc.c` and the rotation hook work as t
 - The SSC QMI ids and TLVs are from libqmi from memory; the first six messages are dumped in hex.
 - `sensors_fake=2` rotates rotatable apps every 15 s after about 2.5 minutes if the real sensors do not work. The
   lock and home screens are portrait-only on iPhone, so the GPU and WiFi tests in the same session are not affected.
-- 20 MB more in the root image.
+- 20.8 MB more in the kernel (45 MB, under the payload's 63 MiB), none in the root image.

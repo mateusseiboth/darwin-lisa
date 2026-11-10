@@ -35,6 +35,12 @@
 #                 panel itself, 1:1 at 3x (360 x 800 points); 1125x2499 is 375 x 833 points shown at 0.96. Empty (default):
 #                 nothing added, the kernel's 1125x2436 (the iPhone X's, squeezed onto the panel)
 #   NAME          the name in the output files (default standalone). Never the name of an image already flashed
+#   LISA_DEFAULTS 1: lisa=1 instead of the hardware arguments (touchscreen=1 touch_avdd_ldo= touch_chip= touch_goodix_a=
+#                 cpufreq=1 cpufreq_max= and, with WIFI=1, wifi_irq= wifi_mac=): the kernel has them built in
+#                 (kernel/drivers/bootargs/lisa-defaults-wire.py), and the line keeps room. Refused with a kernel
+#                 without them. 0 (default): the arguments themselves, as before
+#   WIFI          1: wifi=1 (the radio up; it joins the network kept on the data volume, and init26 lets wifid run)
+#                 instead of wlan_stub=1. 0 (default): wlan_stub=1
 #   EXTRA_ARGS    more boot-args, appended
 #   ARGS          the whole boot-arg line, replacing the default (EXTRA_ARGS still appended)
 set -euo pipefail
@@ -48,6 +54,8 @@ DATAVOL=${DATAVOL:-1}
 FW_RAMDISK=${FW_RAMDISK:-}
 GEOMETRY=${GEOMETRY:-}
 NAME=${NAME:-standalone}
+LISA_DEFAULTS=${LISA_DEFAULTS:-0}
+WIFI=${WIFI:-0}
 EPOCH=${PRESENT_EPOCH:-$(date +%s)}
 BASE_VB=$H/out/vendor_boot-multiboot-lisa.img        # header fields and the DTB (the same bytes pmOS gets)
 PART_BYTES=100663296                                  # vendor_boot_a: 24576 blocks of 4096
@@ -77,11 +85,22 @@ ROOT="rd=md0 ufs=2 ufs_part=super ufs_root=1"
 [[ $DATAVOL = 1 ]] && ROOT="$ROOT ufs_write=1 ufs_data=super var_ufs=1"
 WLAN="wlan_stub=1"
 [[ -n $FW_RAMDISK ]] && WLAN="wifi=1 wifi_mac=02:6c:69:73:61:01"
+[[ $WIFI = 1 ]] && WLAN="wifi=1 wifi_irq=0 wifi_mac=02:6c:69:73:61:01"
+HW="touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1 cpus=7 cpufreq=1 cpufreq_max=2400"
+# lisa=1: the kernel's built-in hardware arguments (the same values); cpus=7 stays, the loader reads it
+if [[ $LISA_DEFAULTS = 1 ]]; then
+	grep -aq 'touch_avdd_ldo=ldoc7 touch_chip=goodix' "$KERNEL" ||
+		{ echo "build-standalone: LISA_DEFAULTS=1, but $KERNEL has no lisa=1 defaults (lisa-defaults-wire.py)" >&2; exit 1; }
+	HW="lisa=1 cpus=7"
+	WLAN=${WLAN/ wifi_irq=0/}
+	WLAN=${WLAN/ wifi_mac=02:6c:69:73:61:01/}
+fi
 # (the loader puts debug=0x8 rd=md0 hv_wdt_pet=1 and its own *_pa= / hakios_kver= in front and cuts the whole at 607
-# characters: what the kernel must see comes first, and the check below keeps the line short)
+# characters: what the kernel must see comes first, and the check below keeps the line short. sb_delay=8 is gone: only
+# HakiOS 16.5's libhakios.sb read it, and nothing in the iOS 26 kernel or root does)
 DEFAULT_ARGS="$ROOT dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 display=1 keystore=1 console_open=1 \
-touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1 cpus=7 cpufreq=1 cpufreq_max=2400 battery=1 $WLAN \
-init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 sb_delay=8 bootcpu=7 loader_return_after=86400 epoch=$EPOCH"
+$HW battery=1 $WLAN init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 bootcpu=7 loader_return_after=86400 \
+epoch=$EPOCH"
 LINE="${ARGS:-$DEFAULT_ARGS}${FB:+ $FB}${EXTRA_ARGS:+ $EXTRA_ARGS}"
 LINE=$(tr -s ' ' <<<"$LINE")
 case " $LINE " in *" fbwidth="*" fbwidth="*|*" fbheight="*" fbheight="*)

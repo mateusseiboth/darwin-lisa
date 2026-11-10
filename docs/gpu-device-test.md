@@ -7,6 +7,9 @@ unchanged.
 
 Everything here was prepared offline on 2026-11-10. Nothing in it has run on the phone yet.
 
+**Superseded for the flash by `docs/evening-session.md`** (one flash for everything; the final kernel is
+`kernel-16k-final1.bak`, 67b9c3b3, and the root 08898bde). The boots below are its Boots 3 and 4.
+
 ## The builds
 
 | What | File | sha256 | State |

@@ -15,6 +15,8 @@
 #include "var-skel.h"
 #include "ld-disable.c"
 #include "identity-stamp.c"
+#include "rtc-offset.c"
+#include "wifi-net.c"
 
 static const char BANNER[] =
     "\n==== iOS 26.5.2 (23F84) userland on lisa: /sbin/launchd alive ====\n";
@@ -444,7 +446,7 @@ saveDisabledServices(void)
 		close(fd);
 	}
 	groups[n > 0 ? n : 0] = 0;
-	count = buildDisabledPlist(bootArgs(), n > 0 ? groups : NULL, plist, sizeof(plist));
+	count = buildDisabledPlist(withWifiServices(bootArgs()), n > 0 ? groups : NULL, plist, sizeof(plist));
 	if (count < 0) {
 		printf("init26: VAR ld_disable: the list does not fit in %zu bytes; disabled.plist left as it is\n", sizeof(plist));
 		return 1;
@@ -777,6 +779,8 @@ configureInject(void)
 	printf("init26: library insertion: %s\n", conf);
 }
 
+#include "rtc-wifi-boot.c"
+
 static void
 handOff(char **envp)
 {
@@ -831,6 +835,10 @@ main(int argc, char **argv, char **envp)
 	cacheProbe();
 	memProbe();
 	mountVar();
+	/* darwin-lisa: the clock's kept offset (rtc=1) and the kept Wi-Fi network (wifi=1), init/rtc-wifi-boot.c */
+	applySavedRtcOffset();
+	startRtcKeeper();
+	giveWifiNetwork();
 	/* darwin-lisa: diagnostics jobs that run as mobile (com.darwinlisa.*) write to the console, which is the log */
 	if (findConsoleArg()) {
 		chmod("/dev/console", 0666);

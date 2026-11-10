@@ -143,19 +143,18 @@ host polls the loader: the loader on core 0 prints every fastboot command it ser
 after a few dozen polls its text covers the screen. The kernel's own text console stops drawing at the first
 frame (`dlisa_vc_quiet`, `kernel/patches/vcputc-tee.patch`); its output still reaches the loader log.
 
-`cpufreq=1` (optionally `cpufreq_max=MHz`) makes the boot several times faster but **the kernel stops a few minutes
-into every such boot** (heartbeat lines stop at ~4-5 min, at 2400 and at 1324 MHz alike, with 400 MB still free);
-without it the same boot runs for 45 minutes. **Cause (offline analysis, to be confirmed on the device): WFI at idle.**
-The kernel has one core and no device interrupt; the virtual timer is its only wake source, and this hypervisor does
-not wake a vCPU parked in WFI when the virtual timer fires (`docs/phase3-ondevice.md`, "Timer-at-idle"). At the
-firmware's clock the core never runs out of work during a boot; at 1.3-2.4 GHz it does once the daemons settle,
-`cpu_idle()` executes WFI, and the core never wakes. The loader then sees no heartbeat for 50 s, calls the kernel hung
-and the live log stops (the last kernel lines are ordinary activity, no heartbeat after them). Not the watchdogs (the
-loader pets the hypervisor's until `loader_return_after`+60 s), not the timebase (19.2 MHz counter, independent of the
-core clock), not voltage (EPSS sets it with the row, as in Linux's qcom-cpufreq-hw; the addresses match lisa's DTB).
-Fix prepared: `kernel/patches/cpu-idle-no-wfi.patch` (idle polls instead of WFI; not yet in `apply.sh`), or boot-arg
-`wfi=0` on the current kernel. It matters without cpufreq too: a settled system (an idle SpringBoard) hangs the same
-way.
+`cpufreq=1` (optionally `cpufreq_max=MHz`) makes the boot several times faster. Earlier cpufreq boots "hung" a few
+minutes in (heartbeat lines stop, the loader reports `hung`). The offline guess was WFI at idle (the hypervisor not
+waking a vCPU parked in WFI on its virtual timer), so `kernel/patches/cpu-idle-no-wfi.patch` (idle polls instead of WFI,
+boot-arg `wfi=1` brings WFI back) is now in `apply.sh`. **On the device (2026-11-10) the real killer was a panic, not
+the idle loop:** with `cpufreq=1 cpufreq_max=2400 wfi=0` the boot ran 14.6 minutes and then panicked with "Unaligned
+kernel data abort" in `bzero` called from `IOMobileFramebuffer::show()` (`logs/cpu-a1-wfi0-2400-late.log` in
+research/hackios-xnu-kernel): when SpringBoard takes the bottom layer away, `show()` clears the panel with `bzero`, the
+panel is a Device mapping, and `bzero`'s `DC ZVA` there is an alignment fault. On this 16 KB kernel `loader_return()`
+is a no-op, so a panic halts and the loader can only see the heartbeat stop, which reads as `hung`. `show()` now clears
+with 32-bit stores. The earlier "hangs at 4-5 minutes" were probably this panic or the WFI stall; the logs of those
+runs do not tell them apart. With several cores (`cpus=N`, `kernel/soc/smp/`) the boot is faster again; see the
+README there.
 
 ## The window server chain after the display (2026-11-10, second night)
 

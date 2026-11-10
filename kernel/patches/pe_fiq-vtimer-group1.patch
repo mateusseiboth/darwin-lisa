@@ -1,6 +1,6 @@
---- a/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.744173168 -0400
-+++ b/pexpert/arm/pe_fiq.c	2026-11-09 13:26:39.754984337 -0400
-@@ -164,10 +164,66 @@
+--- a/pexpert/arm/pe_fiq.c	2026-11-10 07:05:23.835929539 -0400
++++ b/pexpert/arm/pe_fiq.c	2026-11-10 07:05:34.033604042 -0400
+@@ -164,10 +164,75 @@
  
  	// Enable the forwarding of the vtimer interrupt
  	uint32_t gicd_ctlr = gicd_read32(GICD_CTLR);
@@ -21,10 +21,19 @@
 +	#define GICD_CTLR_ENABLE_G1NS (1u << 1)
 +	#define GICD_CTLR_ARE_NS      (1u << 4)
 +	#define GICD_CTLR_RWP         (1u << 31)
-+	gicr_write32(GICR_IGROUPR0, gicr_read32(GICR_IGROUPR0) | (1u << 27));
-+	gicr_write32(GICR_IGRPMODR0, gicr_read32(GICR_IGRPMODR0) & ~(1u << 27));
++	// darwin-lisa (soc/smp): SGI 0 carries cpu_signal() between processors when the kernel has more
++	// than one core. Group 1 and enabled like the timer; a core that an earlier kernel left in the
++	// middle of one may still have it pending or active, and would then never see another.
++	#define GICR_ICPENDR0   0x10280
++	#define GICR_ICACTIVER0 0x10380
++	const uint32_t lisa_g1 = (1u << 27) | (1u << 0);
++	gicr_write32(GICR_ICACTIVER0, (1u << 0));
++	gicr_write32(GICR_ICPENDR0, (1u << 0));
++	gicr_write32(GICR_IGROUPR0, gicr_read32(GICR_IGROUPR0) | lisa_g1);
++	gicr_write32(GICR_IGRPMODR0, gicr_read32(GICR_IGRPMODR0) & ~lisa_g1);
 +	*(volatile uint8_t *)(gicr_pe_base + GICR_IPRIORITYR + 27) = 0xA0;
-+	gicr_write32(GICR_ISENABLER0, (1u << 27));
++	*(volatile uint8_t *)(gicr_pe_base + GICR_IPRIORITYR + 0) = 0xA0;
++	gicr_write32(GICR_ISENABLER0, lisa_g1);
 +	{
 +		// Affinity routing, then Group 1 NS on (ARE before group-enable).
 +		uint32_t ctlr = gicd_read32(GICD_CTLR);

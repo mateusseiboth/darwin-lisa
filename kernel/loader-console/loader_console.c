@@ -21,6 +21,7 @@
 #include <kern/startup.h>
 #include <kern/thread_call.h>
 #include <kern/clock.h>
+#include <kern/cpu_number.h>
 #include <arm64/proc_reg.h>
 #include <pexpert/pexpert.h>
 
@@ -469,6 +470,23 @@ loader_diag_wfi_probe(void)
 	loader_return();	/* does not return */
 }
 
+/*
+ * Keep the virtual timer ticking at >= 20 Hz. When the scheduler is idle it
+ * arms a far-future decrementer, the vtimer stops, and this path (and the
+ * timer-call queue) stall. Clamp the next fire to 50 ms so the timer keeps
+ * firing: it feeds the watchdog here and gives rtclock_intr frequent chances
+ * to run expired timer calls. A real, nearer deadline is left untouched.
+ */
+static void
+lc_bringup_timer_floor(uint64_t freq)
+{
+	int32_t remaining = (int32_t)__builtin_arm_rsr64("CNTV_TVAL_EL0");
+	int32_t floor = (int32_t)(freq / 20);
+	if (remaining > floor) {
+		__builtin_arm_wsr64("CNTV_TVAL_EL0", (uint64_t)(uint32_t)floor);
+	}
+}
+
 void
 loader_bringup_tick(void)
 {
@@ -476,6 +494,14 @@ loader_bringup_tick(void)
 	uint64_t freq = __builtin_arm_rsr64("CNTFRQ_EL0");
 
 	if (freq == 0) {
+		return;
+	}
+	/*
+	 * With several cores (soc/smp) each takes its own timer: the watchdog, the heartbeat and the timed
+	 * return are the boot processor's; the 50 ms floor is every core's.
+	 */
+	if (cpu_number() != boot_cpu_id) {
+		lc_bringup_timer_floor(freq);
 		return;
 	}
 	if (!lc_bringup_inited) {
@@ -506,18 +532,7 @@ loader_bringup_tick(void)
 		loader_return();	/* does not return */
 	}
 
-	/*
-	 * Keep the virtual timer ticking at >= 20 Hz. When the scheduler is idle it
-	 * arms a far-future decrementer, the vtimer stops, and this path (and the
-	 * timer-call queue) stall. Clamp the next fire to 50 ms so the timer keeps
-	 * firing: it feeds the watchdog here and gives rtclock_intr frequent chances
-	 * to run expired timer calls. A real, nearer deadline is left untouched.
-	 */
-	int32_t remaining = (int32_t)__builtin_arm_rsr64("CNTV_TVAL_EL0");
-	int32_t floor = (int32_t)(freq / 20);
-	if (remaining > floor) {
-		__builtin_arm_wsr64("CNTV_TVAL_EL0", (uint64_t)(uint32_t)floor);
-	}
+	lc_bringup_timer_floor(freq);
 }
 
 /* ---- console tees (installed from PE_init_kprintf / PE_init_printf) ---- */

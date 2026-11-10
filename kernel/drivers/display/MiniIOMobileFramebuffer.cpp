@@ -1522,8 +1522,17 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		if (sid == 0) {
 			/* the bottom layer taken away: nothing is shown, the screen is black */
 			if (layer == 0 && (set & 1) && fGraphics) {
+				/*
+				 * Word stores, not bzero(): the panel is a Device mapping, and bzero's DC ZVA there is an
+				 * alignment fault (panic "Unaligned kernel data abort" in bzero from show(), seen 14 minutes
+				 * into a boot at 2.4 GHz, when SpringBoard took the bottom layer away).
+				 */
 				for (uint32_t y = 0; y < fPanelHeight; y++) {
-					bzero(fBase + (size_t) y * fRowBytes, (size_t) fPanelWidth * 4);
+					volatile uint32_t * row = (volatile uint32_t *) (fBase + (size_t) y * fRowBytes);
+
+					for (uint32_t x = 0; x < fPanelWidth; x++) {
+						row[x] = 0;
+					}
 				}
 			}
 			continue;

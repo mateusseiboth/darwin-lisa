@@ -237,6 +237,12 @@ not a priority lockout), Group-1-only, `wfi=0`, `jtag=1 wfe_mode=0`, a 50 ms CNT
 with the real driver stack. (The tick-12 WFI probe that "hung" was confounded: it WFI'd mid-handler with INTID
 27 still Active, which a level IRQ cannot re-forward as a wake — a GIC artifact, not hv evidence.)
 
+**Update 2026-11-10 (full iOS 26 boot, cpufreq + SMP work, `kernel/soc/smp/README.md`):** the idle loop polls by
+default now (`kernel/patches/cpu-idle-no-wfi.patch` in `apply.sh`; `wfi=1` brings WFI back). The cpufreq boot that
+"hung" on the device turned out to be a display-driver panic (bzero on the Device-mapped panel), invisible as a panic
+because `loader_return()` does nothing on the 16 KB kernel. With several cores (SGI 0 wired as the IPI) the WFI
+question is open again: not yet measured whether an SGI or the vtimer wakes a core parked in WFI under this hv.
+
 ## Prelink emits a real MH_FILESET kernelcache (with --allow-missing)
 
 Running `emit_prelink.py --allow-missing` (over the strict pairing gate) **writes an 85 MB

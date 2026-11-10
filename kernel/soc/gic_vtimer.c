@@ -11,14 +11,18 @@
  *
  * pe_init_fiq() (patched) routes PPI 27 to Group 1 and calls gic_vtimer_install();
  * this handler acks ICC_IAR1_EL1, runs rtclock_intr for the vtimer, and EOIs.
- * Minimal port of HakiOS's gic_v3_irq.c handler (vtimer only; SPIs/IPIs later).
+ * Minimal port of HakiOS's gic_v3_irq.c handler: the vtimer, and SGI 0 for cpu_signal()
+ * between processors (cpus=N > 1, soc/smp). SPIs later.
  */
 #include <stdint.h>
 #include <arm/cpu_data.h>
 #include <arm/cpu_data_internal.h>
 #include <arm/machine_routines.h>
 #include <arm/rtclock.h>
+#include <arm/machine_cpu.h>
+#include <kern/cpu_number.h>
 
+#define GIC_INTID_SGI_SIGNAL    0	/* cpu_signal() between processors (soc/smp/lisa_smp.c) */
 #define GIC_INTID_VTIMER        27
 #define GIC_INTID_SPURIOUS_MIN  1020
 
@@ -59,8 +63,9 @@ gic_vtimer_handler(void *target __unused, void *refCon __unused, void *nub __unu
 			break;		/* 1020..1023: spurious / no pending interrupt */
 		}
 		if (intid == GIC_INTID_VTIMER) {
-			unsigned long t = ++gic_vtimer_ticks;
-			if (t <= 4 || (t % GIC_VTIMER_HEARTBEAT) == 0) {
+			/* the heartbeat lines are the boot processor's (every core has its own timer) */
+			unsigned long t = cpu_number() == boot_cpu_id ? ++gic_vtimer_ticks : 0;
+			if (t != 0 && (t <= 4 || (t % GIC_VTIMER_HEARTBEAT) == 0)) {
 				gic_vtimer_mark("\n[GIC] vtimer tick 0x", (uint32_t)t);
 				gic_vtimer_mark("[MEM] free pages 0x", vm_page_free_count);
 				gic_vtimer_mark("[MEM] wired pages 0x", vm_page_wire_count);
@@ -73,7 +78,11 @@ gic_vtimer_handler(void *target __unused, void *refCon __unused, void *nub __unu
 			 * without relying on delayed thread_calls (not yet serviced). */
 			loader_bringup_tick();
 		}
-		/* other intids (SGIs for IPIs, SPIs for devices) are not wired yet */
+		else if (intid == GIC_INTID_SGI_SIGNAL) {
+			/* another processor wants this one's attention (cpu_signal(); with several cores, soc/smp) */
+			cpu_signal_handler();
+		}
+		/* other intids (SPIs for devices) are not wired yet */
 		/* EOImode=1 (set in pe_init_fiq): split priority-drop from deactivate.
 		 * Some hypervisor virtual CPU interfaces do not honor the combined
 		 * EOImode=0 deactivate, wedging Group-1 delivery after a few interrupts;

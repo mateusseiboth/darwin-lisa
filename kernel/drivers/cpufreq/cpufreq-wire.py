@@ -6,7 +6,7 @@
 # port runs everything on one core (cpus=1), so the boot of iOS 26's userland is CPU bound.
 # NEEDS kernel/patches/cpu-idle-no-wfi.patch (or boot-arg wfi=0): with a fast core the kernel goes idle, WFI never
 # wakes under this hypervisor, and the kernel hangs a few minutes into the boot (see ../display/README.md).
-# ml_cpu_idle_time() (cpuload=N only) is not in this tree: a stub answering "not known" is added beside it.
+# ml_cpu_idle_time() (cpuload=N only) comes from osfmk/arm64/lisa_smp.c (soc/smp/smp-wire.py).
 # Idempotent; run in docker as root, then .work/run-rebuild.sh.
 import os, shutil, sys
 
@@ -27,11 +27,10 @@ def edit(path, old, new, tag):
 
 
 shutil.copyfile(os.path.join(HERE, "hakios.cpufreq.c"), os.path.join(T, "bsd/dev/hakios.cpufreq.c"))
+# ml_cpu_idle_time() (cpuload=N) is real now: osfmk/arm64/lisa_smp.c (kernel/soc/smp/smp-wire.py). The glue stays
+# as an empty file so bsd/conf/files keeps its line.
 open(os.path.join(T, "bsd/dev/hakios.cpufreq_glue.c"), "w").write(
-    "/* darwin-lisa: what hakios.cpufreq.c needs of HakiOS's kernel and this tree has not (cpuload=N only). */\n"
-    "#include <stdbool.h>\n#include <stdint.h>\n\n"
-    "bool ml_cpu_idle_time(int cpu_id, uint64_t *idle);\n\n"
-    "bool\nml_cpu_idle_time(int cpu_id, uint64_t *idle)\n{\n\t(void)cpu_id;\n\t(void)idle;\n\treturn false;\n}\n")
+    "/* darwin-lisa: ml_cpu_idle_time() for hakios.cpufreq.c (cpuload=N) is in osfmk/arm64/lisa_smp.c. */\n")
 print("  [ok]   copied hakios.cpufreq.c + glue")
 bf = os.path.join(T, "bsd/conf/files")
 s = open(bf).read()

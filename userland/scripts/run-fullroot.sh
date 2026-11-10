@@ -43,6 +43,16 @@ for i in $(seq 1 ${XL_POLLS:-60}); do
     n=$(tr -d '\000' < /tmp/fr.$i 2>/dev/null | wc -c)
     [ "$n" -ge "$best" ] && best=$n && tr -d '\000' < /tmp/fr.$i > logs/fullroot.log
   fi
+  # XL_SHOT_EVERY=N (darwin-lisa display work): every N polls, a picture of the panel's memory as the loader reads it
+  # while the kernel runs (oem screenshot), saved as logs/fullroot-shot-<poll>.png. Off by default.
+  if [ -n "${XL_SHOT_EVERY:-}" ] && [ $((i % XL_SHOT_EVERY)) -eq 0 ]; then
+    geom=$(timeout 5 fastboot getvar screen 2>&1 | sed -n 's/^screen: //p')
+    if [ -n "$geom" ] && timeout 10 fastboot oem screenshot 2>&1 | grep -q OKAY &&
+       timeout 60 fastboot get_staged /tmp/fr-shot.raw >/dev/null 2>&1; then
+      python3 /home/mateusseiboth/Dev/mobile/darwin-lisa/tools/fbraw2png.py /tmp/fr-shot.raw logs/fullroot-shot-$i.png $geom &&
+        echo "### poll $i: logs/fullroot-shot-$i.png"
+    fi
+  fi
   r=$(timeout 5 fastboot getvar result 2>&1 | grep -i '^result:' || true)
   case "$r" in *returned*|*exception*|*checkpoint*) break;; esac
   sleep 2

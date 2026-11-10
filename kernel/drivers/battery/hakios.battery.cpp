@@ -17,6 +17,11 @@
  * As on Apple's newer batteries, CurrentCapacity is the percentage that the fuel gauge shows (and
  * MaxCapacity 100); the charges in mAh are AppleRawCurrentCapacity, AppleRawMaxCapacity (what the
  * gauge has learnt a full charge to be), NominalChargeCapacity and DesignCapacity.
+ *
+ * darwin-lisa: the reports come from kernel/drivers/battery/dlisa.battery.c (battery=1, the SPMI ADC's estimate)
+ * or from the ADSP's fuel gauge (kernel/drivers/adsp/hakios.adsp.c, adsp=1 battmgr=1), whichever is fresh. One
+ * change from HakiOS: the fuel gauge's health (Linux's POWER_SUPPLY_HEALTH_*, dlisa_battery_health()) becomes
+ * BatteryHealth (kIOPMGoodValue / Fair / Poor) and, for too hot or too cold, ChargeStatus.
  */
 
 #include <IOKit/IOLib.h>
@@ -26,6 +31,7 @@
 #include <libkern/c++/OSBoolean.h>
 #include <libkern/c++/OSDictionary.h>
 #include <libkern/c++/OSNumber.h>
+#include <libkern/c++/OSString.h>
 #include <libkern/c++/OSSymbol.h>
 
 /* The same as struct hakios_battery_state in bsd/sys/hakios.input.h, which is not seen from here. */
@@ -42,6 +48,7 @@ struct hakios_battery_state {
 };
 
 extern "C" void HakiosBatteryReport(const void * state, unsigned size);
+extern "C" int dlisa_battery_health(void);     /* kernel/drivers/battery/dlisa.battery.c: -1 while not known */
 
 class HakiosBattery : public IOPMPowerSource
 {
@@ -54,6 +61,7 @@ private:
 	void number(const char * key, long long value);
 	void flag(const char * key, bool value);
 	void object(const char * key, OSObject * value);
+	void health(int linux_health);
 };
 
 OSDefineMetaClassAndStructors(HakiosBattery, IOPMPowerSource);
@@ -93,6 +101,34 @@ HakiosBattery::object(const char * key, OSObject * value)
 		setPSProperty(symbol, value);
 	}
 	OSSafeReleaseNULL(symbol);
+}
+
+/*
+ * darwin-lisa: Linux's POWER_SUPPLY_HEALTH_* (1 good, 2 overheat, 3 dead, 4 overvoltage, 5 unspecified failure,
+ * 6 cold, 7 and 8 timers, 9 overcurrent, 10 calibration, 11 warm, 12 cool, 13 hot) as Darwin's BatteryHealth and
+ * ChargeStatus (IOPM.h). Not known (-1, 0): neither is set.
+ */
+void
+HakiosBattery::health(int linux_health)
+{
+	const OSSymbol * status = OSSymbol::withCString(kIOPMPSBatteryChargeStatusKey);
+	const char * why = linux_health == 2 || linux_health == 13 ? kIOPMBatteryChargeStatusTooHot :
+	    linux_health == 6 ? kIOPMBatteryChargeStatusTooCold : NULL;
+
+	if (linux_health > 0) {
+		number(kIOPMPSBatteryHealthKey, linux_health == 1 || linux_health == 11 || linux_health == 12 ? kIOPMGoodValue :
+		    linux_health == 3 || linux_health == 4 || linux_health == 5 || linux_health == 9 ? kIOPMPoorValue : kIOPMFairValue);
+		number(kIOPMPSHealthConfidenceKey, 100);
+	}
+	if (status != NULL && why != NULL) {
+		OSString * text = OSString::withCString(why);
+
+		object(kIOPMPSBatteryChargeStatusKey, text);
+		OSSafeReleaseNULL(text);
+	} else if (status != NULL && properties != NULL) {
+		properties->removeObject(status);
+	}
+	OSSafeReleaseNULL(status);
 }
 
 /*
@@ -146,6 +182,7 @@ HakiosBattery::report(const struct hakios_battery_state * b)
 	if (b->cycles > 0) {
 		setCycleCount((unsigned) b->cycles);
 	}
+	health(dlisa_battery_health());
 
 	if (b->external) {
 		OSDictionary * adapter = OSDictionary::withCapacity(6);

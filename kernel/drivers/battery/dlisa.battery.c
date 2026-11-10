@@ -9,6 +9,11 @@
  * hakios_battery_report() -> HakiosBattery (iokit/Kernel/hakios.battery.cpp), an IOPMPowerSource, which powerd reads
  * and SpringBoard's battery follows.
  *
+ * The real fuel gauge (adsp=1 battmgr=1, kernel/drivers/adsp/hakios.adsp.c) reports through hakios_battery_report()
+ * below as well. While its reports are fresh (the last one less than DSP_FRESH_SECONDS old) the ADC's estimate is not
+ * passed on: one source at a time reaches HakiosBattery, and the DSP's wins. The sysctls show whichever was passed on
+ * (kern.hakios.battery_source: 1 the ADC's estimate, 2 the DSP's fuel gauge).
+ *
  * Boot-args:
  *   battery=1            on (off by default)
  *   battery_secs=N       a reading every N seconds (default 30)
@@ -98,6 +103,10 @@ static uint32_t dump_registers;
 
 static int battery_soc_percent = -1, battery_vbat_mv = -1, battery_usb_mv = -1, battery_vph_mv = -1, battery_external = -1;
 static int battery_last_code = -1;
+static int battery_source, battery_current_ma, battery_temp_tenths = -2730, battery_status = -1, battery_health = -1;
+static int battery_cycles = -1;
+static uint64_t dsp_reported_at;        /* mach_absolute_time() of the DSP's last report; 0: none yet */
+#define DSP_FRESH_SECONDS       60
 
 SYSCTL_DECL(_kern_hakios);
 SYSCTL_INT(_kern_hakios, OID_AUTO, battery_soc, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_soc_percent, 0,
@@ -110,6 +119,32 @@ SYSCTL_INT(_kern_hakios, OID_AUTO, battery_vph_mv, CTLFLAG_RD | CTLFLAG_LOCKED, 
     "system supply (VPH_PWR) in mV, or -1");
 SYSCTL_INT(_kern_hakios, OID_AUTO, battery_charger_present, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_external, 0,
     "1 if the USB input carries a supply, -1 if unknown");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_source, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_source, 0,
+    "what the battery's state comes from: 0 nothing yet, 1 the ADC's voltage estimate, 2 the ADSP's fuel gauge");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_current_ma, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_current_ma, 0,
+    "battery current in mA, more than 0 while it takes charge (fuel gauge only; 0 otherwise)");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_temp_tenths, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_temp_tenths, 0,
+    "battery temperature in tenths of a degree C (fuel gauge only; -2730 if unknown)");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_status, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_status, 0,
+    "Linux POWER_SUPPLY_STATUS_*: 1 charging, 2 discharging, 3 not charging, 4 full; -1 unknown");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_health, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_health, 0,
+    "Linux POWER_SUPPLY_HEALTH_*: 1 good, 2 overheat, 3 dead, 6 cold, ...; -1 unknown (fuel gauge only)");
+SYSCTL_INT(_kern_hakios, OID_AUTO, battery_cycles, CTLFLAG_RD | CTLFLAG_LOCKED, &battery_cycles, 0,
+    "charge cycles (fuel gauge only; -1 unknown)");
+
+static bool
+is_dsp_fresh(void)
+{
+	uint64_t nanoseconds;
+
+	if (dsp_reported_at == 0) {
+		return false;
+	}
+	absolutetime_to_nanoseconds(mach_absolute_time() - dsp_reported_at, &nanoseconds);
+	return nanoseconds < DSP_FRESH_SECONDS * NSEC_PER_SEC;
+}
+
+static void report(const struct hakios_battery_state *b, bool from_dsp);
 
 static inline uint32_t
 rd(vm_offset_t address)
@@ -338,10 +373,10 @@ reading(void)
 	b.usb_type = battery_external ? 1 : 0;
 	b.usb_voltage_uv = battery_usb_mv > 0 ? battery_usb_mv * 1000 : 0;
 	b.usb_current_ua = battery_external ? 500000 : 0;
-	printf("battery: VBAT %d mV -> %d%% (estimated from the voltage), USB in %d mV (%s), VPH %d mV, status %d\n",
+	printf("battery: VBAT %d mV -> %d%% (estimated from the voltage), USB in %d mV (%s), VPH %d mV, status %d%s\n",
 	    battery_vbat_mv, battery_soc_percent, battery_usb_mv, battery_external ? "a charger or a computer" : "nothing",
-	    battery_vph_mv, b.status);
-	hakios_battery_report(&b);
+	    battery_vph_mv, b.status, is_dsp_fresh() ? "; not passed on: the DSP's fuel gauge reports" : "");
+	report(&b, false);
 }
 
 static bool
@@ -427,13 +462,52 @@ hakios_battery_init(void)
 int
 hakios_battery_temperature(void)
 {
-	return -273;    /* not known without the fuel gauge */
+	/* the fuel gauge's, while it is fresh; else not known (the ADC path has no temperature) */
+	return is_dsp_fresh() ? battery_temp_tenths / 10 : -273;
 }
 
 extern void HakiosBatteryReport(const void *state, unsigned size);     /* iokit/Kernel/hakios.battery.cpp */
 
+static void
+report(const struct hakios_battery_state *b, bool from_dsp)
+{
+	if (!from_dsp && is_dsp_fresh()) {
+		return;
+	}
+	if (from_dsp) {
+		dsp_reported_at = mach_absolute_time();
+		battery_soc_percent = (int)(((int64_t)b->percent_hundredths + 50) / 100);
+		battery_vbat_mv = b->voltage_uv / 1000;
+		battery_usb_mv = b->external ? b->usb_voltage_uv / 1000 : 0;
+		battery_external = b->external != 0;
+		battery_current_ma = b->current_ua / 1000;
+		battery_temp_tenths = (int)(((int64_t)b->temperature_hundredths + 5) / 10);
+		battery_cycles = b->cycles;
+	}
+	battery_source = from_dsp ? 2 : 1;
+	battery_status = b->status;
+	HakiosBatteryReport(b, sizeof(*b));
+}
+
+/* The DSP's fuel gauge (kernel/drivers/adsp/hakios.adsp.c, battmgr=1), and anybody else with a whole state. */
 void
 hakios_battery_report(const struct hakios_battery_state *b)
 {
-	HakiosBatteryReport(b, sizeof(*b));
+	report(b, true);
+}
+
+/* Linux's POWER_SUPPLY_HEALTH_* from the fuel gauge (hakios.adsp.c); HakiosBattery reads it with the next report. */
+void dlisa_battery_note_health(int linux_health);
+int dlisa_battery_health(void);
+
+void
+dlisa_battery_note_health(int linux_health)
+{
+	battery_health = linux_health;
+}
+
+int
+dlisa_battery_health(void)
+{
+	return is_dsp_fresh() ? battery_health : -1;
 }

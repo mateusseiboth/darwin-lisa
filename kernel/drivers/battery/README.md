@@ -12,6 +12,15 @@ and the battmgr protocol. HakiOS has all of that for redwood (`drivers/audio/hak
 was never brought up on lisa. That is a much bigger port. Note `xiaomi-lisa-mainline/docs/hardware.md:60`: lisa's
 firmware reports the charge current **negative** while charging, the opposite of redwood.
 
+## The real fuel gauge (adsp=1 battmgr=1)
+
+`kernel/drivers/adsp/` now boots the ADSP and polls battmgr (see its README). Its reports go through
+`hakios_battery_report()` in `dlisa.battery.c` like the ADC's. While a DSP report is less than 60 s old the ADC estimate
+is not passed on (the log line ends in "not passed on: the DSP's fuel gauge reports"), so `battery=1` can stay on as
+the fallback. Extra sysctls: `battery_source` (1 ADC, 2 gauge), `battery_current_ma`, `battery_temp_tenths`,
+`battery_status`, `battery_health`, `battery_cycles`. HakiosBattery also sets `BatteryHealth` and `ChargeStatus` from
+the gauge's health.
+
 ## What this driver does instead
 
 `dlisa.battery.c` reads the battery's voltage directly over SPMI, with no firmware:

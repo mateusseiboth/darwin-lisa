@@ -14,6 +14,8 @@
 # (loader/autoboot.patch, on top of oem-bootos.patch and data-region.patch). run-tpl.patch keeps U-Boot's console
 # from polling the keys over the PMIC arbiter during a run; live-watch.patch reads the kernel's signs of life through
 # memory and never stops serving its storage while it holds its core (docs/presentation-build.md, section 7).
+# identity-soc.patch writes the identity's own platform-name, chip-id, board-id and regulatory model when the identity
+# header carries them (loader/identity-soc.py), the iPhone X's otherwise.
 #
 # Sources are copied to darwin-lisa/.work/loader-standalone/build and patched there: research/hackios-xnu-kernel/xnuloader
 # is never touched. Nothing here writes to the phone.
@@ -95,14 +97,20 @@ case " $LINE " in *" bootcpu=7 "*) ;; *) echo "build-standalone: bootcpu=7 is re
 rm -rf "${W:?}/build" && mkdir -p "$W/build/xnuloader"
 cp "$H"/xnuloader/{loader.c,efi.h,build.sh} "$W/build/xnuloader/"
 cp "$IDENTITY" "$W/build/xnuloader/identity.h"
+SOC=$(sed -n 's/^#define IDENTITY_\(PLATFORM_NAME\|CHIP_ID\|BOARD_ID\|REGULATORY_MODEL\) *\(.*\)$/\2/p' "$IDENTITY" | tr -d '"' | tr '\n' ' ')
+[[ -n $SOC ]] || SOC="none in the header, so the defaults: t8015 0x8015 0x06 A1865"
+echo "build-standalone: identity SoC and board: $SOC"
 cp "$M/darwin-lisa/loader/data-regions.h" "$W/build/xnuloader/"
-for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch; do
+for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch identity-soc.patch; do
 	(cd "$W/build" && patch -s -p1 --forward <"$M/darwin-lisa/loader/$p")
 done
 (cd "$W/build/xnuloader" && bash build.sh >/dev/null)
 grep -aq 'autoboot: iOS starts in' "$W/build/xnuloader/loader.efi" || { echo "build-standalone: loader lacks autoboot" >&2; exit 1; }
 grep -aq 'still watching it and serving its storage' "$W/build/xnuloader/loader.efi" ||
 	{ echo "build-standalone: loader lacks live-watch" >&2; exit 1; }
+PLATFORM_NAME=$(sed -n 's/^#define IDENTITY_PLATFORM_NAME *"\(.*\)"$/\1/p' "$IDENTITY")
+grep -aq "${PLATFORM_NAME:-t8015}" "$W/build/xnuloader/loader.efi" ||
+	{ echo "build-standalone: loader lacks the platform name ${PLATFORM_NAME:-t8015}" >&2; exit 1; }
 
 # --- the payload and the HKUB ------------------------------------------------------------------------------------
 KVER="dl26-$(sha256sum "$KERNEL" | cut -c1-8)"      # (short: it is in the 607 characters too)

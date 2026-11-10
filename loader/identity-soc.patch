@@ -1,0 +1,48 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -11,6 +11,18 @@
+  */
+ #include "efi.h"
+ #include "identity.h"         /* who Darwin shall think we are: from the iPhone's own device tree (mkidentity.py) */
++/*
++ * darwin-lisa (loader/identity-soc.patch): the SoC and the board of that same iPhone, which iBoot fills in on a real
++ * phone and its device tree leaves at zero. An identity header with them (darwin-lisa/loader/identity-soc.py) gives
++ * its own; one without keeps the iPhone X's, as this loader always wrote. Our kernel only hashes chip-id into
++ * IOPlatformUUID (IOPlatformExpert.cpp); its own platform is /arm-io's device_type (PLAT->name), which stays.
++ */
++#ifndef IDENTITY_PLATFORM_NAME
++#define IDENTITY_PLATFORM_NAME     "t8015"
++#define IDENTITY_CHIP_ID           0x8015
++#define IDENTITY_BOARD_ID          0x06
++#define IDENTITY_REGULATORY_MODEL  "A1865"
++#endif
+ 
+ /* ------------------------------------------------------------------------ */
+ /* Fixed conventions shared with the boot shim, the packer and the kernel   */
+@@ -3547,13 +3559,13 @@
+ 	 * those of that phone. XNU itself does not care; the hardware is described further down.
+ 	 */
+ 	dt_identity(&w, identity_root, sizeof(identity_root) / sizeof(identity_root[0]), identity_root_data);
+-	dt_prop_str(&w, "platform-name", "t8015");
++	dt_prop_str(&w, "platform-name", IDENTITY_PLATFORM_NAME);
+ 	/* what iBoot takes from the factory configuration of a real phone; fixed size fields */
+ 	dt_prop_padded(&w, "serial-number", "RDW00POCOX5P", 32);
+ 	dt_prop_padded(&w, "mlb-serial-number", "RDW00POCOX5PMLB00", 32);
+ 	dt_prop_padded(&w, "model-number", "MQAC2", 32);
+ 	dt_prop_padded(&w, "region-info", "LL/A", 32);
+-	dt_prop_padded(&w, "regulatory-model-number", "A1865", 32);
++	dt_prop_padded(&w, "regulatory-model-number", IDENTITY_REGULATORY_MODEL, 32);
+ 	dt_prop_u32(&w, "#address-cells", 2);
+ 	dt_prop_u32(&w, "#size-cells", 2);
+ 
+@@ -3582,8 +3594,8 @@
+ 	static const uint8_t manifest_hash[48] = { 0x72, 0x65, 0x64, 0x77, 0x6f, 0x6f, 0x64 };
+ 	static const uint8_t no_behavior[16];
+ 	dt_prop_u64(&w, "unique-chip-id", 0x000052445730001ULL);
+-	dt_prop_u32(&w, "chip-id", 0x8015);
+-	dt_prop_u32(&w, "board-id", 0x06);
++	dt_prop_u32(&w, "chip-id", IDENTITY_CHIP_ID);
++	dt_prop_u32(&w, "board-id", IDENTITY_BOARD_ID);
+ 	dt_prop(&w, "mac-address-wifi0", wifi_address, sizeof(wifi_address));
+ 	dt_prop(&w, "mac-address-bluetooth0", bluetooth_address, sizeof(bluetooth_address));
+ 	dt_prop(&w, "boot-manifest-hash", manifest_hash, sizeof(manifest_hash));

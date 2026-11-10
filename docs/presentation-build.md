@@ -417,8 +417,42 @@ status bar. It is 15 points narrower than any iPhone at standard zoom. 1125x2499
 is designed for, with a uniform 0.96 resample. If 360 points shows a broken layout, take the fallback (7.4,
 check C).
 
-The identity's root says iPhone14,4, but the loader still writes the D22's `chip-id` 0x8015, `board-id` 6,
-`platform-name` t8015 and A1865 numbers. This was never a problem with D22, but it is untested with D16.
+**The SoC and board match the identity (`loader/identity-soc.patch`, `loader/identity-soc.py`).** The loader used to
+write the iPhone X's SoC and board under every identity. Now it takes them from the identity header:
+
+| Property | Was (D22) | D16AP | Where it comes from |
+|---|---|---|---|
+| root `platform-name` | t8015 | t8110 | the iPhone's device tree: `/arm-io` compatible `arm-io,t8110` |
+| `/chosen` `chip-id` | 0x8015 | 0x8110 | the same tNNNN: Apple numbers its SoCs that way |
+| `/chosen` `board-id` | 0x06 | 0x08 | ApBoardID of D16AP (BuildManifest; `ipsw device-info --prod iPhone14,4`) |
+| root `regulatory-model-number` | A1865 | A2481 | the US model of the iPhone 13 mini |
+
+- **Why they are not simply copied.** iBoot fills these in on a real phone: the tree itself has 0 and `syscfg/`
+  placeholders.
+- **How they get into the header.** `identity-soc.py DeviceTree.<board>.bin <header>` appends them as `#define`s to
+  the (git-ignored) identity header. Run on the D22 tree, it gives exactly the values the loader always wrote, which
+  checks the method.
+- **An identity header without them** builds the loader as before, with the D22 values.
+
+What reads these values:
+
+| Reader | What it does with them |
+|---|---|
+| our kernel | only `IOPlatformExpert` hashes `unique-chip-id` + `chip-id` into `IOPlatformUUID`, so that UUID changes. Nothing in the kernel tests chip-id, board-id or platform-name, including the `darwin-lisa` drivers and the ath11k strings (`qmi-chip-id`, the WiFi chip's own). `hw.machine` / `hw.model` / `hw.target` come from the root `compatible`, `model` and `target-type`, which were D16 already |
+| our platform | `/arm-io` keeps `device_type` = the loader's platform name ("redwood", which `pe_arm_get_soc_base_phys` reads for the ranges) and gets no `arm-io,t8110` compatible. An Apple board name could match Apple platform drivers |
+| MobileGestalt | ChipID, BoardId, HardwarePlatform and RegulatoryModelNumber now match iPhone14,4. The UDID uses chip-id and the ECID |
+
+Still the iPhone X's:
+
+- `model-number` MQAC2, a part number with no source offline;
+- `firmware-version` iBoot-8422.100.650.
+
+Neither is known to be checked.
+
+**Before the session, check the data volume's MobileGestalt cache.** init removes that cache when `hw.machine` or
+`hw.model` changes (`userland/init/identity-stamp.c`), and the move from D22 to D16 changes both. A data volume that
+already booted once with D16 and the old chip-id keeps a cache with ChipID 0x8015: chip-id is not in the stamp. If
+that boot happened, remove `/private/var/db/dlisa-identity` once.
 
 ### 7.3 The build
 
@@ -430,7 +464,9 @@ KERNEL=research/hackios-xnu-kernel/<final>.bak EXTRA_ARGS="rtc=1 battmgr=1" darw
 It is `build-standalone.sh` with:
 
 - `NAME=combined`;
-- `IDENTITY=darwin-lisa/.work/identity/identity-d16.h` (Apple data, not in git);
+- `IDENTITY=darwin-lisa/.work/identity/identity-d16.h` (Apple data, not in git), with its SoC block. The script
+  refuses a header without one. To make it: `darwin-lisa/loader/identity-soc.py ipsw/d16-dtree/DeviceTree.d16ap.bin
+  darwin-lisa/.work/identity/identity-d16.h`;
 - `GEOMETRY=1080x2400`;
 - `KERNEL` defaulting to `kernel-16k-gpu1.bak`.
 
@@ -447,10 +483,12 @@ Provisional build (kernel `kernel-16k-gpu1.bak`, sha256 `de12f63f3317aece…`):
 
 | File | sha256 |
 |---|---|
-| `out/vendor_boot-lisa-combined.img` (24,834,048 B) | `5cef38e9d6e71fb2d13067ef4f4f449e8d60d596fab919397ef515ad4122c68c` |
-| `out/loader-usb-lisa-combined.hkub` | `2f49d6bf50cbe9f9a8550ff628e2bef8bf5e43376a72dd2bc1e5ecfbb02c1cd4` |
-| `out/loader-combined.efi` | `2359ae2d20d500047e69bd58e50e2b71c681120e6dcb8af5eee8b830bd7fca75` |
-| `out/combined-payload.bin` | `4e6edb3301ae3bc708abbc29db485eb6ef2a13e6ba5d6294a3509701107af1b1` |
+| `out/vendor_boot-lisa-combined.img` (24,834,048 B) | `8a45a872ce2e7896dcad646c55649e7214e767d92aacbb5bbbfaea3df4fadab2` |
+| `out/loader-usb-lisa-combined.hkub` | `1258c2a69211bd8fe7e959b44ad9584ac08dda0a7a47377e80948db1cd5d5947` |
+| `out/loader-combined.efi` | `6d60f8c5365d7f41b2267b980f6322116f3ce8031b174423c610818b67c145ec` |
+| `out/combined-payload.bin` | `0e4a21b548b5b485f7680f515a48e86e4c0669e5fb4d950caa5c93af10fa3b8f` |
+
+This build has the SoC identity (t8110, 0x8110, 0x08, A2481). It replaces the first provisional image, 5cef38e9.
 
 `epoch=` is the build time: rebuild right before the session. The flashed rollback images are untouched:
 `out/vendor_boot-lisa-standalone-d22-abfe7629.img` and `backups/vendor_boot_a-before-present2.img`.
@@ -508,6 +546,6 @@ same loader, so they get the fix as well.
 |---|---|
 | vendor_boot_a | `vendor_boot_a-before-combined.img` (or `out/vendor_boot-lisa-standalone-d22-abfe7629.img`, the image of the 4:01 boot) through pmOS `dd` as in step 5, or `fastboot flash vendor_boot_a` from ABL. pmOS stays one volume key away in U-Boot's menu |
 | geometry only | rebuild with `GEOMETRY=1125x2499` or `GEOMETRY=` (the kernel's 1125x2436) |
-| identity only | `IDENTITY=research/hackios-xnu-kernel/xnuloader/identity.h` (D22) with `GEOMETRY=` |
+| identity only | `IDENTITY=research/hackios-xnu-kernel/xnuloader/identity.h` (D22) with `GEOMETRY=`. Only the SoC values: `identity-d16.h.before-soc` in `.work/identity` (with `build-standalone.sh`, since `build-combined.sh` refuses it) |
 | live-watch only | remove `live-watch.patch` from the loop in `build-standalone.sh` and the check after it. The heartbeat flush alone is the smallest fix: `read_through()` on `live->heartbeat` |
 | give-up time | `EXTRA_ARGS="loader_hang_after=120"` (sooner restart after a real hang) or `=0` (never give up) |

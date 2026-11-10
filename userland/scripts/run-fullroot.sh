@@ -8,10 +8,14 @@ set -e
 cd "$(dirname "$0")"
 IMG="${1:?usage: run-fullroot.sh <system-26.apfs>}"
 [ -f "$IMG" ] || { echo "image $IMG not found"; exit 1; }
-[ -f kernel26.nopac ] || { echo "no kernel26.nopac"; exit 1; }
+# Pin to the stable miniamfi kernel backup (the WiFi worker rebuilds kernel26.nopac;
+# avoid that race). Override with KERNEL=... if needed.
+KERNEL="${KERNEL:-kernel-miniamfi.bak}"
+[ -f "$KERNEL" ] || KERNEL=kernel26.nopac
+[ -f "$KERNEL" ] || { echo "no kernel ($KERNEL)"; exit 1; }
 SECS="${XL_SECS:-120}"
 PHONE=${XDG_RUNTIME_DIR:-/tmp}/darwin-hakios-phone
-cp kernel26.nopac hakios-kernel
+cp "$KERNEL" hakios-kernel
 
 echo "### fresh loader session (reboot wipes the resident region)"
 fastboot reboot >/dev/null 2>&1 || true

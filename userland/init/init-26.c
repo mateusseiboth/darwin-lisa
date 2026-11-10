@@ -77,12 +77,60 @@ listDir(const char *path)
 }
 
 static void
+statPath(const char *p)
+{
+	struct stat st;
+	if (stat(p, &st) == 0)
+		printf("init26: CACHE ok  %s  (%lld bytes)\n", p, (long long)st.st_size);
+	else
+		printf("init26: CACHE --  %s: %s\n", p, strerror(errno));
+}
+
+/* stat() follows symlinks, so the cryptex-path check tests the /System/Cryptexes/OS
+ * symlink resolution AND the cache file in one call. This is why launchd (dyld) said
+ * "no dyld cache": we need to know which of these the booted image actually resolves. */
+static void
+cacheProbe(void)
+{
+	printf("init26: dyld shared-cache probe:\n");
+	statPath("/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e");
+	statPath("/private/preboot/Cryptexes/OS/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e");
+	statPath("/System/Library/Caches/com.apple.dyld/dyld_shared_cache_arm64e");
+	statPath("/System/Cryptexes/OS");
+	statPath("/usr/lib/libSystem.B.dylib");
+}
+
+static void
 handOff(char **envp)
 {
+	/* Hand pid 1 to Apple's real arm64e launchd (shipped as /sbin/launchd.darwin;
+	 * our static init is /sbin/launchd). argv[0] stays /sbin/launchd so launchd
+	 * sees the path it expects. The pac-pager strips PAC at page-in and miniamfi
+	 * lets the ad-hoc signature pass; dyld then maps the shared cache. If it is
+	 * absent, fall back to /bin/sh (neither present halts cleanly). */
+	char *ld_argv[] = { "/sbin/launchd", NULL };
 	char *sh_argv[] = { "/bin/sh", NULL };
+	/* Point dyld straight at the shared cache (the cryptex is not activated in this
+	 * ramdisk boot, so dyld's normal cryptex lookup finds nothing). DYLD_PRINT_SEARCHING
+	 * doubles as a probe: if it logs, dyld honors our env (launchd is not a locked-down
+	 * platform binary here); if it is silent, miniamfi's CS_PLATFORM_BINARY is blocking it. */
+	char *ld_envp[] = {
+		"DYLD_SHARED_CACHE_DIR=/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
+		"DYLD_PRINT_SEARCHING=1",
+		"DYLD_PRINT_LIBRARIES=1",
+		NULL
+	};
+	const char *real = "/sbin/launchd.darwin";
 	struct stat st;
+	if (stat(real, &st) == 0) {
+		printf("init26: handing over to Apple launchd (%s), %lld bytes\n", real, (long long)st.st_size);
+		execve(real, ld_argv, ld_envp);
+		printf("init26: cannot exec %s: %s\n", real, strerror(errno));
+		return;
+	}
+	printf("init26: no %s in this image\n", real);
 	if (stat(sh_argv[0], &st) != 0) {
-		printf("init26: no %s in this image, nothing to hand over to\n", sh_argv[0]);
+		printf("init26: no %s either, nothing to hand over to\n", sh_argv[0]);
 		return;
 	}
 	printf("init26: handing over to %s\n", sh_argv[0]);
@@ -101,6 +149,7 @@ main(int argc, char **argv, char **envp)
 
 	showFile("/etc/hakios-release");
 	listDir("/");
+	cacheProbe();
 
 	handOff(envp);
 

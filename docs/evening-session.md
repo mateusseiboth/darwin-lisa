@@ -148,6 +148,28 @@ was flashed and then rolled back to final3.
 
 **Known issue:** the status bar is the classic layout (carrier, centred time), not Split1080.
 
+**OPEN, blocks everything since about 16:42: `UBSAN trap taken in early startup code @ubsan_minimal.c:81`.**
+
+- Where: between the version banner and `pmap_startup()`. The caller is `_ubsan_handle_brk_trap`; the trapping PC is
+  not logged.
+- On kernel final1 (67b9c3b3) it hits every boot from 16:45 on:
+  - host runs `gpu-probe-1645`, `-1646`, `-1648`, `-1652` and `-1655` (the last with no other host process);
+  - standalone autoboots `standalone-1656`, `-1703-root33050eb2` and `-1707-zeroed`.
+- The same kernel and vendor_boot (final3 80a8f505) booted to the home screen at 16:32. The 16:24 probe line that
+  booted then panics now. Before 16:42 the only failure was `gpu-probe-1620` (kernel final2).
+- Ruled out:
+  - the boot-arg line and epoch;
+  - heat (it also panics at 47 °C);
+  - other host processes;
+  - host files and RAM disks (none uploaded);
+  - the loader preamble and the root/data-region lines (identical good and bad);
+  - the root: 33050eb2, the root the 16:32 boot used, panics too;
+  - stale DRAM: pmOS filled 5.2 GB of free RAM with zeros, and it still panics.
+- Not ruled out: the data region (the kernel writes it at every boot), and device or firmware state that persists
+  across the warm reset.
+- Next step: an instrumented final1 (`kernel-16k-final1-ubsandbg.bak`) that prints the trapping PC and the check's
+  kind.
+
 ## The decisions
 
 **Root size budget.** The ADSP firmware (20.8 MB, 10.5 MB once compressed by mkapfs) is **built into the kernel**

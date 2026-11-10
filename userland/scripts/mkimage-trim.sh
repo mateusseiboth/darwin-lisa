@@ -36,6 +36,10 @@ if [ "${LEAN:-0}" = 1 ]; then
 	done < "$LEAN_LIST"
 fi
 
+# the sysroot additions every image carries (D22's event timing profile, the ld_disable groups), made while every
+# LaunchDaemon is still in place
+python3 -I "$HERE/plist-tweaks.py" "$SR"
+
 restore() {
 	for d in "${TRIM[@]+"${TRIM[@]}"}"; do
 		[ -e "$ASIDE/$d" ] && { mkdir -p "$(dirname "$SR/$d")"; mv "$ASIDE/$d" "$SR/$d"; }

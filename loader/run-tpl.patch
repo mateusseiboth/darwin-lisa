@@ -1,0 +1,51 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -2449,10 +2449,40 @@
+  * return). `live` is where the kernel shows its signs of life, if it has such a place;
+  * `budget` is how many seconds it has said it will run.
+  */
++/*
++ * darwin-lisa (loader/run-tpl.patch): while a kernel runs, this core sits at TPL_NOTIFY. U-Boot's EFI has no
++ * interrupts and runs its timer events from inside the calls this core makes (Block I/O for the kernel's storage,
++ * the log writes): one of them is the console's, which reads the volume and power keys (stdin "button-kbd") over the
++ * PMIC arbiter. The kernel drives that same arbiter from its own cores (the battery's ADC, the touch supply), and
++ * two transfers at once fail: U-Boot printed "SPMI read failure." over the screen at a standalone boot. At
++ * TPL_NOTIFY those TPL_CALLBACK events wait, and run once when the run is over.
++ */
++#define TPL_APPLICATION 4
++#define TPL_NOTIFY      16
++
++static uint64_t
++raise_tpl_for_run(void)
++{
++	uint64_t (EFIAPI *raise)(uint64_t) = (uint64_t (EFIAPI *)(uint64_t))BS->raise_tpl;
++
++	return raise != NULL ? raise(TPL_NOTIFY) : TPL_APPLICATION;
++}
++
++static void
++restore_tpl_after_run(uint64_t old)
++{
++	void (EFIAPI *restore)(uint64_t) = (void (EFIAPI *)(uint64_t))BS->restore_tpl;
++
++	if (restore != NULL) {
++		restore(old);
++	}
++}
++
+ static int64_t
+ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const struct kernel_live *live, uint64_t slide,
+     uint64_t budget)
+ {
++	uint64_t old_tpl = raise_tpl_for_run();
+ 	uint64_t daif = 0, group1 = 0, started, last_pet, last_battery, last_beat_at, last_beat = 0, noted = 0;
+ 	int64_t status;
+ 	int arrived = 0, watching_only = 0;
+@@ -2575,6 +2605,7 @@
+ 		__asm__ volatile ("msr S3_0_C12_C12_7, %0\nisb" : : "r" (group1));
+ 		__asm__ volatile ("msr daif, %0" : : "r" (daif));
+ 	}
++	restore_tpl_after_run(old_tpl);
+ 	return status;
+ }
+ 

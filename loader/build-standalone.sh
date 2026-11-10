@@ -24,6 +24,9 @@
 #   FW_RAMDISK    an APFS image carried as the resident md0 (the WiFi firmware: userland-26/out/fw-26-pad32.apfs).
 #                 Empty (default): no WiFi (wlan_stub=1)
 #   PRESENT_EPOCH the wall clock the kernel starts from (no RTC is read anywhere): default the build time
+#   IDENTITY      the identity header the loader is built with (default research/hackios-xnu-kernel/xnuloader/identity.h,
+#                 the iPhone X, D22). darwin-lisa/.work/identity/identity-d16.h is the iPhone 13 mini (D16AP), made by
+#                 xnuloader/mkidentity.py from DeviceTree.d16ap of the iPhone14,4 23F84 IPSW (Apple data: not in git)
 #   EXTRA_ARGS    more boot-args, appended
 #   ARGS          the whole boot-arg line, replacing the default (EXTRA_ARGS still appended)
 set -euo pipefail
@@ -31,6 +34,7 @@ M=$(cd "$(dirname "$0")/../.." && pwd)
 H=$M/research/hackios-xnu-kernel
 W=$M/darwin-lisa/.work/loader-standalone
 KERNEL=${KERNEL:-$H/kernel26.nopac}
+IDENTITY=${IDENTITY:-$H/xnuloader/identity.h}
 AUTOBOOT=${AUTOBOOT:-10}
 DATAVOL=${DATAVOL:-1}
 FW_RAMDISK=${FW_RAMDISK:-}
@@ -60,15 +64,18 @@ init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 sb_delay=8 bootcpu=7 
 LINE="${ARGS:-$DEFAULT_ARGS}${EXTRA_ARGS:+ $EXTRA_ARGS}"
 LINE=$(tr -s ' ' <<<"$LINE")
 case " $LINE " in *" touch_synth="*) echo "build-standalone: touch_synth in the line (the demo is by hand)" >&2; exit 1 ;; esac
-# the loader's own words (about 130 characters, more with ufs=2) plus this must stay under its 607
-[ ${#LINE} -le 420 ] || { echo "build-standalone: the line is ${#LINE} characters (at most 420): the kernel would lose its end" >&2; exit 1; }
+# the loader's own words plus this must stay under its 607. With ufs=2 and battery=1 they are 118 characters
+# (debug=0x8 hv_wdt_pet=1 ufs_shared_pa=0x... battery_shared_pa=0x... hakios_kver=dl26-xxxxxxxx: "cmdline: 526 of 607" with
+# a 408-character line, 2026-11-10); 460 leaves room for a few more of them
+[ ${#LINE} -le 460 ] || { echo "build-standalone: the line is ${#LINE} characters (at most 460): the kernel would lose its end" >&2; exit 1; }
 case " $LINE " in *" bootcpu=7 "*) ;; *) echo "build-standalone: bootcpu=7 is required (watchdog + UFS mailbox)" >&2; exit 1 ;; esac
 
 # --- the loader --------------------------------------------------------------------------------------------------
 rm -rf "${W:?}/build" && mkdir -p "$W/build/xnuloader"
-cp "$H"/xnuloader/{loader.c,efi.h,identity.h,build.sh} "$W/build/xnuloader/"
+cp "$H"/xnuloader/{loader.c,efi.h,build.sh} "$W/build/xnuloader/"
+cp "$IDENTITY" "$W/build/xnuloader/identity.h"
 cp "$M/darwin-lisa/loader/data-regions.h" "$W/build/xnuloader/"
-for p in oem-bootos.patch data-region.patch autoboot.patch; do
+for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch; do
 	(cd "$W/build" && patch -s -p1 --forward <"$M/darwin-lisa/loader/$p")
 done
 (cd "$W/build/xnuloader" && bash build.sh >/dev/null)

@@ -871,9 +871,41 @@ setForceNoBuddy(void)
 	});
 }
 
+/*
+ * -[CALayerHost setRendersAsynchronously:] gets NO. A layer host that renders asynchronously makes backboardd's
+ * CoreAnimation render its context on the side into a surface of its own (CA::OGL::AsynchronousNode); with no GPU that
+ * surface is not one the display's software context tracks, and backboardd aborts in CA::OGL::Context::push_surface
+ * ("found != slist->end ()"): the screen freezes, backboardd and SpringBoard start again on the lock screen (seen
+ * after the "Misconfigured Device" alert, 2026-11-10). Rendered with the rest of the frame it is the same picture.
+ * dlisa_async=1 leaves it as asked (for the GPU work).
+ */
+static void (*origSetRendersAsynchronously)(id, SEL, bool);
+
+static void
+setRendersAsynchronously(id self, SEL selector, bool asynchronously)
+{
+	static int said;
+
+	if (asynchronously && said++ < 4) {
+		say("dlisa[%s]: a layer host asked to render asynchronously: rendered with the frame instead\n", getprogname());
+	}
+	origSetRendersAsynchronously(self, selector, false);
+}
+
+static void
+withoutAsynchronousLayerHosts(void)
+{
+	if (bootArgNumber("dlisa_async") != 0) {
+		return;
+	}
+	origSetRendersAsynchronously = (void (*)(id, SEL, bool))replaceMethod('-', "CALayerHost",
+	    "setRendersAsynchronously:", (IMP)setRendersAsynchronously);
+}
+
 static void
 fixSpringBoard(void)
 {
+	withoutAsynchronousLayerHosts();
 	origSetSetupRequiredReason = (void (*)(id, SEL, unsigned long))replaceMethod('-', "SBSetupManager",
 	    "_setSetupRequiredReason:", (IMP)setSetupRequiredReason);
 	replaceMethod('-', "SBLockdownManager", "_setupActivationState", (IMP)setupActivationState);
@@ -920,6 +952,7 @@ static const struct {
 	{ "lsd", fixLaunchServices },
 	{ "backboardd", startTouchScreen },
 	{ "SpringBoard", fixSpringBoard },
+	{ "Preferences", withoutAsynchronousLayerHosts },
 };
 
 /*

@@ -97,6 +97,18 @@ wait_pmos_ssh() {
 	return 1
 }
 
+# The phone sits in pmOS to charge between runs. Once it suspends, USB loses its link and nothing reaches it until
+# someone presses Power, so hold a sleep inhibitor for as long as pmOS runs (the reboot to the loader ends it).
+hold_awake() {
+	local cmd='nohup systemd-inhibit --what=sleep:idle:handle-lid-switch --who=darwin-lisa --why="parked by bootos.sh" --mode=block sleep infinity >/dev/null 2>&1 &'
+	if [[ -n ${PMOS_PASS:-} ]]; then
+		printf '%s\n' "$PMOS_PASS" | pmos_ssh "sudo -S -p '' sh -c '$cmd'" || say "warning: could not hold pmOS awake"
+	else
+		pmos_ssh "sudo -n sh -c '$cmd'" || say "warning: could not hold pmOS awake (no PMOS_PASS)"
+	fi
+	say "pmOS held awake (sleep inhibitor until the next reboot)"
+}
+
 # from wherever the phone is, to the HakiOS loader
 to_loader() {
 	local s
@@ -149,10 +161,11 @@ case $target in
 state) state ;;
 hakios) to_loader ;;
 pmos)
-	if [[ $(state) == pmos ]] && pmos_ssh true 2>/dev/null; then say "already in pmOS"; exit 0; fi
+	if [[ $(state) == pmos ]] && pmos_ssh true 2>/dev/null; then say "already in pmOS"; hold_awake; exit 0; fi
 	ask_loader pmos
 	wait_pmos_ssh || die "pmOS SSH did not answer within ${WAIT_PMOS}s"
 	say "pmOS is up: $PMOS_USER@$PMOS_HOST"
+	hold_awake
 	;;
 ums)
 	if d=$(ums_disk); then echo "$d"; exit 0; fi

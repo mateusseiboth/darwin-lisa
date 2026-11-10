@@ -13,6 +13,8 @@
  */
 #include "mini.h"
 #include "var-skel.h"
+#include "ld-disable.c"
+#include "identity-stamp.c"
 
 static const char BANNER[] =
     "\n==== iOS 26.5.2 (23F84) userland on lisa: /sbin/launchd alive ====\n";
@@ -423,6 +425,91 @@ markMigrationDone(void)
 }
 
 /*
+ * Boot-arg ld_disable=: launchd's disabled-services file, written at every boot (ld-disable.c says what goes in it).
+ * Returns the number of failures.
+ */
+#define LD_DISABLE_DIR          "/private/var/db/com.apple.xpc.launchd"
+#define LD_DISABLE_PLIST        LD_DISABLE_DIR "/disabled.plist"
+#define LD_DISABLE_GROUPS       "/etc/dlisa-ld-groups.conf"
+
+static int
+saveDisabledServices(void)
+{
+	static char groups[16384], plist[16384];
+	int fd = open(LD_DISABLE_GROUPS, O_RDONLY, 0);
+	ssize_t n = fd < 0 ? 0 : read(fd, groups, sizeof(groups) - 1);
+	int count;
+
+	if (fd >= 0) {
+		close(fd);
+	}
+	groups[n > 0 ? n : 0] = 0;
+	count = buildDisabledPlist(bootArgs(), n > 0 ? groups : NULL, plist, sizeof(plist));
+	if (count < 0) {
+		printf("init26: VAR ld_disable: the list does not fit in %zu bytes; disabled.plist left as it is\n", sizeof(plist));
+		return 1;
+	}
+	mkdir(LD_DISABLE_DIR, 0755);
+	fd = open(LD_DISABLE_PLIST, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0 || write(fd, plist, strlen(plist)) != (ssize_t)strlen(plist)) {
+		printf("init26: VAR %s: %s\n", LD_DISABLE_PLIST, strerror(errno));
+		if (fd >= 0) {
+			close(fd);
+		}
+		return 1;
+	}
+	close(fd);
+	printf("init26: VAR ld_disable: %d services disabled for this boot (launchd's defaults kept)\n", count);
+	return 0;
+}
+
+/*
+ * MobileGestalt's cache goes when the loader presents another iPhone than the last boot did (identity-stamp.c).
+ * Returns the number of failures.
+ */
+#define IDENTITY_STAMP          "/private/var/db/dlisa-identity"
+#define GESTALT_CACHE           "/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache" \
+                                "/Library/Caches/com.apple.MobileGestalt.plist"
+
+static int
+resetGestaltWhenIdentityChanged(void)
+{
+	char machine[64], model[64], stamp[160], kept[160];
+	size_t machineSize = sizeof(machine) - 1, modelSize = sizeof(model) - 1;
+	int fd;
+	ssize_t n;
+
+	if (sysctlbyname("hw.machine", machine, &machineSize, NULL, 0) != 0 ||
+	    sysctlbyname("hw.model", model, &modelSize, NULL, 0) != 0) {
+		printf("init26: VAR identity: hw.machine/hw.model: %s\n", strerror(errno));
+		return 1;
+	}
+	machine[machineSize] = model[modelSize] = 0;
+	buildIdentityStamp(stamp, sizeof(stamp), machine, model);
+	fd = open(IDENTITY_STAMP, O_RDONLY, 0);
+	n = fd < 0 ? 0 : read(fd, kept, sizeof(kept));
+	if (fd >= 0) {
+		close(fd);
+	}
+	if (!isIdentityChanged(kept, n > 0 ? (size_t)n : 0, stamp)) {
+		return 0;
+	}
+	if (unlink(GESTALT_CACHE) == 0) {
+		printf("init26: VAR identity is now %s %s: MobileGestalt's cache removed\n", machine, model);
+	}
+	fd = open(IDENTITY_STAMP, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+	if (fd < 0 || write(fd, stamp, strlen(stamp)) != (ssize_t)strlen(stamp)) {
+		printf("init26: VAR %s: %s\n", IDENTITY_STAMP, strerror(errno));
+		if (fd >= 0) {
+			close(fd);
+		}
+		return 1;
+	}
+	close(fd);
+	return 0;
+}
+
+/*
  * The data volume. On an iPhone /private/var is the APFS Data volume, created at
  * restore from the rootfs's private/var. Here, without var_ufs=1, /private/var is
  * ramfs (memory, empty at every boot) with the data volume's directory skeleton laid
@@ -512,6 +599,8 @@ mountVar(void)
 		bad++;
 	}
 	bad += markMigrationDone();
+	bad += saveDisabledServices();
+	bad += resetGestaltWhenIdentityChanged();
 	printf("init26: VAR /private/var is %s: %d entries made, %d already there, %d failed\n",
 	    kept ? "the data volume on the flash" : "ramfs", made, there, bad);
 	if (kept) {

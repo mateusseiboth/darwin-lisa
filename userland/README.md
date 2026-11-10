@@ -87,12 +87,42 @@ device once. The image is made by `tools/mkvarvol.py` and written by `tools/var-
   - lsd: repeats lsd's own user container lookup (class 10, primary persona, flags 0x900000001) from inside lsd and
     prints containermanagerd's answer; CoreServices branches straight into libsystem_containermanager, so the
     lookup cannot be interposed.
+  - SpringBoard and Preferences: `-[CALayerHost setRendersAsynchronously:]` always gets NO. **A workaround for the
+    software renderer:** an asynchronous layer host makes backboardd's CoreAnimation render it into a surface of its
+    own (`CA::OGL::AsynchronousNode`), which the CPU context does not track, and backboardd aborts in
+    `CA::OGL::Context::push_surface` (`found != slist->end ()`): freeze, then the lock screen again. Boot-arg
+    `dlisa_async=1` leaves the hook out. **Re-enable asynchronous rendering (drop the hook, or make `dlisa_async=1` the
+    default) once CoreAnimation renders on the GPU** (Metal on the Adreno), where the asynchronous path is the one
+    real iPhones use.
   - everyone it is in: stderr points at the console, and boot-arg `dlisa_oslog=all` / `dlisa_oslog=A,B` copies
     every os_log message of those programs to the console (`os_log_set_hook` + `os_log_copy_message_string`).
     `OS_ACTIVITY_DT_MODE` does nothing on a customer build (libtrace honours it only on an internal one).
-- `scripts/plist-tweaks.py` — LaunchDaemon edits, applied to `out/sysroot-26` in place (originals kept in
+- `scripts/plist-tweaks.py` — sysroot edits, applied to `out/sysroot-26` in place by `mkimage-trim.sh` before every
+  image (tests: `scripts/test_plist_tweaks.py`). It writes
+  `System/Library/EventTimingProfiles/D22.Default.plist` (UIKit's default event timing profile for the board the
+  loader names; without it UIKit shows a "Misconfigured Device" alert) and `/etc/dlisa-ld-groups.conf` (the groups of
+  init26's `ld_disable=`, below). LaunchDaemon edits (originals kept in
   `out/plist-orig/`): `EnablePressuredExit` off for containermanagerd (+ the system one). This was a wrong lead
   (the SIGTERM it guarded against was never sent; the real cause was the kernel's connection-port check, see
   `kernel/pg16k/connport-wire.py`), kept because it is harmless; revert it if it ever matters.
 - The lsd / containermanagerd chain was a kernel problem in the end (`kernel/drivers/display/README.md`, "The window
   server chain after the display"); with it fixed lsd gets its container and backboardd draws the boot progress bar.
+
+## Leaving LaunchDaemons out per boot: `ld_disable=` (2026-11-10)
+
+init26 writes launchd's disabled-services file for the system domain,
+`/private/var/db/com.apple.xpc.launchd/disabled.plist` (label -> `true`), at every boot (`init/ld-disable.c`, host
+tests `init/test/run-tests.sh`). What goes in:
+
+- launchd's own defaults (dhcp6d and bootpd off, ftp-proxy-embedded on);
+- the `default` group of `/etc/dlisa-ld-groups.conf`: the services this port always leaves off. Today
+  `com.apple.CommCenter`: with no baseband it runs but never answers, and SpringBoard's main thread waits on it for good
+  at startup (`-[SBTelephonyManager isInEmergencyCallbackMode]`, a synchronous XPC). That is why the full image never
+  drew a frame. `ld_default=0` keeps them on;
+- boot-arg `ld_disable=TOKEN,TOKEN,...`: a group (`lean` = all of `scripts/lean-daemons.txt`, `lean1`..`lean8` in
+  chunks of 10, `ui` = ClarityBoard / checkerboard / devicerecoveryassistant / AutomationModeUI), a full label
+  (`com.apple.locationd`) or a short one (`locationd`).
+
+A list never outlives the boot that asked for it, so a host run can bisect the full image with boot-args alone, with no
+new root. The groups file is made by `plist-tweaks.py` (`ALWAYS_DISABLED` is the `default` group).
+

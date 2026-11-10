@@ -1,15 +1,20 @@
 --- a/osfmk/console/serial_console.c	2026-11-09 12:36:50.594425046 -0400
-+++ b/osfmk/console/serial_console.c	2026-11-09 12:36:50.605259058 -0400
-@@ -526,6 +526,12 @@
- 	if (disableConsoleOutput) {
- 		return;
- 	}
-+	{	/* darwin-lisa: tee console output into the loader log for live capture */
++++ b/osfmk/console/serial_console.c	2026-11-10 13:10:00.000000000 -0400
+@@ -523,6 +523,17 @@
+ void
+ console_write(char *str, int size)
+ {
++	/*
++	 * darwin-lisa: tee console output into the loader log for live capture. Before the disableConsoleOutput check:
++	 * without -v the kernel turns the console off once the boot picture is up (gc_pause/gc_enable), and a standalone
++	 * boot (no -v, so no text over the UI) then handed the loader only the first ~5.8 KB.
++	 */
++	{
 +		extern void loader_log_putc(char c);
 +		for (int lci = 0; lci < size; lci++) {
 +			loader_log_putc(str[lci]);
 +		}
 +	}
- 
- 	assert(str != NULL);
- 
+ 	if (disableConsoleOutput) {
+ 		return;
+ 	}

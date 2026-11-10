@@ -292,3 +292,28 @@ Not done: Wi-Fi join, Bluetooth, cellular, the real fuel gauge.
   `Device is blocked`.
 - **The kernel in today's `out/vendor_boot-lisa-standalone.img`** is whatever `kernel26.nopac` was at build time.
   Rebuild with the final kernel (step 3).
+
+## 6. After the first standalone boot (2026-11-10, afternoon)
+
+The first cold boot with no PC reached the home screen on the full-lean root. Five problems were left. This is what
+caused each one and what fixes it.
+
+| Problem | Cause | Fix |
+|---|---|---|
+| "Misconfigured Device: Default Event Timing Profile is missing (D22.Default.plist)" | The loader presents the phone as iPhone10,3, D22AP (`xnuloader/identity.h`, target-type `D22`). The 23F84 image is the iPad one and ships only J817/J818/J820/J821 profiles | `plist-tweaks.py` writes `D22.Default.plist` as a copy of `J817.Default.plist`, an empty dictionary. The J8xx Touch and Pencil profiles describe 120 Hz ProMotion and Pencil hardware, so they are not copied |
+| Freeze, then the lock screen | backboardd aborted (crash report on the data volume, uptime 140 s): `CA::OGL::Context::push_surface` assertion `found != slist->end ()`, reached from `CA::OGL::AsynchronousNode::retain_surface` on the display thread. An asynchronously rendering `CALayerHost` gets a surface the software context does not track. backboardd dies, SpringBoard starts again, and the phone shows the lock screen | libdlisa in SpringBoard and Preferences: `-[CALayerHost setRendersAsynchronously:]` always gets NO (`dlisa_async=1` turns this off). **Re-enable asynchronous rendering once CoreAnimation runs on the GPU** |
+| "SPMI read failure." at boot | U-Boot's message (`drivers/spmi/spmi-msm.c`), not the kernel's. Each EFI Block I/O call the loader makes for the kernel runs U-Boot's timer events, and the console's event reads the volume and power keys over the PMIC arbiter. The kernel's battery ADC and touch supply use the same arbiter, and two transfers at once fail | `loader/run-tpl.patch`: the loader stays at TPL_NOTIFY while a kernel runs, so U-Boot's TPL_CALLBACK events wait until the run ends |
+| Only about 5.8 KB of kernel log from a standalone boot | The kernel's copy of console output into the loader log came after the `disableConsoleOutput` check. Without `-v` the console is turned off once the boot picture is up | `kernel/patches/serial-console-tee.patch`: the copy comes before the check, so a boot without `-v` gives the whole log |
+| The full image never drew a frame | SpringBoard's main thread waited for good on CommCenter: `-[SpringBoard _completeStartupAfterMainSceneConnect:]` -> `-[SBIdleTimerDescriptorFactory ...]` -> `-[SBTelephonyManager isInEmergencyCallbackMode]` -> `_CTServerConnectionGetEmergencyCallBackMode`, a synchronous XPC with retries. CommCenter runs with no baseband and never answers. The stacks were symbolized with `dyld_shared_cache_arm64e.symbols` from the SystemOS cryptex | init26 `ld_disable=` (`userland/README.md`). `com.apple.CommCenter` is in the `default` group, which is disabled at every boot. A host run with `ld_disable=CommCenter` on the full image unlocked and reached the home screen |
+
+Symbols: `ipsw/26.5.2-extracted/23F84__iPad17,1_2_3_4/dyld_shared_cache_arm64e.symbols` (1.0 GB). It comes from the
+SystemOS cryptex (`094-54821-109.dmg`, decmpfs, inflated with unzbm) and sits beside the pristine cache. To symbolize,
+pass the slide that libdlisa's psample prints, or work it out from a known frame such as `__pthread_kill` + 8:
+
+```sh
+cd ipsw/26.5.2-extracted/23F84__iPad17,1_2_3_4
+ipsw dyld a2s -s 0x14fd0000 dyld_shared_cache_arm64e 0x1d292b984
+```
+
+Builds: kernel `kernel-16k-present2.bak` (c54833dc), vendor_boot `out/vendor_boot-lisa-standalone.img` (abfe7629),
+root `userland-26/out/system-26.apfs.full` (f2c62ac1, the full image with every fix).

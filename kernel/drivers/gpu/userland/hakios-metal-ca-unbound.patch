@@ -1,5 +1,5 @@
 --- a/src/render.cpp	2026-11-10 19:07:29.591977647 -0400
-+++ b/src/render.cpp	2026-11-10 19:07:29.602665768 -0400
++++ b/src/render.cpp	2026-11-10 19:24:15.979836433 -0400
 @@ -646,7 +646,16 @@
          if (kt.kind != kTexSampled) continue;
          if (kt.fbTarget != 0) {
@@ -26,4 +26,17 @@
 +                d.dword[4] = gmem->base[fbIndex];
                  d.dword[5] &= A6XX_TEX_CONST_5_DEPTH__MASK;
                  for (uint32_t w = 6; w < 16; w++) d.dword[w] = 0;
+             }
+@@ -807,9 +816,9 @@
+                 // 1 is. The one that cannot be told from a read is the highest, refused as before; one below it gets
+                 // turnip's null descriptor (all zeros, tu_descriptor_set.cc's nullDescriptor), which a load reads as 0
+                 // and a store leaves alone, never another binding's memory.
+-                if (tableSlot + 1 == s->k.numSsbos) {
+-                    return refuse(why, std::string(stageName(*s)) + ": no buffer bound at index " + n(slot) + " (a device buffer it addresses)");
+-                }
++                // (darwin-lisa) the highest is given the null descriptor too: CoreAnimation 26's uber shader
++                // (fixed_frag_lph_cph) declares device buffer 8 for branches its function constants switch off, and every
++                // one of its draws was refused for it. A load through the null descriptor reads 0, a store is dropped.
+                 out->count = std::max(out->count, tableSlot + 1);
+                 continue;
              }

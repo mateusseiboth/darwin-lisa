@@ -4,6 +4,8 @@
 # boot-arg cpufreq=1 (top frequency for the groups the kernel's cores are in; ddr= for the memory bus vote,
 # default on with cpufreq=1, ddr=0 leaves the bus alone). The firmware leaves the cores at a modest clock, and this
 # port runs everything on one core (cpus=1), so the boot of iOS 26's userland is CPU bound.
+# NEEDS kernel/patches/cpu-idle-no-wfi.patch (or boot-arg wfi=0): with a fast core the kernel goes idle, WFI never
+# wakes under this hypervisor, and the kernel hangs a few minutes into the boot (see ../display/README.md).
 # ml_cpu_idle_time() (cpuload=N only) is not in this tree: a stub answering "not known" is added beside it.
 # Idempotent; run in docker as root, then .work/run-rebuild.sh.
 import os, shutil, sys

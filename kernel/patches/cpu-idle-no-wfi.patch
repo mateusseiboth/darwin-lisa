@@ -1,0 +1,18 @@
+--- a/osfmk/arm64/cpu.c	2026-11-10 06:37:24.218223778 -0400
++++ b/osfmk/arm64/cpu.c	2026-11-10 06:37:24.228821664 -0400
+@@ -114,7 +114,14 @@
+ //  0 : disabled
+ //  1 : normal
+ //  2 : overhead simulation (delay & flags)
+-TUNABLE(unsigned int, wfi, "wfi", 1);
++/*
++ * darwin-lisa: no WFI by default. On lisa the kernel runs one core under Qualcomm's hypervisor with no device
++ * interrupt wired: the guest virtual timer is the only wake source, and this hypervisor does not wake a vCPU parked
++ * in WFI when its virtual timer fires. The first moment nothing is runnable the core sleeps for good (the loader then
++ * calls the kernel hung after 50 s without a heartbeat). The idle loop polls instead: cpu_idle() returns at once and
++ * machine_idle() unmasks interrupts, so the vtimer is taken as soon as it fires. Boot-arg wfi=1 brings WFI back.
++ */
++TUNABLE(unsigned int, wfi, "wfi", 0);
+ #if DEVELOPMENT || DEBUG
+ 
+ // wfi_flags

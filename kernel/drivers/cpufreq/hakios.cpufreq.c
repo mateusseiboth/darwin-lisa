@@ -595,6 +595,20 @@ hakios_cpufreq_init(void)
 		}
 	}
 	printf("cpufreq: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
+	/*
+	 * darwin-lisa: a fast core runs out of work. Under this hypervisor a vCPU in WFI is not woken by its virtual timer
+	 * (the only interrupt this port has), so the first idle moment is the end of the kernel: a few minutes into every
+	 * cpufreq=1 boot, once the daemons settle. Slow, the core never idled. The idle loop must poll
+	 * (kernel/patches/cpu-idle-no-wfi.patch makes wfi=0 the default; boot-arg wfi=0 does it for an older kernel).
+	 */
+	{
+		extern unsigned int wfi;
+
+		if (wfi != 0) {
+			tell("cpufreq: WARNING: the idle loop uses WFI (wfi=%u): on this hypervisor the first idle moment hangs the "
+			    "kernel; boot with wfi=0\n", wfi);
+		}
+	}
 	/* membench has its own variable: when the boot-arg is absent, the cpufreq value (2 means on) must not start the benchmark */
 	PE_parse_boot_argn("membench", &membench, sizeof(membench));
 	if (membench == 1) {

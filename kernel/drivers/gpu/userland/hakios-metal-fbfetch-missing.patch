@@ -1,0 +1,29 @@
+--- a/src/render.cpp	2026-11-10 19:07:29.591977647 -0400
++++ b/src/render.cpp	2026-11-10 19:07:29.602665768 -0400
+@@ -646,7 +646,16 @@
+         if (kt.kind != kTexSampled) continue;
+         if (kt.fbTarget != 0) {
+             // a framebuffer fetch's slot (compiler.cpp: lowerFbRead): the attachment it reads, at the level the pass draws
+-            const Attachment a = attachmentOf(pass, kt.fbTarget - 1u);
++            uint32_t fbIndex = kt.fbTarget - 1u;
++            Attachment a = attachmentOf(pass, fbIndex);
++            if (a.texture == nullptr && fbIndex != 0 && attachmentOf(pass, 0).texture != nullptr) {
++                // (darwin-lisa) CoreAnimation 26's uber shader (fixed_frag_lph_cph) keeps [[color(1)]] and [[color(2)]] reads
++                // in branches its function constants switch off for a pass of one attachment, and every one of its draws was
++                // refused for them: no wallpaper, no icons. The slot is given attachment 0's descriptor instead, which a
++                // branch that never runs never reads, and which is a picture of the right size and format if one did.
++                fbIndex = 0;
++                a = attachmentOf(pass, 0);
++            }
+             if (a.texture == nullptr) {
+                 return refuse(why, name + " reads [[color(" + n(kt.fbTarget - 1u) + ")]] through framebuffer fetch and the pass has no colour attachment " +
+                                        n(kt.fbTarget - 1u));
+@@ -666,7 +675,7 @@
+                 d.dword[0] |= A6XX_TEX_CONST_0_TILE_MODE(TILE6_2);
+                 d.dword[2] = A6XX_TEX_CONST_2_TYPE(A6XX_TEX_2D) | A6XX_TEX_CONST_2_PITCH(gmem->binW * a.texture->info().bytesPerPixel);
+                 d.dword[3] = 0;
+-                d.dword[4] = gmem->base[kt.fbTarget - 1u];
++                d.dword[4] = gmem->base[fbIndex];
+                 d.dword[5] &= A6XX_TEX_CONST_5_DEPTH__MASK;
+                 for (uint32_t w = 6; w < 16; w++) d.dword[w] = 0;
+             }

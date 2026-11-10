@@ -1791,6 +1791,74 @@ SYSCTL_PROC(_kern_hakios, OID_AUTO, ufs_native, CTLTYPE_INT | CTLFLAG_RW | CTLFL
 SYSCTL_QUAD(_kern_hakios, OID_AUTO, ufs_native_fallbacks, CTLFLAG_RD | CTLFLAG_LOCKED, &ufs_native_fallbacks,
     "times a read of this kernel's own UFS driver failed and the loader's was used instead");
 
+/*
+ * darwin-lisa: ufs_probe=1, read only, for the test before the root moves to the flash (the root stays what rd= says).
+ * In a thread of its own, ufs_probe_delay= seconds after the storage came up (default 20): the loader's partition
+ * table, the first 16 KB of the port's partition (ufs_part=, default darwin) with the words Android's super has there
+ * (LP geometry 0x616c4467 at 4096, metadata header 0x414c5030 at 12288, as tools/lpdump.py reads them), then
+ * ufs_probe_mb= MB of it (default 256) in 1 MB reads, timed. Nothing is written.
+ */
+static void
+ufs_probe(__unused void *arg, __unused wait_result_t wr)
+{
+	uint32_t delay = 20, mb = 256, part;
+	uint64_t started, ns, bytes = 0, h = 0xcbf29ce484222325ULL;
+	uint8_t *buf;
+	int error = 0;
+
+	PE_parse_boot_argn("ufs_probe_delay", &delay, sizeof(delay));
+	PE_parse_boot_argn("ufs_probe_mb", &mb, sizeof(mb));
+	IOSleep(delay * 1000);
+	printf("ufs: probe: %u entries in the loader's table (read %s)\n", ufs_parts,
+	    ufs_native_on ? "by this kernel's own UFS driver" : "through the loader's page");
+	for (uint32_t i = 0; i < ufs_parts; i++) {
+		printf("ufs: probe: [%2u] %-24s unit %u lun %u start %llu blocks %llu of %u bytes%s%s\n", i,
+		    (const char *)ufs_page->part[i].name, (unsigned)ufs_page->part[i].unit, (unsigned)ufs_page->part[i].lun,
+		    ufs_page->part[i].start_lba, ufs_page->part[i].blocks, ufs_page->part[i].block_size,
+		    (ufs_page->part[i].flags & BLOCK_PART_UNIT) ? " (a whole unit)" : "",
+		    ufs_lun[i] != 0xff ? " (native)" : "");
+	}
+	part = ufs_entry_unique(ufs_port_name());
+	buf = part == BLOCK_MAX_PARTS ? NULL : kalloc_data(1 << 20, Z_WAITOK);
+	if (buf == NULL) {
+		printf("ufs: probe: no partition %s (or no memory)\n", ufs_port_name());
+		return;
+	}
+	error = ufs_read(part, 0, buf, 16384);
+	if (error != 0) {
+		printf("ufs: probe: %s: the first 16 KB do not read (%d)\n", ufs_port_name(), error);
+	} else {
+		uint32_t w0, g, hm, meta_max, slots, lblock;
+
+		memcpy(&w0, buf, 4);
+		memcpy(&g, buf + 4096, 4);
+		memcpy(&meta_max, buf + 4096 + 40, 4);
+		memcpy(&slots, buf + 4096 + 44, 4);
+		memcpy(&lblock, buf + 4096 + 48, 4);
+		memcpy(&hm, buf + 12288, 4);
+		printf("ufs: probe: %s: word at 0 %08x, at 4096 %08x (LP geometry 0x616c4467: %s; metadata_max_size %u, "
+		    "slots %u, logical block %u), at 12288 %08x (LP header 0x414c5030: %s)\n", ufs_port_name(), w0, g,
+		    g == 0x616c4467 ? "yes" : "NO", meta_max, slots, lblock, hm, hm == 0x414c5030 ? "yes" : "NO");
+	}
+	if (((uint64_t)mb << 20) > ufs_part_bytes(part)) {
+		mb = (uint32_t)(ufs_part_bytes(part) >> 20);
+	}
+	started = mach_absolute_time();
+	for (uint32_t i = 0; i < mb && error == 0; i++) {
+		error = ufs_read(part, (uint64_t)i << 20, buf, 1 << 20);
+		if (error == 0) {
+			bytes += 1 << 20;
+			h = (h ^ buf[0] ^ ((uint64_t)buf[(1 << 20) - 1] << 8)) * 0x100000001b3ULL;
+		}
+	}
+	absolutetime_to_nanoseconds(mach_absolute_time() - started, &ns);
+	printf("ufs: probe: %s: %llu MB read in 1 MB requests in %llu ms, %llu MB/s%s (fnv of the ends %llx)\n",
+	    ufs_port_name(), bytes >> 20, ns / 1000000, ns ? (bytes * 1000ULL) / ns : 0,
+	    error ? ", stopped by an error" : "", h);
+	kfree_data(buf, 1 << 20);
+	hakios_ufs_report("after the probe");
+}
+
 /* ---- bringing it up ---- */
 
 void
@@ -1991,6 +2059,14 @@ hakios_ufs_init(void)
 		thread_t thread;
 
 		if (kernel_thread_start(ufs_check, NULL, &thread) == KERN_SUCCESS) {
+			thread_deallocate(thread);
+		}
+	}
+	check = 0;
+	if (PE_parse_boot_argn("ufs_probe", &check, sizeof(check)) && check != 0) {
+		thread_t thread;
+
+		if (kernel_thread_start(ufs_probe, NULL, &thread) == KERN_SUCCESS) {
 			thread_deallocate(thread);
 		}
 	}

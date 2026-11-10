@@ -25,6 +25,11 @@ All of them go in the payload command line (`mkpayload.py --cmdline`): the loade
 | `apfs_root_c=` / `apfs_root_v=` | which container / volume of the root device (APFS port, unchanged). |
 | `apfs_cheap=0/1` | overrides the request-cost hint; with this wire the flash is "worth putting together" by default. |
 
+Test-only, darwin-lisa: `ufs_probe=1` (read only, root unchanged): in its own thread, `ufs_probe_delay=` s after the
+storage is up (default 20), the loader's partition table, the LP geometry / header words of the `ufs_part=` partition
+(at 4096 and 12288, what `tools/lpdump.py` reads), and `ufs_probe_mb=` MB of it (default 256) read in 1 MB requests,
+timed (`ufs: probe:` lines).
+
 Test-only, from HakiOS: `ufs_check=1/2`, `ufs_bench=1`, `ufs_native_check=1`, `ufs_native_bench=1`. They call
 `loader_return()` to end the run, but on the 16 KB kernel `loader_return()` does not jump back (loader_console.c is
 4 KB only), so the boot simply goes on after them.

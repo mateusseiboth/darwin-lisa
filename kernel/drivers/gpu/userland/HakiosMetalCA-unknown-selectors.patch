@@ -1,0 +1,100 @@
+--- a/HakiosMetalCA.m	2026-11-10 18:21:30.344132612 -0400
++++ b/HakiosMetalCA.m	2026-11-10 18:22:04.473788845 -0400
+@@ -319,6 +319,55 @@
+ 	return nil;
+ }
+ 
++/*
++ * darwin-lisa: a selector that no protocol in this process declares (the AGX bundle's SPIs, which QuartzCore 26 sends
++ * to the window server's command buffers: -setResponsibleTaskIDs:count: first) used to go to -doesNotRecognizeSelector:
++ * and raise, and backboardd aborted at every launch. It is answered instead, with a signature guessed from its name:
++ * every argument an integer register, and the return void for a setter or an action (set..., add..., remove...,
++ * use..., encode..., wait..., signal..., present..., commit..., enqueue...), else an integer, so the caller reads
++ * nil, NO or 0. Only a float or struct return would be wrong, and such a selector still says so in the refusal line.
++ */
++static NSMethodSignature *
++hm_guessed_signature(SEL sel)
++{
++	static const char *const kVoid[] = { "set", "add", "remove", "use", "encode", "wait", "signal", "present",
++					     "commit", "enqueue", "insert", "push", "pop", "update", "reset", "release" };
++	const char *name = sel_getName(sel);
++	char types[64];
++	size_t n = 0;
++	BOOL isVoid = NO;
++
++	for (size_t i = 0; i < sizeof(kVoid) / sizeof(kVoid[0]); i++) {
++		size_t len = strlen(kVoid[i]);
++
++		if (strncmp(name, kVoid[i], len) == 0 && (name[len] == '\0' || name[len] == ':' ||
++		    (name[len] >= 'A' && name[len] <= 'Z'))) {
++			isVoid = YES;
++			break;
++		}
++	}
++	types[n++] = isVoid ? 'v' : 'Q';
++	types[n++] = '@';
++	types[n++] = ':';
++	for (const char *c = name; *c != '\0' && n + 2 < sizeof(types); c++) {
++		if (*c == ':') {
++			types[n++] = 'Q';
++		}
++	}
++	types[n] = '\0';
++	return [NSMethodSignature signatureWithObjCTypes:types];
++}
++
++/* what -methodSignatureForSelector: answers for a selector no class in the chain implements: the declared signature
++ * when a protocol has one, the guessed one otherwise (so nothing raises) */
++static NSMethodSignature *
++hm_method_signature(Class cls, SEL sel)
++{
++	NSMethodSignature *s = hm_protocol_signature(cls, sel);
++
++	return s != nil ? s : hm_guessed_signature(sel);
++}
++
+ /* the refusal itself: the line, then zeros of the declared return width, which is what Metal's own nil-stubs return */
+ static void
+ hm_forward(id self, NSInvocation *invocation)
+@@ -346,7 +395,7 @@
+ {										\
+ 	NSMethodSignature *s = [super methodSignatureForSelector:sel];		\
+ 										\
+-	return s != nil ? s : hm_protocol_signature([self class], sel);		\
++	return s != nil ? s : hm_method_signature([self class], sel);		\
+ }										\
+ - (void)forwardInvocation:(NSInvocation *)invocation				\
+ {										\
+@@ -5268,6 +5317,14 @@
+ 
+ HM_REFUSES_OUT_LOUD
+ 
++/* darwin-lisa: QuartzCore 26 tags the window server's command buffers with the tasks they draw for (an SPI of the AGX
++ * driver, for GPU time accounting). One ring, no accounting here: taken and dropped. */
++- (void)setResponsibleTaskIDs:(const unsigned int *)taskIDs count:(NSUInteger)count
++{
++	(void)taskIDs;
++	(void)count;
++}
++
+ - (instancetype)initWithHakiosQueue:(HakiosMetalCommandQueue *)queue
+ {
+ 	/* what IOGPUMetalCommandBuffer sends to super. THIS CALL BLOCKS when the queue's semaphore is empty, so by the
+@@ -7098,7 +7155,7 @@
+ {
+ 	NSMethodSignature *s = [super methodSignatureForSelector:sel];
+ 
+-	return s != nil ? s : hm_protocol_signature([self class], sel);
++	return s != nil ? s : hm_method_signature([self class], sel);
+ }
+ 
+ /* A refused binding (a function table, a stage-in region, an acceleration structure ...) is remembered, and the next
+@@ -7655,7 +7712,7 @@
+ {
+ 	NSMethodSignature *s = [super methodSignatureForSelector:sel];
+ 
+-	return s != nil ? s : hm_protocol_signature([self class], sel);
++	return s != nil ? s : hm_method_signature([self class], sel);
+ }
+ 
+ /* A refused binding or state (tile buffers, function tables, imageblocks ...) is remembered and the next draw is FAILED

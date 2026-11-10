@@ -1424,7 +1424,7 @@ IOMobileFramebuffer::settle(const uint8_t * swap, MiniIOSurface ** surfaces)
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
 		MiniIOSurface * s = surfaces[layer];
 
-		if (s == NULL || s->info.bytesPerElement != 4 || s->info.planeCount != 0) {
+		if (s == NULL || s->info.bytesPerElement != 4 || s->info.planeCount > 1) {
 			continue;
 		}
 		memcpy(src, swap + SWAP_SOURCE(layer), sizeof(src));
@@ -1551,7 +1551,12 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 		if (s == NULL) {
 			continue;
 		}
-		if (s->info.bytesPerElement == 4 && s->info.planeCount == 0) {
+		/*
+		 * darwin-lisa: one plane given explicitly is drawn too. With the GPU (metal=1) CoreAnimation 26 makes the
+		 * display's surfaces '&BGA' with an IOSurfacePlaneInfo of one plane (planeCount 1): the bytes are plain BGRA8 at
+		 * the surface's offset and stride, which is what the GPU writes and what is read here.
+		 */
+		if (s->info.bytesPerElement == 4 && s->info.planeCount <= 1) {
 			if (!fGraphics) {
 				/* the first picture: the kernel's text console must stop drawing over it */
 				fGraphics = true;

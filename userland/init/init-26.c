@@ -12,6 +12,7 @@
  * enumerates.  If /bin/sh is present it hands over to it, otherwise it halts.
  */
 #include "mini.h"
+#include "var-skel.h"
 
 static const char BANNER[] =
     "\n==== iOS 26.5.2 (23F84) userland on lisa: /sbin/launchd alive ====\n";
@@ -100,6 +101,96 @@ cacheProbe(void)
 	statPath("/usr/lib/libSystem.B.dylib");
 }
 
+/* Memory headroom with the ramdisk resident: what the kernel was left with before
+ * Apple's launchd starts. Values are bytes (hw.*) or 16 KB pages (vm.*). */
+static void
+memProbe(void)
+{
+	static const char *const names[] = {
+		"hw.memsize", "hw.memsize_usable", "vm.pages", "vm.page_free_count",
+		"vm.page_free_target", "vm.page_free_min", "kern.memorystatus_level", NULL
+	};
+	for (int i = 0; names[i] != NULL; i++) {
+		unsigned long long v = 0;
+		size_t len = sizeof(v);
+		if (sysctlbyname(names[i], &v, &len, NULL, 0) != 0) {
+			printf("init26: MEM %s: %s\n", names[i], strerror(errno));
+			continue;
+		}
+		if (len == 4) {
+			v &= 0xffffffffULL;
+		}
+		printf("init26: MEM %s = %llu\n", names[i], v);
+	}
+}
+
+/*
+ * The data volume. On an iPhone /private/var is the APFS Data volume, created at
+ * restore from the rootfs's private/var. Here the root is a read-only image in
+ * memory and nothing may be written to flash, so /private/var is ramfs (memory,
+ * empty at every boot) with the data volume's directory skeleton laid down again
+ * (var-skel.h, generated from the IPSW). Without it launchd and the daemons hit
+ * "Read-only file system" for /private/var/mobile/tmp, /var/run, and so on.
+ */
+static void
+mountVar(void)
+{
+	char path[512];
+	int made = 0, bad = 0;
+
+	if (mount("ramfs", "/private/var", 0, NULL) != 0) {
+		printf("init26: VAR mount ramfs on /private/var: %s\n", strerror(errno));
+		return;
+	}
+	for (const struct var_skel *e = VAR_SKEL; e->path != NULL; e++) {
+		size_t n = strlen("/private/var") + strlen(e->path) + 1;
+		if (n > sizeof(path)) {
+			continue;
+		}
+		strcpy(path, "/private/var");
+		strcpy(path + strlen("/private/var"), e->path);
+		int ok;
+		if (e->type == 'l') {
+			ok = symlink(e->target, path) == 0 && lchown(path, e->uid, e->gid) == 0;
+		} else {
+			ok = mkdir(path, e->mode) == 0 && chown(path, e->uid, e->gid) == 0 &&
+			    chmod(path, e->mode) == 0;
+		}
+		if (ok) {
+			made++;
+		} else {
+			bad++;
+			if (bad <= 5) {
+				printf("init26: VAR %s: %s\n", path, strerror(errno));
+			}
+		}
+	}
+	/*
+	 * logd takes a log directory without a .migrated marker for one left by an older
+	 * system and asks logd_helper to convert it, which fails here and logd traps
+	 * ("BUG IN LIBTRACE: Failed to migrate directory"). These are brand new: mark them
+	 * (owner _logd, 272), as HakiOS's init does.
+	 */
+	static const char *const markers[] = { "/private/var/db/diagnostics/.migrated",
+		"/private/var/db/diagnostics/timesync/.migrated", "/private/var/db/uuidtext/.migrated" };
+	static const char *const logdirs[] = { "/private/var/db/diagnostics/timesync", "/private/var/db/uuidtext" };
+	for (unsigned i = 0; i < sizeof(logdirs) / sizeof(logdirs[0]); i++) {
+		mkdir(logdirs[i], 0755);
+		chown(logdirs[i], 272, 272);
+	}
+	for (unsigned i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+		int fd = open(markers[i], O_WRONLY | O_CREAT, 0644);
+		if (fd < 0 || chown(markers[i], 272, 272) != 0) {
+			printf("init26: VAR %s: %s\n", markers[i], strerror(errno));
+			bad++;
+		}
+		if (fd >= 0) {
+			close(fd);
+		}
+	}
+	printf("init26: VAR /private/var is ramfs: %d entries made, %d failed\n", made, bad);
+}
+
 static void
 handOff(char **envp)
 {
@@ -110,14 +201,16 @@ handOff(char **envp)
 	 * absent, fall back to /bin/sh (neither present halts cleanly). */
 	char *ld_argv[] = { "/sbin/launchd", NULL };
 	char *sh_argv[] = { "/bin/sh", NULL };
-	/* Point dyld straight at the shared cache (the cryptex is not activated in this
-	 * ramdisk boot, so dyld's normal cryptex lookup finds nothing). DYLD_PRINT_SEARCHING
-	 * doubles as a probe: if it logs, dyld honors our env (launchd is not a locked-down
-	 * platform binary here); if it is silent, miniamfi's CS_PLATFORM_BINARY is blocking it. */
+	/* DYLD_SHARED_CACHE_DIR is what lets dyld find the cache at all on this boot: libignition
+	 * runs the "ramdisk" boot spec, which grafts no cryptex and hands dyld no cache dir, and the
+	 * fallback /System/Library/Caches/com.apple.dyld/ does not exist on iOS 26 (the cache lives
+	 * in the OS cryptex). It does NOT force a private mapping: dyld 26 maps privately only for
+	 * DYLD_SHARED_REGION=private; otherwise it calls shared_region_map_and_slide_2_np.
+	 * Later processes reuse the mapped region (shared_region_check_np), so they need no env.
+	 * No DYLD_PRINT_*: on this console they cost seconds per hundred lines and ran the
+	 * boot past its time limit before launchd got going. Add them back only to debug dyld. */
 	char *ld_envp[] = {
 		"DYLD_SHARED_CACHE_DIR=/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
-		"DYLD_PRINT_SEARCHING=1",
-		"DYLD_PRINT_LIBRARIES=1",
 		NULL
 	};
 	const char *real = "/sbin/launchd.darwin";
@@ -150,6 +243,8 @@ main(int argc, char **argv, char **envp)
 	showFile("/etc/hakios-release");
 	listDir("/");
 	cacheProbe();
+	memProbe();
+	mountVar();
 
 	handOff(envp);
 

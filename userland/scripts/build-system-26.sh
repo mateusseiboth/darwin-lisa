@@ -132,7 +132,32 @@ rm -rf "$EXTRACT/cryptex-os"
 7z x -y -o"$EXTRACT/cryptex-app" "$APP_DMG" > "$EXTRACT/extract-cryptex-app.log" 2>&1 || true
 cp -a "$EXTRACT/cryptex-app/." "$APP_DST/"
 rm -rf "$EXTRACT/cryptex-app"
-echo "dyld cache placed: $(ls "$D" | grep -c dyld_shared_cache) parts"
+# --- (2026-11-10) the cache is 84 files (main + .01-.83). `ipsw extract --dyld` stops at
+# the first decmpfs (LZBITMAP) member, .35.dyldlinkedit, with EIO, which is how a set of only
+# 35 got here and dyld silently gave up ("dyld cache '(null)' not loaded"). 7z extracts the
+# whole set; the three .dyldlinkedit are LZBITMAP and come out as an empty file plus
+# :com.apple.decmpfs / :com.apple.ResourceFork, which unzbm turns back into the file.
+UNZBM=/home/mateusseiboth/Dev/mobile/research/hackios-xnu-kernel/xnu-deps/host/bin/unzbm
+want=$(python3 -I -c "import struct,sys; d=open(sys.argv[1],'rb').read(0x200); print(struct.unpack_from('<I',d,0x18c)[0]+1)" "$D/dyld_shared_cache_arm64e")
+if [ "$(ls "$D" | grep -c '^dyld_shared_cache_arm64e\(\.[0-9][0-9]\(\.dyld[a-z]*\)\?\)\?$')" -lt "$want" ]; then
+	7z x -y -o"$EXTRACT/cryptex-cache" "$SYS_DMG" 'System/Library/Caches/com.apple.dyld' \
+		'-xr!*.symbols*' '-xr!*.atlas' > "$EXTRACT/extract-dyld.log" 2>&1 || true
+	C="$EXTRACT/cryptex-cache/System/Library/Caches/com.apple.dyld"
+	find "$C" -name '*:com.apple.decmpfs' -print0 | sed -z 's/:com.apple.decmpfs$//' | xargs -0 -r "$UNZBM"
+	cp -a "$C/." "$D/"
+	rm -rf "$EXTRACT/cryptex-cache"
+fi
+echo "dyld cache placed: $(ls "$D" | grep -c dyld_shared_cache) parts (the header lists $want)"
+# --- decmpfs (LZBITMAP) members of both cryptexes: 2429 files (libobjc-trampolines.dylib,
+# libramrod.dylib, ...) arrive as empty files with their two attribute files beside them.
+# Empty libobjc-trampolines.dylib made SpringBoard abort (OS_REASON_OBJC "couldn't dlopen
+# libobjc-trampolines.dylib"); empty libramrod.dylib killed lockdownd.
+find "$OS_DST" "$APP_DST" -name '*:com.apple.decmpfs' -print0 | sed -z 's/:com.apple.decmpfs$//' | xargs -0 -r -n 200 "$UNZBM"
+# --- no CPU pointer authentication: strip PAC from the cache's CODE (image code sections and
+# the __TEXT_STUBS islands) offline and re-hash its code signature. Not at runtime: a pager
+# over the whole executable mappings also rewrote data (the cache's image table) and broke
+# libobjc's map_images. See pacstrip-cache.py.
+python3 -I "$HERE/pacstrip-cache.py" "$D" | tail -1
 
 # --------------------------------------------------------------- 4. the init swap
 # The applications Darwin would install on first boot are system apps here.
@@ -146,7 +171,13 @@ install -m 0755 "$OUT/launchd" "$SYSROOT/sbin/launchd"
 # /etc, /var, /tmp are symlinks (manifest-only, not on disk); write through to private/etc.
 printf 'HakiOS iOS 26.5.2 (23F84) full system image, lisa / SM7325\n' > "$SYSROOT/private/etc/hakios-release"
 
+# init26 lays down the data volume's skeleton on ramfs at boot (/private/var); the list
+# is generated from the IPSW's rootfs listing.
+python3 -I "$HERE/gen-var-skel.py" "$EXTRACT/rootfs.slt" "$BASE/init/var-skel.h"
+
 # --------------------------------------------------------------- 5. the image
+# (USB boot: scripts/mkimage-trim.sh makes out/system-26.apfs.trim from the same sysroot,
+#  under fastboot's 4 GiB limit and padded to 32 MB. This full image is for the on-flash root.)
 # zlib where it saves room, exactly as Apple keeps the root volume; the manifest
 # restores the rootfs files' owners/modes/symlinks that Linux extraction dropped.
 python3 -I "$MKAPFS" -z -o "$OUT/system-26.apfs" \

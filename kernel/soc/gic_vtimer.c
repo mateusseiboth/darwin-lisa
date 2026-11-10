@@ -25,6 +25,9 @@
 extern void loader_log_putc(char);	/* return-to-loader debug channel */
 extern void loader_bringup_tick(void);	/* IRQ-driven watchdog pet + timed return */
 extern void loader_diag_wfi_probe(void);	/* bring-up diag: vtimer-across-WFI test */
+/* memory headroom on the heartbeat (pages of PAGE_SIZE; free + wired + total) */
+extern unsigned int vm_page_free_count, vm_page_wire_count;
+extern unsigned int vm_page_pages;
 
 /* Proof the timer keeps firing: a counter printed on the first fire and every
  * GIC_VTIMER_HEARTBEAT fires after, so a one-shot timer is visibly distinct
@@ -59,6 +62,9 @@ gic_vtimer_handler(void *target __unused, void *refCon __unused, void *nub __unu
 			unsigned long t = ++gic_vtimer_ticks;
 			if (t <= 4 || (t % GIC_VTIMER_HEARTBEAT) == 0) {
 				gic_vtimer_mark("\n[GIC] vtimer tick 0x", (uint32_t)t);
+				gic_vtimer_mark("[MEM] free pages 0x", vm_page_free_count);
+				gic_vtimer_mark("[MEM] wired pages 0x", vm_page_wire_count);
+				gic_vtimer_mark("[MEM] total pages 0x", vm_page_pages);
 			}
 			/* same sequence as the FIQ timer path in sleh_fiq() */
 			getCpuDatap()->cpu_decrementer = -1;

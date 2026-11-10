@@ -8,9 +8,10 @@ set -e
 cd "$(dirname "$0")"
 IMG="${1:?usage: run-fullroot.sh <system-26.apfs>}"
 [ -f "$IMG" ] || { echo "image $IMG not found"; exit 1; }
-# Pin to the stable miniamfi kernel backup (the WiFi worker rebuilds kernel26.nopac;
-# avoid that race). Override with KERNEL=... if needed.
-KERNEL="${KERNEL:-kernel-miniamfi.bak}"
+# Default: the current build (16 KB pages since 2026-11-09). kernel-16k.bak is the
+# verified 16 KB baseline; kernel-miniamfi.bak / kernel-userland.bak are 4 KB and
+# need the 4 KB re-signed cache. Override with KERNEL=... if needed.
+KERNEL="${KERNEL:-kernel26.nopac}"
 [ -f "$KERNEL" ] || KERNEL=kernel26.nopac
 [ -f "$KERNEL" ] || { echo "no kernel ($KERNEL)"; exit 1; }
 SECS="${XL_SECS:-120}"
@@ -31,16 +32,16 @@ echo "### uploaded in $(( $(date +%s) - t0 ))s"
 
 echo "### boot kernel26.nopac (no ramdisk=; loader prepends cpus=1 rd=md0, wires resident md0)"
 xnuloader/mkpayload.py -o run-payload.bin kernel=hakios-kernel \
-  --cmdline "loader_return_after=$SECS epoch=$(date +%s) sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v" >/dev/null
+  --cmdline "loader_return_after=$SECS epoch=$(date +%s) sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v ${XL_EXTRA_ARGS:-}" >/dev/null
 timeout 60 fastboot stage run-payload.bin >/dev/null 2>&1
 timeout 20 fastboot oem run >/dev/null 2>&1
 
 best=0
-for i in $(seq 1 60); do
+for i in $(seq 1 ${XL_POLLS:-60}); do
   timeout 5 fastboot oem log >/dev/null 2>&1 || true
   if timeout 8 fastboot get_staged /tmp/fr.$i >/dev/null 2>&1; then
     n=$(tr -d '\000' < /tmp/fr.$i 2>/dev/null | wc -c)
-    [ "$n" -gt "$best" ] && best=$n && tr -d '\000' < /tmp/fr.$i > logs/fullroot.log
+    [ "$n" -ge "$best" ] && best=$n && tr -d '\000' < /tmp/fr.$i > logs/fullroot.log
   fi
   r=$(timeout 5 fastboot getvar result 2>&1 | grep -i '^result:' || true)
   case "$r" in *returned*|*exception*|*checkpoint*) break;; esac

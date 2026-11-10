@@ -9,6 +9,16 @@
  *       The HID event server. With no Apple multitouch driver it has no touch screen: a virtual HID service made
  *       from inside it turns the samples of /dev/hakios-touch into digitizer events (HakiOS 16.5's way).
  *
+ *   SpringBoard
+ *       iOS 26 decides at start whether the Setup Assistant has to run (BYSetupAssistantNeedsToRun: nothing in a
+ *       new /private/var says it ran) and whether the device is "bricked" (not activated: mobileactivationd has no
+ *       Secure Enclave or Apple server to answer). Either one puts SpringBoard in setup mode, which refuses the
+ *       home pans (the swipe up from the home bar springs back), app launches and the unlock. HakiOS 16.5 had the
+ *       same two fixes: setup is never required and the device counts as activated. Then, with boot-args:
+ *       dlisa_unlock=1 unlocks once at boot (=2: again whenever it locks), dlisa_noidle=1 holds an idle timer
+ *       assertion (no auto-lock or dimming: Settings' "Auto-Lock: Never"), dlisa_watchdog=N scales FrontBoard's
+ *       launch watchdog by N (apps are slow to start here). App snapshots are JPEG/PNG, not ASTC (HakiOS 16.5's fix).
+ *
  *   containermanagerd (both of them)
  *       It asks the user manager for the "personas" of the user. This port has no data volume, no keybag and
  *       no Secure Enclave, so the persona usermanagerd --init writes is not one containermanagerd can resolve a
@@ -635,6 +645,270 @@ startTouchScreen(void)
 	}
 }
 
+
+/* ---- SpringBoard: setup mode, activation, unlock -------------------------------------------------------- */
+
+#define SEND0(type, object, name)       ((type (*)(id, SEL))objc_msgSend)((id)(object), sel_registerName(name))
+
+/* boot-arg NAME=VALUE (a number): the value, or 0 when it is not there */
+static long
+bootArgNumber(const char *name)
+{
+	static char arguments[1024];
+	size_t size = sizeof(arguments) - 1, length = strlen(name);
+	const char *at = arguments;
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
+		return 0;
+	}
+	arguments[size] = 0;
+	while ((at = strstr(at, name)) != NULL) {
+		if ((at == arguments || at[-1] == ' ') && at[length] == '=') {
+			return strtol(at + length + 1, NULL, 0);
+		}
+		at += length;
+	}
+	return 0;
+}
+
+static IMP
+replaceMethod(char kind, const char *className, const char *selectorName, IMP replacement)
+{
+	Class cls = objc_getClass(className);
+	SEL selector = sel_registerName(selectorName);
+	Method method = cls == NULL ? NULL : kind == '+' ? class_getClassMethod(cls, selector) : class_getInstanceMethod(cls, selector);
+
+	if (method == NULL) {
+		say("dlisa[%s]: %c[%s %s] not found; left alone\n", getprogname(), kind, className, selectorName);
+		return NULL;
+	}
+	say("dlisa[%s]: %c[%s %s] replaced\n", getprogname(), kind, className, selectorName);
+	return method_setImplementation(method, replacement);
+}
+
+/* -[SBSetupManager _setSetupRequiredReason:] (1 Setup Assistant, 2 bricked, 3 migration): 0, never in setup mode */
+static void (*origSetSetupRequiredReason)(id, SEL, unsigned long);
+
+static void
+setSetupRequiredReason(id self, SEL selector, unsigned long reason)
+{
+	if (reason != 0) {
+		say("dlisa[%s]: SpringBoard wants the Setup Assistant (reason %lu): not here\n", getprogname(), reason);
+	}
+	origSetSetupRequiredReason(self, selector, 0);
+}
+
+/* -[SBLockdownManager _setupActivationState] asks MobileActivation and keeps the answer in _state: 2 = activated */
+#define LOCKDOWN_ACTIVATED      2
+
+static void
+setupActivationState(id self, __unused SEL selector)
+{
+	Ivar state = class_getInstanceVariable(object_getClass(self), "_state");
+
+	if (state == NULL) {
+		say("dlisa[%s]: SBLockdownManager has no _state; activation left alone\n", getprogname());
+		return;
+	}
+	*(int *)((char *)self + ivar_getOffset(state)) = LOCKDOWN_ACTIVATED;
+	say("dlisa[%s]: the device counts as activated\n", getprogname());
+}
+
+static bool
+notBricked(__unused id self, __unused SEL selector)
+{
+	return false;
+}
+
+/* What the unlock path decides, on the console (the reasons SpringBoard gives otherwise go only to os_log). */
+static bool (*origUnlockUIFromSource)(id, SEL, long, id);
+static bool (*origIsUnlockDisabled)(id, SEL);
+
+static bool
+unlockUIFromSource(id self, SEL selector, long source, id options)
+{
+	bool done = origUnlockUIFromSource(self, selector, source, options);
+
+	say("dlisa[%s]: unlock: unlockUIFromSource:%ld -> %d (still locked: %d)\n", getprogname(), source, done,
+	    SEND0(bool, self, "isUILocked"));
+	return done;
+}
+
+static bool
+isUnlockDisabled(id self, SEL selector)
+{
+	static int said;
+	bool disabled = origIsUnlockDisabled(self, selector);
+
+	if (disabled && said++ < 8) {
+		say("dlisa[%s]: unlock: SpringBoard says the unlock is disabled\n", getprogname());
+	}
+	return disabled;
+}
+
+/* FrontBoard's launch and resume watchdogs (a first-party app gets about 20 s to show its scene), times N */
+static double (*origWatchdogScale)(id, SEL, id, bool);
+static long watchdogScale;
+
+static double
+watchdogScalingFactor(id self, SEL selector, id appInfo, bool resume)
+{
+	return origWatchdogScale(self, selector, appInfo, resume) * (double)watchdogScale;
+}
+
+/*
+ * dlisa_unlock=1: once SpringBoard is up, unlock the way the lock screen does after "swipe up to open"
+ * (-[SBLockScreenManager lockScreenViewControllerRequestsUnlock]); if that is refused, unlockUIFromSource: with the
+ * lock screen's source, and last _finishUIUnlockFromSource:withOptions:, which is what follows a successful
+ * authentication. dlisa_unlock=2 keeps doing it whenever the phone locks again.
+ */
+#define UNLOCK_SOURCE_LOCK_SCREEN       0x19    /* what -lockScreenViewControllerRequestsUnlock passes on iOS 26 */
+#define UNLOCK_FIRST_SECONDS            20
+#define UNLOCK_EVERY_SECONDS            5
+
+static long unlockMode;
+static id idleAssertion;
+
+static void
+holdIdleTimerAssertion(void)
+{
+	Class coordinator = objc_getClass("SBIdleTimerGlobalCoordinator");
+	id shared = coordinator != NULL ? SEND0(id, coordinator, "sharedInstanceIfExists") : nil;
+	SEL acquire = sel_registerName("acquireIdleTimerDisableAssertionForReason:");
+
+	if (idleAssertion != nil || shared == nil || class_getInstanceMethod(object_getClass(shared), acquire) == NULL) {
+		return;
+	}
+	idleAssertion = ((id (*)(id, SEL, CFStringRef))objc_msgSend)(shared, acquire, CFSTR("darwin-lisa dlisa_noidle"));
+	if (idleAssertion != nil) {
+		CFRetain((CFTypeRef)idleAssertion);
+		say("dlisa[%s]: idle timer: disabled (no auto-lock)\n", getprogname());
+	}
+}
+
+static void
+unlockPass(unsigned attempt)
+{
+	Class cls = objc_getClass("SBLockScreenManager");
+	id manager = cls != NULL ? SEND0(id, cls, "sharedInstanceIfExists") : nil;
+	unsigned next = attempt + 1;
+
+	if (manager == nil) {
+		next = attempt;                 /* SpringBoard is not that far yet */
+	} else if (!SEND0(bool, manager, "isUILocked")) {
+		if (attempt > 0) {
+			say("dlisa[%s]: unlock: unlocked\n", getprogname());
+		}
+		if (unlockMode < 2) {
+			return;
+		}
+		next = 0;                       /* dlisa_unlock=2: keep watching */
+	} else if (attempt < 3) {
+		say("dlisa[%s]: unlock: attempt %u: as the lock screen asks it\n", getprogname(), attempt + 1);
+		SEND0(void, manager, "lockScreenViewControllerRequestsUnlock");
+	} else if (attempt < 6) {
+		say("dlisa[%s]: unlock: attempt %u: unlockUIFromSource\n", getprogname(), attempt + 1);
+		((bool (*)(id, SEL, long, id))objc_msgSend)(manager, sel_registerName("unlockUIFromSource:withOptions:"),
+		    UNLOCK_SOURCE_LOCK_SCREEN, nil);
+	} else if (attempt == 6) {
+		say("dlisa[%s]: unlock: attempt %u: finishing the unlock without asking\n", getprogname(), attempt + 1);
+		((void (*)(id, SEL, long, id))objc_msgSend)(manager, sel_registerName("_finishUIUnlockFromSource:withOptions:"),
+		    UNLOCK_SOURCE_LOCK_SCREEN, nil);
+	} else if (attempt >= 60) {
+		say("dlisa[%s]: unlock: still locked after %u attempts; giving up\n", getprogname(), attempt);
+		return;
+	}
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_EVERY_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		unlockPass(next);
+	});
+}
+
+/* dlisa_noidle=1: the assertion, once SpringBoard's idle timer coordinator exists */
+static void
+idlePass(unsigned attempt)
+{
+	holdIdleTimerAssertion();
+	if (idleAssertion != nil || attempt >= 60) {
+		return;
+	}
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_EVERY_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		idlePass(attempt + 1);
+	});
+}
+
+/*
+ * +[XBApplicationSnapshotManifestImpl _outputFormatForSnapshot:]: the picture SpringBoard keeps of an app that leaves
+ * the screen. ATX (an ASTC texture) is compressed on the processor here and takes longer than the scene watchdog
+ * (HakiOS 16.5 measured more than 10 s): JPEG for an opaque picture, PNG otherwise, as on a device without ASTC.
+ */
+#define SNAPSHOT_FORMAT_PNG     0
+#define SNAPSHOT_FORMAT_JPEG    3
+
+static long
+snapshotOutputFormat(__unused id self, __unused SEL selector, id snapshot)
+{
+	SEL opaque = sel_registerName("isImageOpaque");
+
+	if (snapshot != nil && class_getInstanceMethod(object_getClass(snapshot), opaque) != NULL &&
+	    ((bool (*)(id, SEL))objc_msgSend)(snapshot, opaque)) {
+		return SNAPSHOT_FORMAT_JPEG;
+	}
+	return SNAPSHOT_FORMAT_PNG;
+}
+
+/*
+ * ForceNoBuddy in com.apple.purplebuddy.notbackedup makes BYSetupAssistantNeedsToRun() answer NO in every process
+ * (SetupAssistant.framework checks it first). Written once, through cfprefsd, onto the data volume.
+ */
+static void
+setForceNoBuddy(void)
+{
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+		CFStringRef domain = CFSTR("com.apple.purplebuddy.notbackedup");
+
+		CFPreferencesSetAppValue(CFSTR("ForceNoBuddy"), kCFBooleanTrue, domain);
+		say("dlisa[%s]: ForceNoBuddy: %s\n", getprogname(), CFPreferencesAppSynchronize(domain) ? "set" : "not saved");
+	});
+}
+
+static void
+fixSpringBoard(void)
+{
+	origSetSetupRequiredReason = (void (*)(id, SEL, unsigned long))replaceMethod('-', "SBSetupManager",
+	    "_setSetupRequiredReason:", (IMP)setSetupRequiredReason);
+	replaceMethod('-', "SBLockdownManager", "_setupActivationState", (IMP)setupActivationState);
+	replaceMethod('-', "SBLockdownManager", "brickedDevice", (IMP)notBricked);
+	origUnlockUIFromSource = (bool (*)(id, SEL, long, id))replaceMethod('-', "SBLockScreenManager",
+	    "unlockUIFromSource:withOptions:", (IMP)unlockUIFromSource);
+	origIsUnlockDisabled = (bool (*)(id, SEL))replaceMethod('-', "SBLockScreenManager", "_isUnlockDisabled",
+	    (IMP)isUnlockDisabled);
+	/* (a hook whose original was not found must not be called through a NULL) */
+	if (origSetSetupRequiredReason == NULL) {
+		say("dlisa[%s]: setup mode not fixed: the Setup Assistant may block the home screen\n", getprogname());
+	}
+	watchdogScale = bootArgNumber("dlisa_watchdog");
+	if (watchdogScale > 1) {
+		origWatchdogScale = (double (*)(id, SEL, id, bool))replaceMethod('-', "FBApplicationProcessWatchdogPolicy",
+		    "_queue_watchdogScalingFactorForAppInfo:isResume:", (IMP)watchdogScalingFactor);
+		if (origWatchdogScale == NULL) {
+			watchdogScale = 0;
+		}
+	}
+	replaceMethod('+', "XBApplicationSnapshotManifestImpl", "_outputFormatForSnapshot:", (IMP)snapshotOutputFormat);
+	setForceNoBuddy();
+	unlockMode = bootArgNumber("dlisa_unlock");
+	if (unlockMode != 0) {
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_FIRST_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			unlockPass(0);
+		});
+	}
+	if (bootArgNumber("dlisa_noidle") != 0) {
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_FIRST_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			idlePass(0);
+		});
+	}
+}
+
 /* ---- which program gets which fix ------------------------------------------------------------------ */
 
 static const struct {
@@ -645,6 +919,7 @@ static const struct {
 	{ "containermanagerd_system", fixContainerManager },
 	{ "lsd", fixLaunchServices },
 	{ "backboardd", startTouchScreen },
+	{ "SpringBoard", fixSpringBoard },
 };
 
 /*

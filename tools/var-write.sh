@@ -1,0 +1,135 @@
+#!/bin/sh
+# darwin-lisa: write the data volume (/private/var, HFSX) into its region of the flash. Runs ON pmOS, as root.
+# docs/data-volume.md has the whole sequence; this is steps A3 (check) and A4 (write).
+#
+#   sudo sh var-write.sh check  var-A.hfsx.gz SHA256     # [READ-ONLY] every check, nothing written
+#   sudo VAR_WRITE=yes sh var-write.sh write var-A.hfsx.gz SHA256    # [WRITES: super bytes 4831838208.. only]
+#   sudo sh var-write.sh verify SHA256                   # [READ-ONLY] read the region back and compare
+#   sudo sh var-write.sh backup FILE.gz                  # [READ-ONLY] save the region as it is now (rollback)
+#
+# SHA256 is the raw image's (var-A.hfsx.sha256, made by tools/mkvarvol.py). The region is option A: super (GPT
+# entry 20 of sda, LBA 573440..2801663 in 4096-byte blocks), bytes [4831838208, 9126805504) = 4096 MiB from MiB 4608,
+# the same stretch as loader/data-regions.h. The write is ONE dd with seek= and count= in whole MiB, into the
+# partition node only (never sda itself), after the partition is proved to be super by its place, size, name and
+# unique GUID; the root image below it is hashed before and after and must not change.
+set -eu
+
+# ---- the region (option A) -------------------------------------------------------------------------------------
+PARTLABEL=super
+PART_START_512=4587520          # 573440 * 8: sysfs counts 512-byte sectors
+PART_SIZE_512=17825792          # 2228224 * 8 (9,126,805,504 B)
+PART_UUID=f1cc2373-2d04-a1a1-5cbf-e3d75f3a4a27
+ROOT_MIB=4608                   # the root image: bytes [0, 4831838208) of super, read only, never written
+ROOT_BLOCKS=1179648             # the same in 4096-byte blocks: the APFS container must end at or before it
+DATA_SEEK_MIB=4608              # the data region begins here ...
+DATA_MIB=4096                   # ... and is this long (to the partition's end)
+# -----------------------------------------------------------------------------------------------------------------
+
+say() { printf 'var-write: %s\n' "$*"; }
+die() { printf 'var-write: STOP: %s\n' "$*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run as root (sudo)"
+MODE=${1:-}
+
+DEV=$(readlink -f "/dev/disk/by-partlabel/$PARTLABEL") || die "no /dev/disk/by-partlabel/$PARTLABEL"
+NAME=$(basename "$DEV")
+SYS=/sys/class/block/$NAME
+DISK=$(basename "$(readlink -f "$SYS/..")")
+
+prove_partition() {
+	[ -b "$DEV" ] || die "$DEV is not a block device"
+	[ "$DISK" = sda ] || die "$PARTLABEL is on $DISK, not sda (LUN 0)"
+	[ "$NAME" != "$DISK" ] || die "$DEV is a whole disk"
+	[ "$(cat "$SYS/start")" = "$PART_START_512" ] || die "$NAME starts at sector $(cat "$SYS/start"), not $PART_START_512"
+	[ "$(cat "$SYS/size")" = "$PART_SIZE_512" ] || die "$NAME has $(cat "$SYS/size") sectors, not $PART_SIZE_512"
+	[ "$(cat "/sys/class/block/$DISK/queue/logical_block_size")" = 4096 ] || die "$DISK's blocks are not 4096 bytes"
+	grep -qx "PARTNAME=$PARTLABEL" "$SYS/uevent" || die "$NAME's GPT name is not $PARTLABEL"
+	if command -v blkid >/dev/null 2>&1 && blkid -p -o value -s PART_ENTRY_UUID "$DEV" >/dev/null 2>&1; then
+		u=$(blkid -p -o value -s PART_ENTRY_UUID "$DEV")
+		[ "$u" = "$PART_UUID" ] || die "$NAME's unique GUID is $u, not $PART_UUID"
+	else
+		say "no util-linux blkid: unique GUID not checked (place, size and name were)"
+	fi
+	[ -z "$(ls "$SYS/holders" 2>/dev/null)" ] || die "$NAME has holders: $(ls "$SYS/holders")"
+	! grep -q "^$DEV " /proc/mounts || die "$DEV is mounted"
+	! grep -q "^$DEV " /proc/swaps 2>/dev/null || die "$DEV is swap"
+	# the region is the partition's tail exactly: seek + count = its size
+	[ $(( (DATA_SEEK_MIB + DATA_MIB) * 2048 )) = "$PART_SIZE_512" ] || die "the region does not end at the partition's end"
+	[ "$DATA_SEEK_MIB" -ge "$ROOT_MIB" ] || die "the region begins inside the root image"
+	say "$DEV is $PARTLABEL: sda, sectors $PART_START_512 + $PART_SIZE_512, blocks of 4096, nothing holds it"
+}
+
+# the root's APFS container at block 0: "NXSB", 4096-byte blocks, and no more than ROOT_BLOCKS of them
+prove_root_below() {
+	set -- $(dd if="$DEV" bs=4096 count=1 2>/dev/null | od -An -v -tx1 -j32 -N16)
+	[ "$1$2$3$4" = 4e585342 ] || die "no APFS container (NXSB) at $PARTLABEL's block 0: is the root image there?"
+	bs=$(( 0x$8$7$6$5 ))
+	nb=$(( 0x${16}${15}${14}${13}${12}${11}${10}$9 ))
+	[ "$bs" = 4096 ] || die "the root container's blocks are $bs bytes"
+	[ "$nb" -le "$ROOT_BLOCKS" ] || die "the root container has $nb blocks: it reaches into the data region (from $ROOT_BLOCKS)"
+	say "root container: $nb blocks of 4096, ends before block $ROOT_BLOCKS: the region is past it"
+}
+
+root_sha() { dd if="$DEV" bs=1M count="$ROOT_MIB" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+region_sha() { dd if="$DEV" bs=1M skip="$DATA_SEEK_MIB" count="$DATA_MIB" 2>/dev/null | sha256sum | cut -d' ' -f1; }
+drop_cache() { sync; echo 3 >/proc/sys/vm/drop_caches; }
+
+prepare_image() {     # $1 the .gz, $2 its raw sha256 -> $RAW, decompressed beside it and checked
+	[ -f "$1" ] || die "no $1"
+	[ -n "${2:-}" ] || die "give the raw image's sha256 (var-A.hfsx.sha256)"
+	RAW=${1%.gz}
+	[ "$RAW" != "$1" ] || die "$1 is not a .gz"
+	if [ ! -f "$RAW" ] || [ "$(sha256sum "$RAW" | cut -d' ' -f1)" != "$2" ]; then
+		say "decompressing $1 -> $RAW"
+		gzip -dc "$1" >"$RAW.part" && mv "$RAW.part" "$RAW"
+	fi
+	[ "$(stat -c %s "$RAW")" = $(( DATA_MIB * 1048576 )) ] || die "$RAW is $(stat -c %s "$RAW") bytes, not $(( DATA_MIB * 1048576 ))"
+	[ "$(sha256sum "$RAW" | cut -d' ' -f1)" = "$2" ] || die "$RAW's sha256 is not $2"
+	# HFSX ('HX' at 1024), journaled: what init26 mounts
+	set -- $(dd if="$RAW" bs=1024 skip=1 count=1 2>/dev/null | od -An -tx1 -N2)
+	[ "$1$2" = 4858 ] || die "$RAW is not an HFSX volume"
+	say "$RAW: $(( DATA_MIB )) MiB HFSX, sha256 ok"
+}
+
+case "$MODE" in
+check)
+	prove_partition
+	prove_root_below
+	prepare_image "${2:-}" "${3:-}"
+	say "check passed. To write: VAR_WRITE=yes sh $0 write $2 $3"
+	;;
+write)
+	[ "${VAR_WRITE:-}" = yes ] || die "set VAR_WRITE=yes to write"
+	prove_partition
+	prove_root_below
+	prepare_image "${2:-}" "${3:-}"
+	say "hashing the root image (4.5 GiB, read only) before the write"
+	before=$(root_sha)
+	say "root before: $before"
+	say "WRITING $DEV bytes $(( DATA_SEEK_MIB * 1048576 ))..$(( (DATA_SEEK_MIB + DATA_MIB) * 1048576 - 1 ))"
+	dd if="$RAW" of="$DEV" bs=1M seek="$DATA_SEEK_MIB" count="$DATA_MIB" conv=notrunc,fsync
+	drop_cache
+	got=$(region_sha)
+	[ "$got" = "$3" ] || die "READ BACK DIFFERENT: $got (want $3). The root is untouched by design; write again or roll back"
+	after=$(root_sha)
+	[ "$after" = "$before" ] || die "THE ROOT IMAGE CHANGED ($after). Rewrite the root (flash-boot.md C2) before booting iOS"
+	say "written and read back: region sha256 $got; the root image is unchanged ($after)"
+	;;
+verify)
+	prove_partition
+	drop_cache
+	got=$(region_sha)
+	say "region sha256 $got"
+	[ -z "${2:-}" ] || [ "$got" = "$2" ] || die "it is not $2"
+	;;
+backup)
+	[ -n "${2:-}" ] || die "give a file name (.gz)"
+	prove_partition
+	dd if="$DEV" bs=1M skip="$DATA_SEEK_MIB" count="$DATA_MIB" 2>/dev/null | gzip -1 >"$2"
+	say "the region as it is now: $2 ($(stat -c %s "$2") bytes). Restore: gzip -dc $2 | dd of=$DEV bs=1M seek=$DATA_SEEK_MIB count=$DATA_MIB iflag=fullblock conv=notrunc,fsync"
+	;;
+*)
+	sed -n '2,9p' "$0"
+	exit 2
+	;;
+esac

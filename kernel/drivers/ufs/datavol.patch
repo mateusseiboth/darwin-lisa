@@ -1,0 +1,377 @@
+--- a/bsd/dev/hakios.ufs.c
++++ b/bsd/dev/hakios.ufs.c
+@@ -50,21 +50,34 @@
+  *                      root's seal check for a RAM disk only (the port's APFS cannot answer it), and
+  *                      launchd runs as a Restore environment because of it, which this port's
+  *                      userland is built on.
+- *   ufs_write=1        writes into NAME only (it has to be the partition the loader offers too), whole
+- *                      blocks, from block max(ufs_write_first=, the loader's write_first) to its end,
+- *                      and never anywhere else; /dev/ufs_NAME_data is that stretch, and is made only
+- *                      when the floor is not 0 (the root volume lies at the partition's start).
++ *   ufs_write=1        with ufs_data=NAME: /dev/ufs_data, the region the loader offers in NAME (below);
++ *                      ufs_write_first= can only raise its floor.
+  *   ufs_loader=0       the loader on core 0 will not answer (the kernel has every core): nothing is
+  *                      asked through its page, which is read for its table only; reads go through this
+  *                      kernel's own driver (ufs_native=1, required), which knows LUN 0 by its GPT
+  *                      header instead of comparing it with the loader's read; writes are refused.
+  *
+  * The block devices (the root's) still never write.
++ *
++ * darwin-lisa data volume (kernel/drivers/ufs/datavol.patch, docs/data-volume.md): the one place that writes is
++ * /dev/ufs_data, a block device over a REGION the loader offers -- a partition named by ufs_data=NAME and, in it,
++ * the blocks [write_first, write_end) the loader's page gives (xnuloader data-regions.h). The same region on both
++ * sides, by name and by bounds; nothing outside it is ever asked for. Option A: the tail of super past the root
++ * image (ufs_data=super), option B: a partition of its own (ufs_data=darwin_var), with no change here.
++ *
++ *   ufs_write=1 ufs_data=NAME   /dev/ufs_data, read and write, (write_end - write_first) blocks of 4096. When NAME
++ *                               is also the root's partition (ufs_part=), the floor must not be 0 and the root's
++ *                               APFS container (its superblock at block 0) must end at or before it.
++ *   ufs_data_restore_ms=N       with ufs_native=1: N ms after the last write of the data volume this kernel's own
++ *                               transfer list goes back in (default 2000; 0: only at the end of the run).
++ *
++ * No character device writes any more (EROFS): the packed store of HakiOS (var_store) is not used on this port.
+  */
+ #include <kern/clock.h>
+ #include <kern/kalloc.h>
+ #include <kern/locks.h>
+ #include <kern/thread.h>
++#include <kern/thread_call.h>
+ #include <os/atomic_private.h>
+ #include <libkern/libkern.h>
+ #include <mach/mach_types.h>
+@@ -110,6 +123,8 @@
+  */
+ static char ufs_part_name[36];                  /* ufs_part=NAME; empty: no partition of the port's */
+ static uint64_t ufs_write_first;                /* in the partition's blocks of 4096 */
++static uint64_t ufs_write_end;                  /* darwin-lisa: the region's end, exclusive (the loader's write_end) */
++static char ufs_data_name[36];                  /* ufs_data=NAME: the partition the region is in */
+ static bool ufs_no_loader;                      /* ufs_loader=0: nothing is asked through the page */
+ static bool ufs_init_done;
+ 
+@@ -146,6 +161,7 @@
+ 	uint32_t write_part_plus_one;
+ 	uint32_t write_caps;                   /* BLOCK_CAN_FAST; zero from a loader that has only BLOCK_OP_WRITE */
+ 	uint64_t write_first;
++	uint64_t write_end;                    /* darwin-lisa: the end of the region (exclusive); 0: none offered */
+ 	struct {
+ 		volatile uint32_t request;
+ 		uint32_t part;
+@@ -479,9 +495,8 @@
+ 	    "copying %llu ms\n", when, ufs_requests, ufs_small, ufs_medium, ufs_large, ufs_sequential,
+ 	    ufs_errors, ufs_bytes, ufs_wait_us / 1000, loader_ns / 1000000, ufs_copy_us / 1000);
+ 	if (ufs_write_part >= 0 || ufs_writes != 0 || ufs_write_refused != 0) {
+-		printf("ufs: %s: %llu writes into darwin, %llu bytes, read back by the loader; %llu did not "
+-		    "finish, %llu refused here\n", when, ufs_writes, ufs_write_bytes, ufs_write_errors,
+-		    ufs_write_refused);
++		printf("ufs: %s: %llu writes into %s, %llu bytes; %llu did not finish, %llu refused here\n", when,
++		    ufs_writes, ufs_data_name, ufs_write_bytes, ufs_write_errors, ufs_write_refused);
+ 	}
+ }
+ 
+@@ -645,9 +660,9 @@
+ 	if (len == 0 || offset % nbs != 0 || len % nbs != 0) {
+ 		return EINVAL;          /* whole blocks only: nothing is read before a write */
+ 	}
+-	if (ufs_write_first == 0 || offset / nbs < ufs_write_first || offset > ufs_part_bytes(part) ||
+-	    len > ufs_part_bytes(part) - offset) {
+-		/* before the floor (the root volume), and anything past the partition's end: never */
++	if (ufs_write_end == 0 || offset / nbs < ufs_write_first || offset > ufs_write_end * nbs ||
++	    len > ufs_write_end * nbs - offset || ufs_write_end > ufs_page->part[part].blocks) {
++		/* outside the region [write_first, write_end) the loader offered: never */
+ 		ufs_write_refused++;
+ 		return EROFS;
+ 	}
+@@ -667,7 +682,7 @@
+ 		ufs_write_out = true;
+ 		if (ufs_write_was_native) {
+ 			ufs_native_on = false;
+-			ufs_native_out("writing the data volume into darwin");
++			ufs_native_out("writing the data volume");
+ 		}
+ 	}
+ 	while (len > 0 && error == 0) {
+@@ -710,7 +725,35 @@
+ 	lck_mtx_unlock(&ufs_write_mtx);
+ }
+ 
+-/* ---- the data volume: the port's partition from ufs_write_first on ---- */
++/* ---- the data volume: the region [ufs_write_first, ufs_write_end) of ufs_data=NAME ---- */
++
++/*
++ * darwin-lisa: with ufs_native=1 a write takes this kernel's transfer list out (UEFI's driver writes for the
++ * loader), and every read then goes through the loader, one request at a time. The data volume is mounted for the
++ * whole run, so it is never "closed": the list comes back in ufs_data_restore_ms after its last write instead.
++ */
++static thread_call_t ufs_restore_call;
++static uint32_t ufs_restore_ms = 2000;
++
++static void
++ufs_restore_fire(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
++{
++	ufs_write_restore();
++}
++
++static void
++ufs_restore_later(void)
++{
++	uint64_t deadline;
++
++	if (ufs_restore_call == NULL || ufs_restore_ms == 0 || !ufs_write_was_native) {
++		return;
++	}
++	clock_interval_to_deadline(ufs_restore_ms, NSEC_PER_MSEC, &deadline);
++	thread_call_enter_delayed(ufs_restore_call, deadline);
++}
++
++static void ufs_write_restore(void);
+ 
+ static bool
+ ufs_is_data(dev_t dev)
+@@ -721,7 +764,7 @@
+ static uint64_t
+ ufs_data_bytes(void)
+ {
+-	return ufs_part_bytes((uint32_t)ufs_write_part) - ufs_write_first * 4096;
++	return (ufs_write_end - ufs_write_first) * 4096;
+ }
+ 
+ /*
+@@ -774,6 +817,7 @@
+ 	if (offset % 4096 == 0 && len % 4096 == 0) {
+ 		error = ufs_write(ufs_data_op(), (uint32_t)ufs_write_part, base + offset, p, len);
+ 		lck_mtx_unlock(&ufs_data_mtx);
++		ufs_restore_later();
+ 		return error;
+ 	}
+ 	bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
+@@ -800,6 +844,7 @@
+ 	}
+ 	kfree_data(bounce, ufs_buffer_size);
+ 	lck_mtx_unlock(&ufs_data_mtx);
++	ufs_restore_later();
+ 	return error;
+ }
+ 
+@@ -894,11 +939,8 @@
+ static int
+ ufs_copen(dev_t dev, int flags, int devtype, proc_t p)
+ {
+-	if ((flags & FWRITE) && ufs_write_part >= 0 && (uint32_t)minor(dev) == (uint32_t)ufs_write_part) {
+-		if (ufs_data_used) {
+-			return EBUSY;   /* the data volume is in darwin this run */
+-		}
+-		flags &= ~FWRITE;
++	if (flags & FWRITE) {
++		return EROFS;           /* darwin-lisa: no character device writes; the data volume is /dev/ufs_data */
+ 	}
+ 	return ufs_open(dev, flags, devtype, p);
+ }
+@@ -1074,54 +1116,12 @@
+ 	return error;
+ }
+ 
+-/*
+- * A write to /dev/rufs_darwin: whole blocks, out of user memory a bufferful at a time and into the
+- * partition. Nothing of this driver is held while user memory is touched -- a fault there can come
+- * back as a read of the storage -- so the bytes are taken first and written after.
+- */
++/* darwin-lisa: a character device never writes (ufs_copen refuses FWRITE); the data volume is /dev/ufs_data. */
+ static int
+-ufs_cwrite(dev_t dev, struct uio *uio, __unused int ioflag)
++ufs_cwrite(__unused dev_t dev, __unused struct uio *uio, __unused int ioflag)
+ {
+-	uint32_t part = (uint32_t)minor(dev);
+-	uint64_t nbs;
+-	uint8_t *bounce;
+-	int error = 0;
+-
+-	if (!ufs_ready || part >= ufs_parts || ufs_write_part < 0 || part != (uint32_t)ufs_write_part) {
+-		return EROFS;
+-	}
+-	if (ufs_var_busy_pid != proc_selfpid()) {
+-		/* one writer of the store at a time, and it says so first (kern.hakios.var_busy) */
+-		ufs_write_refused++;
+-		return EPERM;
+-	}
+-	nbs = ufs_page->part[part].block_size;
+-	if (uio_offset(uio) < 0 || (uint64_t)uio_offset(uio) % nbs != 0 || (uint64_t)uio_resid(uio) % nbs != 0) {
+-		return EINVAL;
+-	}
+-	bounce = kalloc_data(ufs_buffer_size, Z_WAITOK);
+-	if (bounce == NULL) {
+-		return ENOMEM;
+-	}
+-	while (error == 0 && uio_resid(uio) > 0) {
+-		user_ssize_t want = uio_resid(uio);
+-		off_t at = uio_offset(uio);
+-
+-		if (want > (user_ssize_t)ufs_buffer_size) {
+-			want = (user_ssize_t)ufs_buffer_size;
+-		}
+-		error = uiomove((caddr_t)bounce, (int)want, uio);
+-		if (error == 0) {
+-			error = ufs_write(BLOCK_OP_WRITE, part, (uint64_t)at, bounce, (uint64_t)want);
+-			if (error != 0) {
+-				/* these bytes did not go in: the write is to say so, not to count them */
+-				uio_setoffset(uio, at);
+-				uio_setresid(uio, uio_resid(uio) + want);
+-			}
+-		}
+-	}
+-	kfree_data(bounce, ufs_buffer_size);
+-	return error;
++	ufs_write_refused++;
++	return EROFS;
+ }
+ 
+ static const struct bdevsw ufs_bdevsw = {
+@@ -1861,6 +1861,85 @@
+ 
+ /* ---- bringing it up ---- */
+ 
++/*
++ * darwin-lisa: the root's APFS container (its superblock at block 0 of part) ends at or before block first. Read
++ * through the loader or this kernel's driver like any read; "NXSB" at 32, the block size at 36, the count at 40.
++ */
++static const char *
++ufs_root_below_why(uint32_t part, uint64_t first)
++{
++	uint8_t *b = kalloc_data(4096, Z_WAITOK);
++	const char *why = NULL;
++
++	if (b == NULL || ufs_read(part, 0, b, 4096) != 0) {
++		why = "its block 0 could not be read";
++	} else if (memcmp(b + 32, "NXSB", 4) != 0) {
++		why = "no APFS container (the root) at its block 0";
++	} else if (*(uint32_t *)(b + 36) != 4096 || *(uint64_t *)(b + 40) == 0 || *(uint64_t *)(b + 40) > first) {
++		printf("ufs: the root container has %llu blocks of %u; the region begins at %llu\n",
++		    *(uint64_t *)(b + 40), *(uint32_t *)(b + 36), first);
++		why = "the root container reaches into the region";
++	}
++	if (b != NULL) {
++		kfree_data(b, 4096);
++	}
++	return why;
++}
++
++static void
++ufs_data_init(void)
++{
++	uint32_t offered = ufs_page->write_part_plus_one, part = BLOCK_MAX_PARTS;
++	uint64_t first = 0, end = ufs_page->write_end;
++	const char *why = NULL;
++
++	(void)PE_parse_boot_arg_str("ufs_data", ufs_data_name, sizeof(ufs_data_name));
++	(void)PE_parse_boot_argn("ufs_write_first", &first, sizeof(first));
++	(void)PE_parse_boot_argn("ufs_data_restore_ms", &ufs_restore_ms, sizeof(ufs_restore_ms));
++	if (ufs_data_name[0] == 0) {
++		why = "no ufs_data=NAME says which partition the region is in";
++	} else if ((part = ufs_entry_unique(ufs_data_name)) == BLOCK_MAX_PARTS) {
++		why = "no partition of that name, or more than one";
++	} else if (ufs_no_loader) {
++		why = "ufs_loader=0: every write goes through the loader";
++	} else if (ufs_page->part[part].unit != 0) {
++		/* the first unit UEFI lists, which this kernel's own driver reads as LUN 0 and
++		 * has compared with the loader's reads; the device path this firmware gives
++		 * says no logical unit number at all, so part[].lun is 0xff for every unit */
++		why = "it is not on the first logical unit";
++	} else if (ufs_page->part[part].block_size != 4096) {
++		why = "its blocks are not 4096 bytes";
++	} else if (offered != part + 1) {
++		why = "the loader does not offer it for writes (ufs_write=1 ufs_data=NAME on its command line too, and a "
++		    "loader with that region in data-regions.h)";
++	} else if (end == 0) {
++		why = "the loader offers no end to the region (a loader without data-region.patch)";
++	} else if ((first = MAX(first, ufs_page->write_first)) >= end || end > ufs_page->part[part].blocks) {
++		why = "the region is empty or past the partition's end";
++	} else if (ufs_part_name[0] != 0 && strcmp(ufs_part_name, ufs_data_name) == 0) {
++		/* the root's own partition: the root lies at block 0, so a floor, and the container below it */
++		why = first == 0 ? "it is the root's partition and the region begins at its block 0" :
++		    ufs_root_below_why(part, first);
++	}
++	if (why != NULL) {
++		printf("ufs: ufs_data=%s: no write will be asked for: %s; everything of the storage is read only\n",
++		    ufs_data_name[0] != 0 ? ufs_data_name : "(none)", why);
++		return;
++	}
++	ufs_write_first = first;
++	ufs_write_end = end;
++	ufs_write_part = (int)part;
++	ufs_restore_call = thread_call_allocate(ufs_restore_fire, NULL);
++	printf("ufs: %s: blocks %llu..%llu (%llu MB, LBA %llu..%llu of unit 0) take writes as /dev/ufs_data; everything "
++	    "else of the storage is read only\n", ufs_data_name, first, end - 1, (end - first) * 4096 >> 20,
++	    ufs_page->part[part].start_lba + first, ufs_page->part[part].start_lba + end - 1);
++	if (devfs_make_node(makedev(ufs_bmajor, UFS_DATA_MINOR), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
++	    "ufs_data") != NULL) {
++		printf("ufs: /dev/ufs_data: %s\n", ufs_data_op() == BLOCK_OP_WRITE_FAST ?
++		    "writes flushed when the file system asks" : "every write flushed and read back (an older loader)");
++	}
++}
++
+ void
+ hakios_ufs_init(void)
+ {
+@@ -1927,59 +2006,13 @@
+ 	    "through the loader's page at %llx and its %u KB buffer\n", made, pa, ufs_buffer_size >> 10);
+ 
+ 	/*
+-	 * ufs_write=1 (darwin-lisa): /dev/rufs_NAME takes writes, NAME the partition ufs_part= names, and
+-	 * only from the floor on: the larger of ufs_write_first= and the loader's write_first, which
+-	 * must not be 0 (the root volume begins at the partition's block 0). The partition has to be the
+-	 * one the loader offers for writes too, every write going through it; its bounds are its entry in
+-	 * the loader's table, not a layout written down here. The loader refuses the same of its own.
++	 * ufs_write=1 ufs_data=NAME (darwin-lisa): /dev/ufs_data, the region [write_first, write_end) of the partition
++	 * NAME that the loader offers this run (data-regions.h on its side), read and write. Every condition has to hold,
++	 * or nothing of the storage writes.
+ 	 */
+ 	check = 0;
+ 	if (PE_parse_boot_argn("ufs_write", &check, sizeof(check)) && check == 1) {
+-		uint32_t offered = ufs_page->write_part_plus_one, part = BLOCK_MAX_PARTS;
+-		uint64_t first = 0;
+-		const char *why = NULL;
+-
+-		(void)PE_parse_boot_argn("ufs_write_first", &first, sizeof(first));
+-		if (ufs_part_name[0] == 0) {
+-			why = "no ufs_part=NAME says which partition is the port's";
+-		} else if ((part = ufs_entry_unique(ufs_part_name)) == BLOCK_MAX_PARTS) {
+-			why = "no partition of that name, or more than one";
+-		} else if (ufs_no_loader) {
+-			why = "ufs_loader=0: every write goes through the loader";
+-		} else if (ufs_page->part[part].unit != 0) {
+-			/* the first unit UEFI lists, which this kernel's own driver reads as LUN 0 and
+-			 * has compared with the loader's reads; the device path this firmware gives
+-			 * says no logical unit number at all, so part[].lun is 0xff for every unit */
+-			why = "it is not on the first logical unit";
+-		} else if (ufs_page->part[part].block_size != 4096) {
+-			why = "its blocks are not 4096 bytes";
+-		} else if (offered != part + 1) {
+-			why = "the loader does not offer it for writes (ufs_write=1 on its command line too, and a loader "
+-			    "that takes writes for this partition)";
+-		} else if ((first = MAX(first, ufs_page->write_first)) == 0) {
+-			why = "no floor: ufs_write_first=BLOCK (past the root volume)";
+-		} else if (first >= ufs_page->part[part].blocks) {
+-			why = "the floor is past its end";
+-		}
+-		if (why != NULL) {
+-			printf("ufs: %s: no write will be asked for: %s; everything of the storage is read only\n",
+-			    ufs_part_name[0] != 0 ? ufs_part_name : "ufs_write=1", why);
+-		} else {
+-			char name[48];
+-
+-			ufs_write_first = first;
+-			ufs_write_part = (int)part;
+-			printf("ufs: /dev/rufs_%s takes writes, whole blocks from %llu to %llu (%llu MB); "
+-			    "everything else of the storage is read only\n", ufs_part_name, ufs_write_first,
+-			    ufs_page->part[part].blocks - 1, (ufs_page->part[part].blocks - ufs_write_first) * 4096 >> 20);
+-			snprintf(name, sizeof(name), "ufs_%s_data", ufs_part_name);
+-			if (devfs_make_node(makedev(ufs_bmajor, UFS_DATA_MINOR), DEVFS_BLOCK, UID_ROOT, GID_OPERATOR, 0640,
+-			    "%s", name) != NULL) {
+-				printf("ufs: /dev/%s: the same %llu MB as a block device, for the data volume; "
+-				    "%s\n", name, ufs_data_bytes() >> 20, ufs_data_op() == BLOCK_OP_WRITE_FAST ?
+-				    "writes flushed when the file system asks" : "every write flushed and read back (an older loader)");
+-			}
+-		}
++		ufs_data_init();
+ 	}
+ 
+ 	/*

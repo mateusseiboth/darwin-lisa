@@ -194,8 +194,8 @@ Sizes: the full image is built from the current sysroot with `FULL=1 userland-26
 multiple). On 2026-11-10 it is 4,831,838,208 B (144 x 32 MiB, sha256 `195ae6b547baf4c8...`), which fits in super
 (2,228,224 blocks) and leaves 4.0 GiB after it. (`system-26.apfs.new` is stale: from before pacstrip/unzbm/init/inject.) The trimmed image (3.75 GiB) would leave 4.75 GiB. Use the full one.
 Since the flash root never passes through fastboot, the 4 GiB download cap doesn't apply. The data volume stays on
-ramfs at first; the 4.0 GiB tail of super can later hold a persistent `/private/var` (kernel `ufs_write=1
-ufs_write_first=1177993`).
+ramfs at first. The 4.0 GiB tail of super (blocks 1179648..2228223) holds a persistent `/private/var`:
+see `docs/data-volume.md`.
 
 Nothing in the remaining boot chain reads super:
 

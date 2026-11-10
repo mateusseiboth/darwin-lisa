@@ -20,7 +20,8 @@ All of them go in the payload command line (`mkpayload.py --cmdline`): the loade
 | `ufs_root=1` | the root is `/dev/ufs_NAME`. **Keep `rd=md0`** on the line (see below). If the partition is not there, the root falls back to `rd=`. |
 | `ufs_native=1` | reads by the kernel's own UFSHC driver (31 requests in flight instead of one); falls back to the mailbox on an error. `ufs_native=2` only looks, `3` is a dry run. |
 | `ufs_loader=0` | the loader will not answer (it lost core 0). Nothing is asked through the mailbox; requires `ufs_native=1`; LUN 0 is identified by its own GPT header (crc, backup header at the unit's last block). Writes are refused. |
-| `ufs_write=1` | writes into `/dev/rufs_NAME` only (and `/dev/ufs_NAME_data`), whole blocks, from the floor to the end of the partition. Off by default. The loader must offer the same partition for writes. |
+| `ufs_write=1` | writes into `/dev/rufs_NAME` only (and `/dev/ufs_NAME_data`), whole blocks, from the floor to the end of the partition. Off by default. The loader must offer the same partition for writes. **With `datavol.patch`:** only `/dev/ufs_data`, with `ufs_data=NAME` (below) |
+| `ufs_data=NAME` | (datavol.patch) the partition the loader's write region is in: `super` for option A. See `docs/data-volume.md` |
 | `ufs_write_first=N` | the floor, in 4096-byte blocks. The kernel uses max(N, the loader's `write_first`). 0 means no writes at all. Put it past the end of the APFS container (`nx_block_count`). |
 | `apfs_root_c=` / `apfs_root_v=` | which container / volume of the root device (APFS port, unchanged). |
 | `apfs_cheap=0/1` | overrides the request-cost hint; with this wire the flash is "worth putting together" by default. |
@@ -85,6 +86,13 @@ Nothing writes in steps 1 to 4: no `ufs_write=1` anywhere.
 4. **Root**: `rd=md0 ufs=2 ufs_native=1 ufs_part=super ufs_root=1`. Expect `BSD root: ufs_super, major M, minor I`,
    then `apfs: device M,I: requests to it are worth putting together` and `apfs: volume 0 "System"`.
    A RAM disk is not needed; `rd=md0` must still be on the line.
-5. **Only later, writes**: needs a loader that offers `super` (see the report on loader.c), then
-   `ufs_write=1 ufs_write_first=<past the APFS container>`. Check `ufs: /dev/rufs_super takes writes, whole blocks
-   from F to L` and that `kern.hakios.ufs_write_refused` grows for any write below F.
+5. **Writes**: the data volume, below.
+
+## Data volume: /dev/ufs_data (not applied)
+
+`datavol.patch` + `datavol-wire.py` (run after `ufs-wire.py`) + `hfs_compat_12377.h`; the run book is
+`docs/data-volume.md`. `ufs_write=1 ufs_data=NAME` makes `/dev/ufs_data`, a read-write block device over exactly the
+region the loader offers (`loader/data-regions.h`: GPT name, exact LBAs, `[write_first, write_end)`). For option A,
+that region is super's tail past the root image. The wire script also builds HFS Plus into the kernel (HakiOS's
+`bsd/hfs`, Apple's hfs-627.100.6), because the port's APFS is read-only. Character devices no longer write, and
+`ufs_write_first=` can only raise the floor. With the patch, `ufs_write=1` without `ufs_data=` writes nothing.

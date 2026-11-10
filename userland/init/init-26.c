@@ -124,23 +124,235 @@ memProbe(void)
 	}
 }
 
+/* kern.bootargs, read once */
+static const char *
+bootArgs(void)
+{
+	static char args[1024];
+	static int read_once;
+	size_t len = sizeof(args) - 1;
+
+	if (!read_once) {
+		read_once = 1;
+		if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+			len = 0;
+		}
+		args[len] = 0;
+	}
+	return args;
+}
+
+/* the value of boot-arg NAME= as a number (a whole word of the line); dflt when it is not there */
+static unsigned
+bootArgNumber(const char *name, unsigned dflt)
+{
+	const char *a = bootArgs();
+	size_t n = strlen(name);
+
+	for (const char *p = a; *p != 0; p++) {
+		if ((p == a || p[-1] == ' ') && strncmp(p, name, n) == 0 && p[n] == '=') {
+			unsigned v = 0;
+
+			for (p += n + 1; *p >= '0' && *p <= '9'; p++) {
+				v = v * 10 + (unsigned)(*p - '0');
+			}
+			return v;
+		}
+	}
+	return dflt;
+}
+
+/*
+ * The data volume on the phone's flash (boot-arg var_ufs=1): /dev/ufs_data, the region the loader and the kernel
+ * offer for writes (ufs_write=1 ufs_data=NAME; docs/data-volume.md), journaled case-sensitive HFS Plus. What
+ * Darwin keeps in /private/var is then there at the next boot. If it does not mount, ramfs as before.
+ */
+#define VAR_DEV                 "/dev/ufs_data"
+#define DKIOCGETBLOCKSIZE       0x40046418UL    /* _IOR('d', 24, uint32_t) */
+#define DKIOCGETBLOCKCOUNT      0x40086419UL    /* _IOR('d', 25, uint64_t) */
+#define HFSIOC_RESIZE_VOLUME    0x80086802UL    /* _IOW('h', 2, u_int64_t), bsd/hfs/hfs_fsctl.h */
+#define SYS_sync_               36
+#define SYS_fsctl_              242
+
+/* struct hfs_mount_args as user space passes it (bsd/hfs/hfs_mount.h; HakiOS's init the same) */
+struct hfs_args {
+	const char *fspec;
+	uint32_t uid, gid;
+	uint16_t mask, pad;
+	uint32_t encoding;
+	int tz[2];
+	int flags, journal_tbuffer_size, journal_flags, journal_disable;
+};
+
+/* the device's bytes (0: not known), asked before the mount: a mounted block device is not opened again */
+static uint64_t
+varDeviceBytes(void)
+{
+	uint32_t bs = 0;
+	uint64_t count = 0;
+	int fd = open(VAR_DEV, O_RDONLY, 0);
+
+	if (fd < 0) {
+		return 0;
+	}
+	if (mini_syscall(SYS_ioctl, fd, (long)DKIOCGETBLOCKSIZE, (long)&bs, 0, 0, 0) != 0 ||
+	    mini_syscall(SYS_ioctl, fd, (long)DKIOCGETBLOCKCOUNT, (long)&count, 0, 0, 0) != 0) {
+		bs = 0;
+	}
+	close(fd);
+	return (uint64_t)bs * count;
+}
+
+/*
+ * var_grow=1: the volume grows to the whole device (HFS's own resize, hfs_extendfs). For the move from option A to
+ * option B: the 4 GiB volume copied block for block to the start of a bigger partition, then grown here once.
+ */
+static void
+growVar(uint64_t device)
+{
+	uint64_t want = device;
+
+	if (device == 0) {
+		printf("init26: VAR var_grow=1: the size of %s is not known: not grown\n", VAR_DEV);
+		return;
+	}
+	if (mini_syscall(SYS_fsctl_, (long)"/private/var", (long)HFSIOC_RESIZE_VOLUME, (long)&want, 0, 0, 0) != 0) {
+		printf("init26: VAR var_grow=1: resize to %llu bytes: %s\n", (unsigned long long)device, strerror(errno));
+		return;
+	}
+	printf("init26: VAR the data volume is now %llu MB (the whole of %s)\n", (unsigned long long)(device >> 20),
+	    VAR_DEV);
+}
+
+static int
+mountFlashVar(void)
+{
+	struct hfs_args args;
+	struct stat st;
+	uint64_t device;
+
+	if (bootArgNumber("var_ufs", 0) != 1) {
+		return 0;
+	}
+	if (stat(VAR_DEV, &st) != 0) {
+		printf("init26: VAR var_ufs=1 but no %s (ufs_write=1 ufs_data=NAME, and a loader with that region): ramfs\n",
+		    VAR_DEV);
+		return 0;
+	}
+	device = varDeviceBytes();
+	memset(&args, 0, sizeof(args));
+	args.fspec = VAR_DEV;
+	if (mount("hfs", "/private/var", 0, &args) != 0) {
+		printf("init26: VAR HFS Plus from %s (%llu MB): %s; ramfs instead, empty at every boot\n", VAR_DEV,
+		    (unsigned long long)(device >> 20), strerror(errno));
+		return 0;
+	}
+	printf("init26: VAR /private/var is HFS Plus from %s (%llu MB), kept between boots\n", VAR_DEV,
+	    (unsigned long long)(device >> 20));
+	if (bootArgNumber("var_grow", 0) == 1) {
+		growVar(device);
+	}
+	return 1;
+}
+
+/* What is under PATH, gone; PATH itself stays (a kept volume's tmp, run and vm are each boot's own; HakiOS's) */
+static void
+emptyTree(const char *path, int depth)
+{
+	char buf[4096], child[1100];
+	off_t position = 0;
+	ssize_t n;
+	struct stat st;
+	int fd = open(path, O_RDONLY | O_DIRECTORY, 0), passes = 0;
+
+	if (fd < 0 || depth > 32) {
+		if (fd >= 0) {
+			close(fd);
+		}
+		return;
+	}
+	/* what is removed moves the rest, so the directory is read again from its start until it is empty (or stuck) */
+	while (passes++ < 64 && (n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const struct dirent *de = (const struct dirent *)(buf + at);
+			size_t lp = strlen(path), ln = strlen(de->d_name);
+
+			if (de->d_reclen == 0) {
+				break;
+			}
+			if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0 || lp + ln + 2 > sizeof(child)) {
+				continue;
+			}
+			memcpy(child, path, lp);
+			child[lp] = '/';
+			memcpy(child + lp + 1, de->d_name, ln + 1);
+			if (lstat(child, &st) == 0 && (st.st_mode & S_IFMT) == S_IFDIR) {
+				emptyTree(child, depth + 1);
+				rmdir(child);
+			} else {
+				unlink(child);
+			}
+		}
+		position = 0;
+		lseek(fd, 0, SEEK_SET);
+	}
+	close(fd);
+}
+
+/*
+ * var_sync=N (default 30 with the volume on the flash; 0: never): a child of init that calls sync() every N seconds,
+ * so that a run that ends in a reset (the usual end here: no orderly shutdown reaches the kernel) loses at most N
+ * seconds of what was written. HFS's journal keeps the volume whole either way.
+ */
+static void
+startVarSync(void)
+{
+	unsigned secs = bootArgNumber("var_sync", 30);
+	pid_t pid;
+
+	if (secs == 0) {
+		return;
+	}
+	pid = fork();
+	if (pid == 0) {
+		for (;;) {
+			usleep(secs * 1000000U);
+			mini_syscall(SYS_sync_, 0, 0, 0, 0, 0, 0);
+		}
+	}
+	if (pid > 0) {
+		printf("init26: VAR sync every %u s (pid %d)\n", secs, pid);
+	}
+}
+
 /*
  * The data volume. On an iPhone /private/var is the APFS Data volume, created at
- * restore from the rootfs's private/var. Here the root is a read-only image in
- * memory and nothing may be written to flash, so /private/var is ramfs (memory,
- * empty at every boot) with the data volume's directory skeleton laid down again
- * (var-skel.h, generated from the IPSW). Without it launchd and the daemons hit
- * "Read-only file system" for /private/var/mobile/tmp, /var/run, and so on.
+ * restore from the rootfs's private/var. Here, without var_ufs=1, /private/var is
+ * ramfs (memory, empty at every boot) with the data volume's directory skeleton laid
+ * down again (var-skel.h, generated from the IPSW). Without it launchd and the
+ * daemons hit "Read-only file system" for /private/var/mobile/tmp, /var/run, and so
+ * on. With the volume on the flash, the skeleton is laid down where it is missing
+ * (the first boot of an empty volume: all of it) and what is there is left as the
+ * boots before made it.
  */
 static void
 mountVar(void)
 {
 	char path[512];
-	int made = 0, bad = 0;
+	int made = 0, bad = 0, there = 0;
+	int kept = mountFlashVar();
+	struct stat st;
 
-	if (mount("ramfs", "/private/var", 0, NULL) != 0) {
+	if (!kept && mount("ramfs", "/private/var", 0, NULL) != 0) {
 		printf("init26: VAR mount ramfs on /private/var: %s\n", strerror(errno));
 		return;
+	}
+	if (kept) {
+		static const char *const own[] = { "/private/var/tmp", "/private/var/run", "/private/var/vm" };
+
+		for (unsigned i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
+			emptyTree(own[i], 0);
+		}
 	}
 	for (const struct var_skel *e = VAR_SKEL; e->path != NULL; e++) {
 		size_t n = strlen("/private/var") + strlen(e->path) + 1;
@@ -149,6 +361,10 @@ mountVar(void)
 		}
 		strcpy(path, "/private/var");
 		strcpy(path + strlen("/private/var"), e->path);
+		if (kept && lstat(path, &st) == 0) {
+			there++;
+			continue;       /* made by an earlier boot: what Darwin made of it since is what counts */
+		}
 		int ok;
 		if (e->type == 'l') {
 			ok = symlink(e->target, path) == 0 && lchown(path, e->uid, e->gid) == 0;
@@ -193,11 +409,16 @@ mountVar(void)
 	 * rootfs listing the skeleton comes from. usermanagerd --init writes its user session and persona manifest
 	 * there (usersession.kb, persona.kb); without the directory it cannot, and the daemon aborts at every start.
 	 */
-	if (mkdir("/private/var/keybags", 0755) != 0 || chown("/private/var/keybags", 0, 0) != 0) {
+	if ((mkdir("/private/var/keybags", 0755) != 0 && !(kept && errno == 17 /* EEXIST */)) ||
+	    chown("/private/var/keybags", 0, 0) != 0) {
 		printf("init26: VAR /private/var/keybags: %s\n", strerror(errno));
 		bad++;
 	}
-	printf("init26: VAR /private/var is ramfs: %d entries made, %d failed\n", made, bad);
+	printf("init26: VAR /private/var is %s: %d entries made, %d already there, %d failed\n",
+	    kept ? "the data volume on the flash" : "ramfs", made, there, bad);
+	if (kept) {
+		startVarSync();
+	}
 }
 
 /*

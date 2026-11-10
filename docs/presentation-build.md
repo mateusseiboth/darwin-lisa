@@ -31,8 +31,9 @@ The loader patch is `loader/autoboot.patch`, applied on top of `oem-bootos.patch
 - **The run is the same as `oem run`.** The loader on core 0 feeds the hypervisor watchdog, serves the UFS mailbox
   and keeps its USB up, so a PC plugged in later can still use `fastboot oem log`, `oem screenshot`, `oem stop` and
   `reboot`.
-- **When an auto-booted run ends** (the kernel returned, hung for 50 s, or never started) and no host has spoken, the
-  loader restarts the phone after 10 s: menu, then HakiOS again. It never sits in the loader with nobody to talk to.
+- **When an auto-booted run ends** (the kernel returned, showed no sign of life for 10 minutes, or never started) and
+  no host has spoken, the loader restarts the phone after 10 s: menu, then HakiOS again. It never sits in the loader with
+  nobody to talk to. A kernel that asks for a block in those 10 s is alive: the restart is called off (section 7).
 - **An older loader** ignores the `autoboot` entry and stays in host mode. Nothing breaks.
 
 Why the payload rides in vendor_boot's ramdisk:
@@ -115,7 +116,8 @@ init_run_secs=60 sb_delay=8 bootcpu=7 loader_return_after=86400 epoch=<build tim
 - There is no `-v` (text over the UI) and no `touch_synth` (the demo uses a real hand). The script refuses
   `touch_synth`.
 - `loader_return_after=86400`: the loader feeds the watchdog for 24 h, and the kernel's own timer feeds it too.
-  A hang is still caught: the loader's 50 s heartbeat check ends the run, then the phone restarts.
+  A hang is still caught: after 50 s of silence the loader writes the log down and keeps serving; after 600 s of silence
+  on every sign of life it ends the run, then the phone restarts (section 7, `loader_hang_after=`).
 - **The loader cuts the boot-args at 607 characters.** It puts `debug=0x8`, `hv_wdt_pet=1`, `ufs_shared_pa=`,
   `battery_shared_pa=` and `hakios_kver=` in front, about 130 characters. The script refuses a line over 420, and
   what the kernel must see comes first.
@@ -317,3 +319,195 @@ ipsw dyld a2s -s 0x14fd0000 dyld_shared_cache_arm64e 0x1d292b984
 
 Builds: kernel `kernel-16k-present2.bak` (c54833dc), vendor_boot `out/vendor_boot-lisa-standalone.img` (abfe7629),
 root `userland-26/out/system-26.apfs.full` (f2c62ac1, the full image with every fix).
+
+## 7. The combined image: loader fix, iPhone 13 mini, the whole panel (2026-11-10, evening)
+
+One vendor_boot for the single test session, together with the GPU work (`docs/gpu-device-test.md`):
+
+- the loader with `run-tpl.patch` (changed) and `live-watch.patch` (new);
+- the iPhone 13 mini identity (iPhone14,4, D16AP);
+- the panel's own 1080x2400 at 3x;
+- the GPU worker's kernel.
+
+### 7.1 The false "THE KERNEL HUNG"
+
+What happened at the standalone cold boot (vendor_boot abfe7629, kernel c54833dc, no `-v`,
+`research/hackios-xnu-kernel/logs/present3-standalone*`):
+
+- iOS was on its lock screen, and the clock went from 4:00 to 4:01.
+- The loader printed `THE KERNEL HUNG on core 700: no sign of life for 50 seconds`, left its watch loop and stopped
+  serving the UFS mailbox. iOS reads its root through that mailbox, so it stalled for good.
+
+**The kernel was alive.** At 24 s it had logged 191,810 bytes. The "hang" log written to logdump was 335,872 bytes,
+about 316 KB of it kernel log. So the kernel logged some 125 KB during the 50 s in which its heartbeat looked frozen.
+
+**The cause.** The heartbeat was the one word of the kernel's that core 0 read without going to memory first:
+
+- The loader reads the log length, the storage requests and the done flags with `dc civac` first; the heartbeat
+  check read `live->heartbeat` straight through the cache.
+- XNU maps its memory Outer Shareable (`SH_OUTER_MEMORY`). U-Boot maps the same memory Inner Shareable. With
+  mismatched shareability the architecture does not promise that one core's writes reach another core's cached copy.
+- During the first 24 s (`NOTE_SECONDS`) the progress notes and the logdump writes evict that cache line every 2 s,
+  and the heartbeat moved: 2, 3, 5, 6, 8.
+- After 24 s the watch loop is small enough to keep one stale copy for good.
+- A host run hides it. The host's `oem log` every 20 s copies megabytes, which evicts the line well inside the 50 s
+  window. So the host-run boots never showed it.
+
+This is the explanation that fits every observation. It was worked out offline: it was not reproduced on the phone.
+The fix holds even if the boot core really stopped while the other cores ran on.
+
+**The fix: `loader/live-watch.patch`.**
+
+- **Four signs of life, all read through memory:** the heartbeat, the log's length, the ring's write position and the
+  kernel's last storage request. Any one of them moving counts as life.
+- **50 s of silence is only a suspicion.** The loader logs `no sign of life from the kernel for 50 s ... still watching
+  it and serving its storage` and writes the loader log and the kernel log so far to logdump (non-destructive, first
+  3 times). It goes on watching, feeding the watchdog, answering the host and serving storage. When a sign moves again
+  it logs `the kernel is alive again after N s`.
+- **A run is given up only after 600 s** of silence on all four signs. `loader_hang_after=N` on the line changes this;
+  `0` means never.
+- **Storage is served even after that**, from the command loop, while the kernel still holds its core. A kernel that
+  asks for a block then is alive: the auto-boot restart is called off
+  (`the kernel taken for hung asked for its storage`).
+- **Storage is served during host transfers too.** An `oem screenshot` upload used to hold iOS's reads for seconds.
+- **The autoboot run now sets `kernel_was_run`, as `oem run` does.** `oem bootos` after an autoboot run is refused,
+  as it is after a host run.
+
+**`run-tpl.patch` now raises the TPL to `TPL_CALLBACK`, not `TPL_NOTIFY`.** The SPMI fix's intent is kept:
+
+- U-Boot's console timer (`efi_console.c`) is a `TPL_CALLBACK` event. U-Boot runs a queued notification only when
+  its TPL is above the current one (`efi_process_event_queue`). So at `TPL_CALLBACK` the key poll over the PMIC
+  arbiter still waits until the run ends.
+- `TPL_CALLBACK` is the highest level at which UEFI allows Block I/O. `TPL_NOTIFY` was above it.
+- `TPL_NOTIFY` was not the cause of the hang: in U-Boot it holds back only notifications, and none of them serve the
+  storage or the heartbeat.
+
+### 7.2 The whole panel: 1080x2400 at 3x
+
+| Option | Boot-args | Points | On the panel | Status bar (UIKit `_UIStatusBarVisualProvider_Split`, chosen by native pixel width) |
+|---|---|---|---|---|
+| **chosen** | `fbwidth=1080 fbheight=2400` (`GEOMETRY=1080x2400`) | 360 x 800 | 1:1, no scaling, edge to edge | `Split1080`, the 13 mini's own |
+| fallback | `fbwidth=1125 fbheight=2499` | 375 x 833 | scaled 0.96 both ways, edge to edge (a real 13 mini also draws at 3x and shows at 2.88) | `Split1125`, the iPhone X's |
+| old default | none | 375 x 812 | 1125x2436 squeezed to 1080x2400 (0.96 x 0.985) | `Split1125` |
+
+What was checked offline:
+
+**The kernel needs no change.**
+
+- `MiniIOMobileFramebuffer` takes `fbwidth`/`fbheight` as given. It reports them as the timing, the display size and
+  the default surface, and maps a swap onto the panel by the ratio, which is 1:1 here.
+- `display-scale` 3 (`/chosen`) and `artwork-scale-factor` 3 (D16 `/product`) give the scale.
+- Touch is normalized against the panel's 1080x2400.
+- The reported dot pitch becomes 439 ppi (458 x 1080 / 1125). The panel is about 402 ppi, and the 13 mini about 476.
+  Only physical-size features read this value.
+
+**UIKit (UIKitCore of 23F84):**
+
+- The points are pixels divided by the scale.
+- `_UIScreenTypeForScreen` matches them against a fixed table of 51 screen types. There is no 360 x 800 entry, and no
+  375 x 833 either, so both options give an unknown screen type.
+- Both widths fall inside what UIKit lays out today: 320 (the minis' Display Zoom) to 440.
+- The status bar is chosen by native width, and 1080 is exactly the D16's.
+- The split status bar leaves the middle of the top empty, which fits lisa's centered punch-hole.
+
+**What only the phone can show:** SpringBoard's icon grid, PosterBoard's wallpaper and app layouts at 360 points.
+
+**The trade-off.** 1080x2400 is sharp and 1:1, has 8% fewer pixels to draw than 1125x2499, and has the mini's own
+status bar. It is 15 points narrower than any iPhone at standard zoom. 1125x2499 keeps the 375-point width every app
+is designed for, with a uniform 0.96 resample. If 360 points shows a broken layout, take the fallback (7.4,
+check C).
+
+The identity's root says iPhone14,4, but the loader still writes the D22's `chip-id` 0x8015, `board-id` 6,
+`platform-name` t8015 and A1865 numbers. This was never a problem with D22, but it is untested with D16.
+
+### 7.3 The build
+
+```sh
+darwin-lisa/loader/build-combined.sh                                 # provisional: kernel-16k-gpu1.bak
+KERNEL=research/hackios-xnu-kernel/<final>.bak EXTRA_ARGS="rtc=1 battmgr=1" darwin-lisa/loader/build-combined.sh
+```
+
+It is `build-standalone.sh` with:
+
+- `NAME=combined`;
+- `IDENTITY=darwin-lisa/.work/identity/identity-d16.h` (Apple data, not in git);
+- `GEOMETRY=1080x2400`;
+- `KERNEL` defaulting to `kernel-16k-gpu1.bak`.
+
+It prints the length of the boot-arg line:
+
+- **434 characters now.**
+- `build-standalone.sh` allows 460, so 26 are free.
+- The loader's own hard limit is about 488: 607 minus its own 119.
+- `GEOMETRY=` takes 27 of the 434. If room runs out, making 1080x2400 the kernel's default (`kFBDefaultWidth` /
+  `kFBDefaultHeight` set to 0, so the panel's size is used) frees them. It would also change every host run that
+  relies on today's 1125x2436.
+
+Provisional build (kernel `kernel-16k-gpu1.bak`, sha256 `de12f63f3317aece…`):
+
+| File | sha256 |
+|---|---|
+| `out/vendor_boot-lisa-combined.img` (24,834,048 B) | `5cef38e9d6e71fb2d13067ef4f4f449e8d60d596fab919397ef515ad4122c68c` |
+| `out/loader-usb-lisa-combined.hkub` | `2f49d6bf50cbe9f9a8550ff628e2bef8bf5e43376a72dd2bc1e5ecfbb02c1cd4` |
+| `out/loader-combined.efi` | `2359ae2d20d500047e69bd58e50e2b71c681120e6dcb8af5eee8b830bd7fca75` |
+| `out/combined-payload.bin` | `4e6edb3301ae3bc708abbc29db485eb6ef2a13e6ba5d6294a3509701107af1b1` |
+
+`epoch=` is the build time: rebuild right before the session. The flashed rollback images are untouched:
+`out/vendor_boot-lisa-standalone-d22-abfe7629.img` and `backups/vendor_boot_a-before-present2.img`.
+
+### 7.4 In the one test session
+
+**Flash.** In `gpu-device-test.md` step 0.1: step 5 above, with `out/vendor_boot-lisa-combined.img` and its own size
+(`stat -c %s`, 24,834,048 for the provisional build). Back up vendor_boot_a first under a new name
+(`vendor_boot_a-before-combined.img`).
+
+**Boot A: the cold boot, with no PC.** Do it first, before any host run.
+
+1. Unplug the cable, power off, power on. Expect `autoboot: iOS starts in 10 s`, then iOS.
+2. Leave the phone alone on the lock screen or the home screen for **at least 3 minutes**, with no cable. The old
+   false hang came at about 74 s. A host polling during this window would hide the bug, so do not poll.
+3. Then open Settings and scroll. If storage had stopped, this is where iOS would stall.
+4. Plug the cable in and collect the log:
+
+   ```sh
+   fastboot oem log && fastboot get_staged boot-a.log
+   grep -a 'THE KERNEL HUNG\|no sign of life\|alive again\|taken for hung' boot-a.log    # expected: nothing
+   grep -a 'MiniIOMobileFramebuffer: display' boot-a.log    # display 1080x2400 on a panel of 1080x2400
+   ```
+
+   A `no sign of life ... still watching` line followed by `alive again` means the old trap was sprung and survived.
+   Note the times and the four values for the loader worker.
+
+**Check B: edge to edge, in the same boot.**
+
+```sh
+fastboot getvar screen                        # width height stride
+fastboot oem screenshot && fastboot get_staged shot.raw
+python3 darwin-lisa/tools/fbraw2png.py shot.raw boot-a-shot.png 1080 2400 <stride>
+```
+
+Expect:
+
+- the wallpaper or the UI reaching all four edges, with no black bars;
+- the split status bar: time on the left, battery on the right, empty around the punch-hole;
+- the home indicator at the bottom edge;
+- text not stretched: circles are round.
+
+The loader prints the command over the screen, so ignore that text.
+
+**Check C: only if B shows a bad layout at 360 points.** Do not reflash. In one of the GPU host runs, set
+`GEOM="fbwidth=1125 fbheight=2499"` instead of the 1080x2400 one: host runs carry their own line. If that layout is
+right, the next build is `GEOMETRY=1125x2499 darwin-lisa/loader/build-combined.sh`.
+
+**The GPU host runs.** Use `GEOM="fbwidth=1080 fbheight=2400"` for every step in `gpu-device-test.md`. They use this
+same loader, so they get the fix as well.
+
+### 7.5 Rollback
+
+| What | How |
+|---|---|
+| vendor_boot_a | `vendor_boot_a-before-combined.img` (or `out/vendor_boot-lisa-standalone-d22-abfe7629.img`, the image of the 4:01 boot) through pmOS `dd` as in step 5, or `fastboot flash vendor_boot_a` from ABL. pmOS stays one volume key away in U-Boot's menu |
+| geometry only | rebuild with `GEOMETRY=1125x2499` or `GEOMETRY=` (the kernel's 1125x2436) |
+| identity only | `IDENTITY=research/hackios-xnu-kernel/xnuloader/identity.h` (D22) with `GEOMETRY=` |
+| live-watch only | remove `live-watch.patch` from the loop in `build-standalone.sh` and the check after it. The heartbeat flush alone is the smallest fix: `read_through()` on `live->heartbeat` |
+| give-up time | `EXTRA_ARGS="loader_hang_after=120"` (sooner restart after a real hang) or `=0` (never give up) |

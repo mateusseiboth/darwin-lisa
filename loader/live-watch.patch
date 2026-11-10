@@ -1,0 +1,249 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -2411,6 +2411,8 @@
+ 	}
+ 	from = len > 240 ? len - 240 : 0;
+ 	flush_dcache((uint64_t)(uintptr_t)log + from, (uint64_t)(uintptr_t)log + len);
++	/* (the heartbeat too: live-watch.patch) */
++	flush_dcache((uint64_t)(uintptr_t)&live->heartbeat, (uint64_t)(uintptr_t)&live->heartbeat + 8);
+ 	print("%d s: the kernel has logged %d bytes, heartbeat %d; the last of it:\n", seconds, (uint64_t)len, live->heartbeat);
+ 	for (uint32_t i = from; i < len; i++) {
+ 		put_char(log[i] >= 0x20 && log[i] < 0x7f ? log[i] : log[i] == '\n' ? '\n' : '.');
+@@ -2481,15 +2483,96 @@
+ 	}
+ }
+ 
++/*
++ * darwin-lisa (loader/live-watch.patch): what says that the kernel on the other core is alive.
++ *
++ * A standalone boot (2026-11-10) had iOS on its lock screen, its clock going from 4:00 to 4:01, while this loader
++ * called the kernel hung ("no sign of life for 50 seconds"), left its watch loop and with it the kernel's storage:
++ * iOS, whose root is read through this loader, then stalled for good. The kernel had logged some 125 KB more in
++ * those 50 seconds (191810 bytes at 24 s, about 316 KB in the log of the "hang"). The heartbeat it was judged by
++ * was the one word of the kernel's that this core read without looking at memory: XNU maps its memory Outer
++ * Shareable, U-Boot maps the same memory Inner Shareable, and with mismatched shareability the architecture does not
++ * promise that one core sees another's writes through its cache. Up to NOTE_SECONDS the progress notes and the log
++ * writes evict that line every 2 s; after them the watch loop is small enough to keep reading one stale copy. Every
++ * other word the kernel writes (its log's length, its storage requests) was already read through memory.
++ *
++ * So the kernel's signs of life are read through memory (dc civac first, as for the storage mailbox), and there are
++ * four of them: the heartbeat, the log's length, where its ring is written, and the last storage request. Any one of
++ * them moving is life. Silence for SILENCE_SECONDS is only a suspicion: it is written down with the kernel's log so
++ * far (logdump), and the loader goes on watching, feeding the watchdog, answering the host and serving the storage.
++ * Only after loader_hang_after= seconds of silence of all four (default HANG_SECONDS; 0: never) is the run given up,
++ * and even then the storage is still served from the command loop while the kernel holds its core: a kernel that
++ * asks for a block after that is alive, and an auto-boot's restart is called off.
++ */
++#define HANG_SECONDS            600
++#define SUSPICIONS_LOGGED       3       /* a kernel that goes quiet and comes back again and again: so many written down */
++
++struct live_signs {
++	uint64_t heartbeat;
++	uint32_t log_len, log_ring_at;
++	uint32_t request;               /* the kernel's last storage request (block_shared.ask.request) */
++};
++
++static uint64_t hang_after = HANG_SECONDS;      /* loader_hang_after= on the command line */
++static int kernel_left_on_core;                 /* a run was given up for hung: the kernel may still be on its core */
++
++/* written by another core: look at memory, not at what this core's cache kept of it */
++static uint64_t
++read_through(const volatile void *p, uint64_t size)
++{
++	uint64_t a = (uint64_t)(uintptr_t)p;
++
++	flush_dcache(a, a + size);
++	return size == 8 ? *(const volatile uint64_t *)p : *(const volatile uint32_t *)p;
++}
++
++static void
++read_live_signs(const struct kernel_live *live, uint64_t slide, struct live_signs *s)
++{
++	s->heartbeat = read_through(&live->heartbeat, 8);
++	s->log_len = (uint32_t)read_through((const void *)(uintptr_t)(live->log_len + slide), 4);
++	s->log_ring_at = (uint32_t)read_through((const void *)(uintptr_t)(live->log_ring_at + slide), 4);
++	s->request = block_enabled ? (uint32_t)read_through(&block_shared.ask.request, 4) : 0;
++}
++
++static int
++live_signs_moved(const struct live_signs *now, const struct live_signs *then)
++{
++	return now->heartbeat != then->heartbeat || now->log_len != then->log_len ||
++	       now->log_ring_at != then->log_ring_at || now->request != then->request;
++}
++
++/* the loader's log and the kernel's so far into logdump, without moving anything under the kernel's feet */
++static void
++save_live_log(const struct kernel_live *live, uint64_t slide)
++{
++	efi_block_io *bio = find_log_partition();
++	uint64_t len;
++	efi_status ws;
++
++	compose_live_log(live, slide);
++	if (bio == NULL || !hc_list_is_uefis()) {
++		return;         /* (staged all the same: "fastboot get_staged" has it) */
++	}
++	len = (staged_len + bio->media->block_size - 1) / bio->media->block_size * bio->media->block_size;
++	ws = bio->write_blocks(bio, bio->media->media_id, 0, len, out_buf);
++	if (!EFI_ERROR(ws)) {
++		bio->flush_blocks(bio);
++	}
++	print("log: the loader's and the kernel's so far, %d bytes, written to logdump (%x)\n", len, ws);
++}
++
+ static int64_t
+ run_on_other_cpu(uint64_t mpidr, uint64_t entry, uint64_t boot_args_pa, const struct kernel_live *live, uint64_t slide,
+     uint64_t budget)
+ {
+ 	uint64_t old_tpl = raise_tpl_for_run();
+-	uint64_t daif = 0, group1 = 0, started, last_pet, last_battery, last_beat_at, last_beat = 0, noted = 0;
++	uint64_t daif = 0, group1 = 0, started, last_pet, last_battery, last_beat_at, noted = 0;
+ 	int64_t status;
+-	int arrived = 0, watching_only = 0;
++	int arrived = 0, watching_only = 0, suspected = 0, suspicions = 0;
++	struct live_signs signs = { 0, 0, 0, 0 }, seen;
+ 
++	kernel_left_on_core = 0;
+ 	running_live = live;
+ 	run_active = 1;
+ 	running_slide = slide;
+@@ -2573,10 +2656,28 @@
+ 			last_battery = READ_SYSREG(CNTVCT_EL0);
+ 		}
+ 		if (arrived && live != NULL) {
+-			if (live->heartbeat != last_beat) {
+-				last_beat = live->heartbeat;
++			/* (live-watch.patch, above: four signs, read through memory; silence is a suspicion first) */
++			read_live_signs(live, slide, &seen);
++			if (live_signs_moved(&seen, &signs)) {
++				if (suspected && suspicions <= 8) {
++					print("%d s: the kernel is alive again after %d s with no sign of life (heartbeat %d, log %d, "
++					    "storage request %d)\n", seconds_since(started), seconds_since(last_beat_at), seen.heartbeat,
++					    (uint64_t)seen.log_len, (uint64_t)seen.request);
++				}
++				signs = seen;
++				suspected = 0;
+ 				last_beat_at = READ_SYSREG(CNTVCT_EL0);
+-			} else if (seconds_since(last_beat_at) >= SILENCE_SECONDS) {
++			} else if (!suspected && seconds_since(last_beat_at) >= SILENCE_SECONDS) {
++				suspected = 1;
++				if (++suspicions <= 8) {
++					print("%d s: no sign of life from the kernel for %d s (heartbeat %d, log %d, storage request %d): "
++					    "still watching it and serving its storage\n", seconds_since(started),
++					    (uint64_t)SILENCE_SECONDS, seen.heartbeat, (uint64_t)seen.log_len, (uint64_t)seen.request);
++				}
++				if (suspicions <= SUSPICIONS_LOGGED) {
++					save_live_log(live, slide);
++				}
++			} else if (suspected && hang_after != 0 && seconds_since(last_beat_at) >= hang_after) {
+ 				log_of_hung_kernel(live, slide);
+ 				status = OTHER_CPU_HUNG;
+ 			}
+@@ -3279,6 +3380,14 @@
+ 			break;
+ 		}
+ 	}
++	/* how long all of the kernel's signs of life may be still before the run is given up (live-watch.patch) */
++	hang_after = HANG_SECONDS;
++	for (const char *c = pi.cmdline; *c; c++) {
++		if (starts_with(c, "loader_hang_after=") && (c == pi.cmdline || c[-1] == ' ')) {
++			hang_after = parse_number(c + 18, 10);
++			break;
++		}
++	}
+ 
+ 	/* Give the kernel the address of our return stub and the checkpoint to stop at. */
+ 	for (uint64_t *q = (uint64_t *)kern_lo; q < (uint64_t *)kern_hi; q++) {
+@@ -3718,8 +3827,9 @@
+ 			}
+ 			if (status == OTHER_CPU_HUNG) {
+ 				/* the kernel still has that core; what it logged can be had all the same */
+-				print("THE KERNEL HUNG on core %x: no sign of life for %d seconds; its log follows\n", kernel_mpidr,
+-				    (uint64_t)SILENCE_SECONDS);
++				print("THE KERNEL HUNG on core %x: no sign of life for %d seconds; its log follows. Its storage is still "
++				    "served while it holds that core\n", kernel_mpidr, hang_after);
++				kernel_left_on_core = 1;        /* (serve_left_kernel: live-watch.patch) */
+ 				set_result("hung", loader_ctx[CTX_LOG_LEN], 0);
+ 				write_logs((const char *)loader_ctx[CTX_LOG_PA], loader_ctx[CTX_LOG_LEN]);
+ 				return 1;
+@@ -3937,6 +4047,32 @@
+ 	return autoboot_deadline != 0 && READ_SYSREG(CNTVCT_EL0) >= autoboot_deadline;
+ }
+ 
++/*
++ * The command loop (live-watch.patch): a kernel given up for hung still holds its core, and its storage is served all
++ * the same. One that asks for a block after that is alive: an auto-boot's restart is called off.
++ */
++static void
++serve_left_kernel(void)
++{
++	static int said;
++	uint64_t before;
++
++	if (!kernel_left_on_core || !block_enabled) {
++		return;
++	}
++	before = block_shared.answer.served + block_shared.answer.failed;
++	block_poll();
++	if (block_shared.answer.served + block_shared.answer.failed == before) {
++		return;
++	}
++	if (!said) {
++		said = 1;
++		print("the kernel taken for hung asked for its storage: it is alive; served, and no restart\n");
++	}
++	autoboot_restart_pending = 0;
++	autoboot_deadline = 0;
++}
++
+ static int64_t
+ usb_wait(uint8_t endpoint)
+ {
+@@ -3950,6 +4086,14 @@
+ 		usb_device_event_data data;
+ 
+ 		USB->handle_event(&msg, &size, &data);
++		/*
++		 * The kernel's storage waits for no transfer (live-watch.patch): an "oem screenshot" upload is seconds of
++		 * this loop, inside the watch loop's usb_poll_command(), and iOS's reads waited all that time.
++		 */
++		if (run_active && block_enabled) {
++			block_poll();
++		}
++		serve_left_kernel();
+ 		if (msg == UsbDeviceEventDeviceStateChange) {
+ 			usb_connected = (data.device_state == UsbDeviceStateConnected);
+ 			return -1;
+@@ -4044,8 +4188,11 @@
+ static void
+ fb_command(char *cmd)
+ {
+-	/* a kernel runs on another core, with a live block or without one (running_live alone is NULL without) */
+-	int busy = run_active;
++	/*
++	 * a kernel runs on another core, with a live block or without one (running_live alone is NULL without); or one given
++	 * up for hung still holds its core and is served its storage (live-watch.patch): no second kernel over it either
++	 */
++	int busy = run_active || kernel_left_on_core;
+ 
+ 	/* a host is here: no auto-boot in this session (loader/autoboot.patch) */
+ 	autoboot_deadline = 0;
+@@ -4056,7 +4203,8 @@
+ 		    starts_with(cmd, "oem selftest") || starts_with(cmd, "oem hang") || starts_with(cmd, "oem recording") ||
+ 		    starts_with(cmd, "oem sound") || starts_with(cmd, "oem clearscreen") || starts_with(cmd, "oem memmap") ||
+ 		    starts_with(cmd, "oem bootos:"))) {
+-			fb_reply("FAIL", "a kernel is running (oem stop ends it)");
++			fb_reply("FAIL", kernel_left_on_core ? "a kernel taken for hung holds its core (fastboot reboot)" :
++			    "a kernel is running (oem stop ends it)");
+ 		} else if (starts_with(cmd, "oem stop")) {
+ 			/* the kernel looks at this once a second and comes back as it does when its time is up */
+ 			if (busy && running_live != NULL) {
+@@ -4341,6 +4489,7 @@
+ 	}
+ 	autoboot_deadline = 0;
+ 	set_result("running", 0, 0);
++	kernel_was_run = 1;    /* as "oem run" sets it: "oem bootos" after a kernel ran is refused (live-watch.patch) */
+ 	log_len = 0;
+ 	print("== XNULOADER run (autoboot: no host) ==\n");
+ 	if (!run_kernel(0, 0)) {

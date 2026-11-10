@@ -2,16 +2,18 @@
 # darwin-lisa: the "presentation build": a vendor_boot whose loader boots iOS 26 by itself, with no PC.
 #
 #   darwin-lisa/loader/build-standalone.sh            (environment below)
-#   -> out/vendor_boot-lisa-standalone.img            for vendor_boot_a (a WRITE: docs/presentation-build.md)
-#   -> out/loader-usb-lisa-standalone.hkub            the same HKUB alone, for U-Boot's "HakiOS over fastboot" (RAM)
-#   -> out/loader-standalone.efi                      the loader
-#   -> out/standalone-payload.bin, out/standalone-cmdline.txt
+#   -> out/vendor_boot-lisa-$NAME.img                 for vendor_boot_a (a WRITE: docs/presentation-build.md)
+#   -> out/loader-usb-lisa-$NAME.hkub                 the same HKUB alone, for U-Boot's "HakiOS over fastboot" (RAM)
+#   -> out/loader-$NAME.efi                           the loader
+#   -> out/$NAME-payload.bin, out/$NAME-cmdline.txt   (NAME=standalone by default)
 #
 # The chain on a cold power-on is unchanged up to the loader: ABL, U-Boot's menu (5 s, volume keys pick pmOS),
 # "hakios load" takes this HKUB from vendor_boot's ramdisk and puts the payload at 0xf0000000. The payload now carries
 # the kernel and the boot-args, with "usb" and "autoboot=N": the loader waits N s for a host (any fastboot command
 # keeps it, as before) and otherwise runs the kernel itself, exactly as "fastboot oem run" would
-# (loader/autoboot.patch, on top of oem-bootos.patch and data-region.patch).
+# (loader/autoboot.patch, on top of oem-bootos.patch and data-region.patch). run-tpl.patch keeps U-Boot's console
+# from polling the keys over the PMIC arbiter during a run; live-watch.patch reads the kernel's signs of life through
+# memory and never stops serving its storage while it holds its core (docs/presentation-build.md, section 7).
 #
 # Sources are copied to darwin-lisa/.work/loader-standalone/build and patched there: research/hackios-xnu-kernel/xnuloader
 # is never touched. Nothing here writes to the phone.
@@ -27,6 +29,10 @@
 #   IDENTITY      the identity header the loader is built with (default research/hackios-xnu-kernel/xnuloader/identity.h,
 #                 the iPhone X, D22). darwin-lisa/.work/identity/identity-d16.h is the iPhone 13 mini (D16AP), made by
 #                 xnuloader/mkidentity.py from DeviceTree.d16ap of the iPhone14,4 23F84 IPSW (Apple data: not in git)
+#   GEOMETRY      WxH: the display iOS is told about (fbwidth= fbheight=, kernel/drivers/display). 1080x2400 is the
+#                 panel itself, 1:1 at 3x (360 x 800 points); 1125x2499 is 375 x 833 points shown at 0.96. Empty (default):
+#                 nothing added, the kernel's 1125x2436 (the iPhone X's, squeezed onto the panel)
+#   NAME          the name in the output files (default standalone). Never the name of an image already flashed
 #   EXTRA_ARGS    more boot-args, appended
 #   ARGS          the whole boot-arg line, replacing the default (EXTRA_ARGS still appended)
 set -euo pipefail
@@ -38,6 +44,8 @@ IDENTITY=${IDENTITY:-$H/xnuloader/identity.h}
 AUTOBOOT=${AUTOBOOT:-10}
 DATAVOL=${DATAVOL:-1}
 FW_RAMDISK=${FW_RAMDISK:-}
+GEOMETRY=${GEOMETRY:-}
+NAME=${NAME:-standalone}
 EPOCH=${PRESENT_EPOCH:-$(date +%s)}
 BASE_VB=$H/out/vendor_boot-multiboot-lisa.img        # header fields and the DTB (the same bytes pmOS gets)
 PART_BYTES=100663296                                  # vendor_boot_a: 24576 blocks of 4096
@@ -45,6 +53,17 @@ PAYLOAD_MAX=$((0x4000000 - 0x100000))                 # the loader's payload reg
 
 [[ -f $KERNEL ]] || { echo "build-standalone: no kernel $KERNEL" >&2; exit 1; }
 [[ -f $BASE_VB ]] || { echo "build-standalone: no $BASE_VB" >&2; exit 1; }
+[[ $NAME =~ ^[a-z0-9][a-z0-9-]*$ ]] || { echo "build-standalone: NAME=$NAME (lower case, digits, -)" >&2; exit 1; }
+VB_OUT=$M/out/vendor_boot-lisa-$NAME.img
+HKUB_OUT=$M/out/loader-usb-lisa-$NAME.hkub
+EFI_OUT=$M/out/loader-$NAME.efi
+PAYLOAD_OUT=$M/out/$NAME-payload.bin
+CMDLINE_OUT=$M/out/$NAME-cmdline.txt
+FB=""
+if [[ -n $GEOMETRY ]]; then
+	[[ $GEOMETRY =~ ^([0-9]{3,4})x([0-9]{3,4})$ ]] || { echo "build-standalone: GEOMETRY=$GEOMETRY (WxH)" >&2; exit 1; }
+	FB="fbwidth=${BASH_REMATCH[1]} fbheight=${BASH_REMATCH[2]}"
+fi
 
 # --- the boot-args -----------------------------------------------------------------------------------------------
 # Base: the flash root with the loader on core 0 (bootcpu=7: it feeds the hypervisor watchdog and serves the UFS
@@ -61,8 +80,10 @@ WLAN="wlan_stub=1"
 DEFAULT_ARGS="$ROOT dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 display=1 keystore=1 console_open=1 \
 touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1 cpus=7 cpufreq=1 cpufreq_max=2400 battery=1 $WLAN \
 init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 sb_delay=8 bootcpu=7 loader_return_after=86400 epoch=$EPOCH"
-LINE="${ARGS:-$DEFAULT_ARGS}${EXTRA_ARGS:+ $EXTRA_ARGS}"
+LINE="${ARGS:-$DEFAULT_ARGS}${FB:+ $FB}${EXTRA_ARGS:+ $EXTRA_ARGS}"
 LINE=$(tr -s ' ' <<<"$LINE")
+case " $LINE " in *" fbwidth="*" fbwidth="*|*" fbheight="*" fbheight="*)
+	echo "build-standalone: fbwidth/fbheight twice (GEOMETRY and EXTRA_ARGS)" >&2; exit 1 ;; esac
 case " $LINE " in *" touch_synth="*) echo "build-standalone: touch_synth in the line (the demo is by hand)" >&2; exit 1 ;; esac
 # the loader's own words plus this must stay under its 607. With ufs=2 and battery=1 they are 118 characters
 # (debug=0x8 hv_wdt_pet=1 ufs_shared_pa=0x... battery_shared_pa=0x... hakios_kver=dl26-xxxxxxxx: "cmdline: 526 of 607" with
@@ -75,21 +96,23 @@ rm -rf "${W:?}/build" && mkdir -p "$W/build/xnuloader"
 cp "$H"/xnuloader/{loader.c,efi.h,build.sh} "$W/build/xnuloader/"
 cp "$IDENTITY" "$W/build/xnuloader/identity.h"
 cp "$M/darwin-lisa/loader/data-regions.h" "$W/build/xnuloader/"
-for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch; do
+for p in oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch; do
 	(cd "$W/build" && patch -s -p1 --forward <"$M/darwin-lisa/loader/$p")
 done
 (cd "$W/build/xnuloader" && bash build.sh >/dev/null)
 grep -aq 'autoboot: iOS starts in' "$W/build/xnuloader/loader.efi" || { echo "build-standalone: loader lacks autoboot" >&2; exit 1; }
+grep -aq 'still watching it and serving its storage' "$W/build/xnuloader/loader.efi" ||
+	{ echo "build-standalone: loader lacks live-watch" >&2; exit 1; }
 
 # --- the payload and the HKUB ------------------------------------------------------------------------------------
 KVER="dl26-$(sha256sum "$KERNEL" | cut -c1-8)"      # (short: it is in the 607 characters too)
 items=(kernel="$KERNEL")
 [[ -n $FW_RAMDISK ]] && items+=(resident="$FW_RAMDISK")
-printf '%s\n' "$LINE" >"$M/out/standalone-cmdline.txt"
+printf '%s\n' "$LINE" >"$CMDLINE_OUT"
 # (mkpayload has no --autoboot: the entry is added by hand in the same layout, before the end marker)
 python3 -I "$H/xnuloader/mkpayload.py" -o "$W/payload-noauto.bin" "${items[@]}" --cmdline "$LINE" --usb \
 	--kernel-version "$KVER" >/dev/null
-python3 -I - "$W/payload-noauto.bin" "$M/out/standalone-payload.bin" "$AUTOBOOT" "$PAYLOAD_MAX" <<'EOF'
+python3 -I - "$W/payload-noauto.bin" "$PAYLOAD_OUT" "$AUTOBOOT" "$PAYLOAD_MAX" <<'EOF'
 import struct, sys
 src, out, secs, most = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 d = open(src, 'rb').read()
@@ -108,11 +131,11 @@ assert len(img) <= most, f'payload {len(img)} > {most}'
 open(out, 'wb').write(img)
 print(f'{out}: {len(img)} bytes ({len(img) / 1048576:.1f} MiB of {most / 1048576:.0f}), autoboot={secs}')
 EOF
-python3 -I "$H/tools/mkubootimg.py" -d lisa -l "$W/build/xnuloader/loader.efi" -p "$M/out/standalone-payload.bin" \
-	-c "$M/out/loader-usb-lisa-standalone.hkub"
+python3 -I "$H/tools/mkubootimg.py" -d lisa -l "$W/build/xnuloader/loader.efi" -p "$PAYLOAD_OUT" \
+	-c "$HKUB_OUT"
 
 # --- vendor_boot: the base image's header and DTB, this HKUB as the vendor ramdisk ---------------------------------
-python3 -I - "$BASE_VB" "$M/out/loader-usb-lisa-standalone.hkub" "$M/out/vendor_boot-lisa-standalone.img" "$PART_BYTES" <<'EOF'
+python3 -I - "$BASE_VB" "$HKUB_OUT" "$VB_OUT" "$PART_BYTES" <<'EOF'
 import struct, sys
 src, hkub, out, part = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 d = open(src, 'rb').read()
@@ -135,7 +158,7 @@ assert len(img) <= part, f'{len(img)} > vendor_boot_a {part}'
 open(out, 'wb').write(img)
 print(f'{out}: {len(img)} bytes: vendor ramdisk {vr} -> {len(new)}, DTB {dtb_size} bytes (same) at {at + len(pad(new)):#x}')
 EOF
-cp "$W/build/xnuloader/loader.efi" "$M/out/loader-standalone.efi"
+cp "$W/build/xnuloader/loader.efi" "$EFI_OUT"
 echo "boot-args: $LINE"
-sha256sum "$KERNEL" "$M/out/standalone-payload.bin" "$M/out/loader-usb-lisa-standalone.hkub" \
-	"$M/out/vendor_boot-lisa-standalone.img" "$M/out/loader-standalone.efi"
+sha256sum "$KERNEL" "$PAYLOAD_OUT" "$HKUB_OUT" \
+	"$VB_OUT" "$EFI_OUT"

@@ -14,7 +14,7 @@
 import os, shutil, sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-T = "/home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work"
+T = os.environ.get("XNU_WORK", "/home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work")
 
 
 def copy(name):
@@ -76,13 +76,28 @@ else:
          "hakios_goodix hakios_adreno hakios_wifi hakios_display BSD_EXTRAS_DEV ]",
          "MASTER.arm64.bcm2837 BSD_DEV += hakios_display")
 
-# 4. bsd_init: start them once devfs is up (IOKit has long been), before launchd
-edit(os.path.join(T, "bsd/kern/bsd_init.c"),
-     "\t\thakios_version_init();         /* kern.hakios.version, and the version in the boot log */\n",
-     "\t\thakios_version_init();         /* kern.hakios.version, and the version in the boot log */\n"
-     "\t\t{\n\t\t\textern void hakios_display_init(void);\n"
-     "\t\t\thakios_display_init();  /* darwin-lisa: IOSurface + IOMobileFramebuffer (boot-arg display=1) */\n\t\t}\n",
-     "bsd_init.c: call hakios_display_init")
+# 4. bsd_init: start them once devfs is up (IOKit has long been), before launchd. ONE call: the block below used to be
+#    added again on a rerun once diag-iotrace-wire.py / keystore-wire.py had grown it (its "already applied" text no
+#    longer matched), and every iOS 26 kernel since started the display twice: two IOAcceleratorES, and Metal 26
+#    asserts on two devices (2026-11-10, logs/gpu-probe-1551.log). A second call that is already there is taken out.
+BSD = os.path.join(T, "bsd/kern/bsd_init.c")
+CALL = "\t\t\thakios_display_init();  /* darwin-lisa: IOSurface + IOMobileFramebuffer (boot-arg display=1) */\n"
+BLOCK = "\t\t{\n\t\t\textern void hakios_display_init(void);\n" + CALL + "\t\t}\n"
+bs = open(BSD).read()
+if bs.count(CALL) == 0:
+    edit(BSD,
+         "\t\thakios_version_init();         /* kern.hakios.version, and the version in the boot log */\n",
+         "\t\thakios_version_init();         /* kern.hakios.version, and the version in the boot log */\n" + BLOCK,
+         "bsd_init.c: call hakios_display_init")
+elif bs.count(CALL) > 1 and BLOCK in bs:
+    with open(BSD, "w") as f:
+        f.write(bs.replace(BLOCK, "", 1))
+    print(f"  [ok]   bsd_init.c: {bs.count(CALL)} calls of hakios_display_init -> 1 (the bare block removed)")
+elif bs.count(CALL) > 1:
+    print(f"  [FAIL] bsd_init.c calls hakios_display_init {bs.count(CALL)} times and none is the bare block")
+    sys.exit(2)
+else:
+    print("  [skip] bsd_init.c: call hakios_display_init: already applied (once)")
 
 # 5. the stub for a kernel without the tag
 append_once(os.path.join(T, "bsd/dev/hakios.stubs.c"), "hakios_display_init",

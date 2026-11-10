@@ -118,7 +118,25 @@
  		Method a = library ? class_getInstanceMethod(library, @selector(newFunctionWithName:)) : NULL;
  		Method b = library ? class_getInstanceMethod(library, @selector(newFunctionWithName:constantValues:error:)) : NULL;
  
-@@ -2829,11 +2912,16 @@
+@@ -2137,6 +2220,17 @@
+ 			return nil;     /* (not released: before -init, _MTLDevice's -dealloc reads what -init never set) */
+ 		}
+ 	}
++	/* (darwin-lisa) ONE device per process. Metal 26 asserts in MTLCreateSystemDefaultDevice ("doesn't know what to do
++	 * with more than one device") when two IOAcceleratorES services each give one, which a kernel that started its
++	 * display twice did (logs/gpu-probe-1551.log: two "sgx"). The second service gets nil, which Metal skips. */
++	{
++		static int made;
++
++		if (__sync_fetch_and_add(&made, 1) > 0) {
++			HM_ONCE("accelerator port %u: a device was made already, and Metal wants one: this service gives none\n", port);
++			return nil;
++		}
++	}
+ 	/* (hakios) metal_m2v=1: the device is UniXNU's Metal on Vulkan instead (AdrenoMetal's frontend over metal2vulkan
+ 	 * over Turnip, tools/mk-m2v.sh; linked in by userland/build.sh M2V=1): its own objects, from the device down */
+ 	if (native_bridge_metal_open != NULL && hm_boot_arg_set("metal_m2v=1")) {
+@@ -2829,11 +2923,16 @@
  	id values;
  	unsigned n = 0;
  

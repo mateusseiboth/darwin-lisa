@@ -1,5 +1,62 @@
 # GPU on the phone: the run book (one session)
 
+## Session 2 (after `gpu-probe-1551`): step 3a fixed, re-run 3a then 3b
+
+**What failed.** Steps 1 and 2 passed on kernel-16k-final1. Step 3a aborted in metal_test:
+`MTLCreateSystemDefaultDevice doesn't know what to do with more than one device`. Metal 26's
+`MTLCreateSystemDefaultDevice` block (`sub_1860c7158` in 23F84) takes the device array and asserts unless its `count`
+is exactly 1. There were two devices because there were two `IOAcceleratorES "sgx"` services: metal_test listed both,
+and the kernel log has `hakios display: panel …` and `the accelerator names HakiosMetalProbe` twice. **Every iOS 26 kernel
+since the display port started the display twice** (the same doubled line is in `cpu-b3-smp7-vnodes.log` and in the
+evening logs): `bsd_init.c` called `hakios_display_init()` from two blocks. A rerun of `display-wire.py` added its block
+again once `diag-iotrace-wire.py`/`keystore-wire.py` had grown the first one, because its "already applied" text no
+longer matched. So there were two IOSurface roots, two framebuffers and two accelerators.
+
+**The fix, three layers:**
+- `display/display-wire.py`: one call only. A second bare block that is already there is removed, and the script now
+  honours `XNU_WORK=`.
+- `display/MiniIOMobileFramebuffer.cpp`: `hakios_display_init()` runs once; a second call logs
+  `hakios display: already started; this second call does nothing`.
+- Both plug-ins make **one device per process**. A second accelerator service gets nil, which Metal skips: the CA one
+  through `HakiosMetalCA-ios26.patch`, the probe one through `probe-plugin-onedevice.patch`. They log
+  `accelerator port N: a device was made already, and Metal wants one`. This layer alone fixes step 3a on the final1
+  kernel too.
+
+**Builds:**
+
+| What | sha256 | |
+|---|---|---|
+| kernel `kernel-16k-final2.bak` | see the report | final1 + `adsp/sensors-wire.py` + `power/nosleep-wire.py` + display dedupe + gpu (last). Wires in `logs/final2-wires.log`, build in `logs/rebuild-final2.log` |
+| root `system-26.apfs.full` | see the report | the plug-ins with the one-device guard. HakiosMetal.bundle `26e52907`, HakiosMetalProbe.bundle `36c627cf` |
+
+**Writes:**
+- The root region (`super`, 4,831,838,208 B) as in step 0.2 below.
+- vendor_boot_a (the kernel changed): `KERNEL=research/hackios-xnu-kernel/kernel-16k-final2.bak darwin-lisa/loader/build-combined.sh`,
+  then the same flash and read-back as before.
+
+**Boots** (host runs, phone in the loader):
+
+```sh
+cd ~/Dev/mobile
+export KERNEL=kernel-16k-final2.bak
+GEOM="lisa=1" MORE="noidle=1 dlisa_noidle=1" darwin-lisa/kernel/drivers/gpu/gpu-run.sh run probe   # 3a again (1 and 2 too)
+GEOM="lisa=1" MORE="noidle=1 dlisa_noidle=1" darwin-lisa/kernel/drivers/gpu/gpu-run.sh run ca      # Boot 4: 3b
+```
+
+With `lisa=1` the script leaves the touch and cpufreq arguments to the kernel's built-in defaults. The lines are 402
+(probe) and 388 (ca) characters. The touch group now has `touch_chip=goodix` too, for lines without `lisa=1`.
+
+**Pass, re-run 3a:**
+- `hakios display: panel …` exactly once, and `the accelerator names HakiosMetalProbe` exactly once.
+- metal_test lists ONE `IOAcceleratorES "sgx"`.
+- `MTLCreateSystemDefaultDevice() = "…", class HakiosMetalDevice`, `blits WORK`, `gputest: done: … metal_test 0`.
+- `probe: 0 failures` again.
+
+Boot 4 passes as in "Boot 2" below.
+
+If the display misbehaves on final2 (one framebuffer instead of two is the only display change), go back to final1:
+its plug-in guard still gives exactly one Metal device.
+
 One flash, then at most two host-run boots that differ only in their boot-args. Nothing is uploaded on these boots:
 the root and `/private/var` are on the flash, the GPU firmware is built into the kernel, and the GPU userland is in the
 root. Every GPU piece is off without its boot-args, so the known-good boot (the vendor_boot's autoboot line) is

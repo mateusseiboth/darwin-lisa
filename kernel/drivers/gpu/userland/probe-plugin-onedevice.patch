@@ -1,0 +1,17 @@
+--- a/plugin/HakiosMetal.m
++++ b/plugin/HakiosMetal.m
+@@ -51,6 +51,14 @@
+ 	struct objc_super sup = { self, gBase };
+ 	id (*send)(struct objc_super *, SEL) = (id (*)(struct objc_super *, SEL))objc_msgSendSuper;
+ 
++	/* (darwin-lisa) ONE device per process: Metal 26 asserts in MTLCreateSystemDefaultDevice ("doesn't know what to do
++	 * with more than one device") when two IOAcceleratorES services each give one (a kernel that started its display
++	 * twice: logs/gpu-probe-1551.log). The second service gets nil, which Metal skips. */
++	if (gDevice != nil) {
++		say([NSString stringWithFormat:@"accelerator port %u: a device was made already (port %u), and Metal wants one: "
++		     "this service gives none", port, gPort]);
++		return nil;
++	}
+ 	self = send(&sup, @selector(init));
+ 	gPort = port;
+ 	gDevice = self;                         /* what the objects it hands out answer to -device */

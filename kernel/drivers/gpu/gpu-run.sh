@@ -29,7 +29,7 @@ UFS="rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=super var_ufs=1
 # run-flashroot.sh's own words in front (the epoch is ten digits)
 FRONT="loader_return_after=1500 epoch=1794400000 sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v"
 BASE="display=1 keystore=1 console_open=1 dlisa_unlock=1 cpus=7 cpufreq=1 cpufreq_max=2400 battery=1 wlan_stub=1"
-TOUCH="touchscreen=1 touch_avdd_ldo=ldoc7 touch_goodix_a=1"   # one group: kept or dropped whole
+TOUCH="touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1"   # one group: kept or dropped whole
 UM="/usr/libexec/usermanagerd:--init"
 case "$STEP" in
 base)      NEED="$BASE init_run=$UM init_run_secs=60"; OPT="$TOUCH|dlisa_noidle=1"; SECS=600 ;;
@@ -44,12 +44,21 @@ ca-native) NEED="$BASE gpu=1 metal=1 dlisa_async=1 metal_fps=1 metal_fc_native=1
 *) echo "gpu-run: unknown step $STEP" >&2; exit 1 ;;
 esac
 NEED="$NEED${GEOM:+ $GEOM}${MORE:+ $MORE}"
+# lisa=1 (kernel/drivers/bootargs): the kernel has the touch, cpufreq and panel arguments built in, so they leave the line
+case " $NEED " in
+*" lisa=1 "*)
+	NEED=$(sed -e 's/ cpufreq=1 cpufreq_max=2400 / /' <<<" $NEED " | sed -e 's/^ //' -e 's/ $//')
+	OPT=${OPT/"$TOUCH|"/}
+	OPT=${OPT/"$TOUCH"/} ;;
+esac
 
 IFS='|' read -r -a opt <<<"$OPT"     # the optional groups, the last one dropped first
 dropped=()
 while :; do
 	EXTRA="$NEED"
-	for o in "${opt[@]+"${opt[@]}"}"; do EXTRA="$EXTRA $o"; done
+	for o in "${opt[@]+"${opt[@]}"}"; do
+		case " $NEED " in *" $o "*) ;; *) EXTRA="$EXTRA $o" ;; esac     # (MORE may have it already)
+	done
 	LINE="$FRONT $UFS $EXTRA"
 	[ ${#LINE} -le $MAX ] && break
 	[ ${#opt[@]} -gt 0 ] || { echo "gpu-run: $STEP needs ${#LINE} characters even without its optional arguments (at most $MAX)" >&2; exit 1; }

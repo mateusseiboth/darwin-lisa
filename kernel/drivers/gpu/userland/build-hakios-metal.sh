@@ -40,7 +40,10 @@ trap 'rm -rf "$WORK"' EXIT
 T="-target arm64-apple-ios16.0 -isysroot $SDK"
 
 case "$PLUGIN" in
-probe) SOURCES="$H/hakios-metal/plugin/HakiosMetal.m $H/hakios-metal/plugin/hakios_metallib.c"; INC="-I$H/hakios-metal/plugin" ;;
+probe) mkdir -p "$WORK/plugin"
+       cp "$H/hakios-metal/plugin/HakiosMetal.m" "$H/hakios-metal/plugin/hakios_metallib.c" "$H/hakios-metal/plugin/hakios_metallib.h" "$WORK/plugin/"
+       patch -s -d "$WORK" -p1 < "$HERE/probe-plugin-onedevice.patch"     # one device per process (Metal 26 asserts on two)
+       SOURCES="$WORK/plugin/HakiosMetal.m $WORK/plugin/hakios_metallib.c"; INC="-I$WORK/plugin" ;;
 ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ios26.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;

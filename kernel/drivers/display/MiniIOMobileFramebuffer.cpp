@@ -2209,6 +2209,17 @@ hakios_display_init(void)
 		IOLog("hakios display: off (boot-arg display=1 starts IOSurface and IOMobileFramebuffer)\n");
 		return;
 	}
+	/* once: a second start publishes a second IOSurface root, framebuffer and IOAcceleratorES, and Metal 26 asserts on
+	 * the two devices that gives (MTLCreateSystemDefaultDevice: "more than one device") */
+	{
+		static bool started;
+
+		if (started) {
+			IOLog("hakios display: already started; this second call does nothing\n");
+			return;
+		}
+		started = true;
+	}
 	if (resources == NULL) {
 		IOLog("hakios display: no IOResources\n");
 		return;

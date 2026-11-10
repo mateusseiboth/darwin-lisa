@@ -226,6 +226,30 @@ minisandbox_container_path(user_addr_t arg)
 
 /* Which request numbers have been seen: one log line each, to learn what user space asks for. */
 static uint64_t minisandbox_seen;
+static uint32_t minisandbox_said;       /* darwin-lisa: requests whose arguments were logged */
+
+/*
+ * darwin-lisa: request 5, "issue an extension" (sandbox_extension_issue_*() of libsystem_sandbox: { class, flags, path
+ * or data, flags, token buffer of 0x3ff0 bytes, ... }). There is no sandbox to extend, but the token is handed on --
+ * containermanagerd gives one with every container path, and lsd aborts on a container without one ("NULL getting
+ * container sandbox token", "Could not get user container URL! Must abort."). A token that consume accepts is enough;
+ * consume (request 6) is allowed whatever it is given.
+ */
+#define SANDBOX_SYSCALL_EXTENSION_ISSUE 5
+
+static int
+minisandbox_extension_issue(user_addr_t arg)
+{
+	static const char token[] = "darwin-lisa;00000000;00000000;0000000000000000;com.apple.app-sandbox.read-write;01;"
+	    "01000002;0000000000000000;/";
+	uint64_t a[7];
+	int error = copyin(arg, a, sizeof(a));
+
+	if (error != 0) {
+		return error;
+	}
+	return a[4] != 0 ? copyout(token, (user_addr_t)a[4], sizeof(token)) : 0;
+}
 
 static int
 minisandbox_policy_syscall(struct proc *p, int call, user_addr_t arg)
@@ -237,6 +261,17 @@ minisandbox_policy_syscall(struct proc *p, int call, user_addr_t arg)
 	}
 	if (call == SANDBOX_SYSCALL_CONTAINER_PATH) {
 		return minisandbox_container_path(arg);
+	}
+	if (call == SANDBOX_SYSCALL_EXTENSION_ISSUE) {
+		return minisandbox_extension_issue(arg);
+	}
+	if (call != 2 && minisandbox_said < 40) {
+		uint64_t a[7] = { 0 };
+
+		minisandbox_said++;
+		(void)copyin(arg, a, sizeof(a));
+		printf("minisandbox: %s[%d] request %d args %llx %llx %llx %llx %llx %llx %llx\n", p->p_comm, proc_getpid(p), call,
+		    a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 	}
 	return 0;
 }

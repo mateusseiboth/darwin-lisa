@@ -12,6 +12,16 @@ SR="$OUT/sysroot-26"
 ASIDE="$OUT/trimmed-out"
 TRIM=(Applications Library/Wallpaper System/Library/OnBoardingBundles)
 
+# LEAN=1: also leave out the LaunchDaemons listed in lean-daemons.txt (memory; see that file).
+LEAN_LIST="$HERE/lean-daemons.txt"
+LD=System/Library/LaunchDaemons
+if [ "${LEAN:-0}" = 1 ]; then
+	while read -r f; do
+		case "$f" in ''|'#'*) continue;; esac
+		TRIM+=("$LD/$f")
+	done < "$LEAN_LIST"
+fi
+
 restore() {
 	for d in "${TRIM[@]}"; do
 		[ -e "$ASIDE/$d" ] && { mkdir -p "$(dirname "$SR/$d")"; mv "$ASIDE/$d" "$SR/$d"; }

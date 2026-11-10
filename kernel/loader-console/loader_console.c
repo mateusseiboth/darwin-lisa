@@ -30,9 +30,12 @@
  * small matters because this buffer is static __DATA (__common/__bss) that the
  * Phase 3 prelink must fit inside the kernelcache's __DATA slot before the
  * retained kexts. The old 1.5 MB ring overflowed that slot by ~1.75 MB. */
-#define LOADER_LOG_SIZE (256 * 1024)
-#define LOADER_LOG_HEAD (64 * 1024)
-#define LOADER_LOG_RING (192 * 1024)
+/* darwin-lisa (display work): the Phase 3 prelink is not the boot path any more (Caminho B), and a run to the window
+ * server writes megabytes (launchd logs every service to the console in the restore environment): 1.5 MB again, the
+ * size the loader has always taken. */
+#define LOADER_LOG_SIZE (1536 * 1024)
+#define LOADER_LOG_HEAD (256 * 1024)
+#define LOADER_LOG_RING (1280 * 1024)
 
 /* Also the target of the console tee; char buffer the loader reads. */
 char     loader_log[LOADER_LOG_SIZE];
@@ -68,6 +71,70 @@ loader_log_put_locked(char c)
 	}
 }
 
+/*
+ * darwin-lisa: in the restore environment launchd writes every state change of every service to the console
+ * ("com.apple.xpc.launchd|... <Notice>: service state: spawned"), megabytes of it, and the log the loader hands out
+ * is then all launchd and none of the kernel's later lines. Those lines are held back here, a line at a time:
+ * a launchd <Notice> line goes to the log only when it says something exited or crashed; everything else as it was.
+ */
+static char     loader_line[512];
+static uint32_t loader_line_len;
+static const char loader_launchd[] = "com.apple.xpc.launchd|";
+
+static bool
+loader_line_has(const char *what)
+{
+	size_t n = strlen(what);
+
+	for (uint32_t i = 0; i + n <= loader_line_len; i++) {
+		if (memcmp(loader_line + i, what, n) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+/* with the lock held */
+static void
+loader_line_putc_locked(char c)
+{
+	bool launchd = loader_line_len >= sizeof(loader_launchd) - 1 &&
+	    memcmp(loader_line, loader_launchd, sizeof(loader_launchd) - 1) == 0;
+
+	if (loader_line_len < sizeof(loader_launchd) - 1) {
+		/* not yet known whose the line is: hold it while it may still be launchd's */
+		if (c == loader_launchd[loader_line_len]) {
+			loader_line[loader_line_len++] = c;
+			return;
+		}
+		for (uint32_t i = 0; i < loader_line_len; i++) {
+			loader_log_put_locked(loader_line[i]);
+		}
+		loader_line_len = 0;
+		loader_log_put_locked(c);
+		return;
+	}
+	if (!launchd) {
+		loader_log_put_locked(c);
+		return;
+	}
+	if (c != '\n' && loader_line_len < sizeof(loader_line)) {
+		loader_line[loader_line_len++] = c;
+		return;
+	}
+	if (!loader_line_has("<Notice>") || loader_line_has("exited") || loader_line_has("crash") ||
+	    loader_line_has("darwinlisa")) {
+		for (uint32_t i = 0; i < loader_line_len; i++) {
+			loader_log_put_locked(loader_line[i]);
+		}
+		loader_log_put_locked('\n');
+	}
+	loader_line_len = 0;
+	if (c != '\n') {
+		loader_log_put_locked(c);
+	}
+}
+
 void
 loader_log_putc(char c)
 {
@@ -82,7 +149,7 @@ loader_log_putc(char c)
 	for (uint32_t tries = 0; !locked && tries < 10000000; tries++) {
 		locked = os_atomic_cmpxchg(&loader_log_lock, 0, 1, acquire);
 	}
-	loader_log_put_locked(c);
+	loader_line_putc_locked(c);
 	if (locked) {
 		os_atomic_store(&loader_log_lock, 0, release);
 	}
@@ -123,7 +190,9 @@ loader_log_linearize(void)
 uint64_t loader_stub_slot[4] __attribute__((used, aligned(8))) = { 0x545352444C554E58ULL, 0, 0, 0 };
 
 /* The loader reads these (magic "XNULIVE!") while the kernel runs. */
-static uint64_t loader_recording[3];
+uint64_t loader_recording[3];   /* darwin-lisa: MiniIOMobileFramebuffer.cpp fills it (rec_secs=N) */
+/* Set by MiniIOMobileFramebuffer.cpp at its first frame: vcputc() then only tees into the loader log, it no longer draws. */
+int dlisa_vc_quiet;
 static uint64_t loader_sound[3];
 
 struct loader_live {

@@ -933,6 +933,57 @@ out:
 	return error;
 }
 
+/*
+ * darwin-lisa: renameatx_np()'s RENAME_EXCL and RENAME_SWAP (VNOP_RENAMEX; without it VFS answers ENOTSUP, and
+ * Foundation's atomic file writes use them). EXCL is a rename that refuses an existing target; SWAP exchanges the
+ * names of two files (not directories, which nothing here asks for).
+ */
+static int
+ramfs_renamex(struct vnop_renamex_args *ap)
+{
+	struct vnop_rename_args r = {
+		.a_desc = &vnop_rename_desc, .a_fdvp = ap->a_fdvp, .a_fvp = ap->a_fvp, .a_fcnp = ap->a_fcnp,
+		.a_tdvp = ap->a_tdvp, .a_tvp = ap->a_tvp, .a_tcnp = ap->a_tcnp, .a_context = ap->a_context,
+	};
+	vfs_rename_flags_t flags = ap->a_flags & ~VFS_RENAME_SECLUDE;
+
+	if (flags == 0) {
+		return ramfs_rename(&r);
+	}
+	if (flags == VFS_RENAME_EXCL) {
+		return ap->a_tvp != NULLVP ? EEXIST : ramfs_rename(&r);
+	}
+	if (flags == VFS_RENAME_SWAP) {
+		struct ramfs_node *fdir = RAMFS_NODE(ap->a_fdvp), *tdir = RAMFS_NODE(ap->a_tdvp);
+		struct ramfs_node *fnode = RAMFS_NODE(ap->a_fvp), *tnode;
+		struct ramfs_mount *rm = fnode->rn_mount;
+		struct ramfs_dirent *fde, *tde;
+		int error = 0;
+
+		if (ap->a_tvp == NULLVP) {
+			return ENOENT;
+		}
+		tnode = RAMFS_NODE(ap->a_tvp);
+		if (fnode->rn_type == VDIR || tnode->rn_type == VDIR) {
+			return ENOTSUP;
+		}
+		lck_mtx_lock(&rm->rm_lock);
+		fde = ramfs_dir_find(fdir, ap->a_fcnp->cn_nameptr, (size_t)ap->a_fcnp->cn_namelen);
+		tde = ramfs_dir_find(tdir, ap->a_tcnp->cn_nameptr, (size_t)ap->a_tcnp->cn_namelen);
+		if (fde == NULL || tde == NULL || fde->rd_node != fnode || tde->rd_node != tnode) {
+			error = ENOENT;
+		} else {
+			fde->rd_node = tnode;
+			tde->rd_node = fnode;
+			ramfs_touch(fdir, true);
+			ramfs_touch(tdir, true);
+		}
+		lck_mtx_unlock(&rm->rm_lock);
+		return error;
+	}
+	return ENOTSUP;
+}
+
 static int
 ramfs_open(__unused struct vnop_open_args *ap)
 {
@@ -1287,8 +1338,15 @@ ramfs_readlink(struct vnop_readlink_args *ap)
 }
 
 static int
-ramfs_ioctl(__unused struct vnop_ioctl_args *ap)
+ramfs_ioctl(struct vnop_ioctl_args *ap)
 {
+	/*
+	 * darwin-lisa: memory needs no flushing, so the fsync variants succeed. usermanagerd writes its user
+	 * session and persona manifest (/private/var/keybags) with F_BARRIERFSYNC and gives up on ENOTTY.
+	 */
+	if (ap->a_command == F_FULLFSYNC || ap->a_command == F_BARRIERFSYNC) {
+		return 0;
+	}
 	return ENOTTY;
 }
 
@@ -1685,6 +1743,7 @@ const struct vnodeopv_entry_desc ramfs_vnodeop_entries[] = {
 	{ .opve_op = &vnop_remove_desc, .opve_impl = (VOPFUNC)ramfs_remove },
 	{ .opve_op = &vnop_link_desc, .opve_impl = (VOPFUNC)ramfs_link },
 	{ .opve_op = &vnop_rename_desc, .opve_impl = (VOPFUNC)ramfs_rename },
+	{ .opve_op = &vnop_renamex_desc, .opve_impl = (VOPFUNC)ramfs_renamex },
 	{ .opve_op = &vnop_mkdir_desc, .opve_impl = (VOPFUNC)ramfs_mkdir },
 	{ .opve_op = &vnop_rmdir_desc, .opve_impl = (VOPFUNC)ramfs_rmdir },
 	{ .opve_op = &vnop_symlink_desc, .opve_impl = (VOPFUNC)ramfs_symlink },

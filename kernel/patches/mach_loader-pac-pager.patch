@@ -42,14 +42,15 @@
  static load_return_t
  unprotect_dsmos_segment(
  	uint64_t        file_off,
-@@ -2870,6 +2905,18 @@
+@@ -2870,6 +2905,19 @@
  		ret = LOAD_SUCCESS;
  	}
  
 +#if CONFIG_CODE_DECRYPTION
 +	/* darwin-lisa: rewrite arm64e executable pages (strip PAC) on page-in. */
 +	if (ret == LOAD_SUCCESS && (scp->initprot & VM_PROT_EXECUTE) && imgp != NULL &&
-+	    (imgp->ip_origcpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E) {
++	    ((imgp->ip_origcpusubtype & ~CPU_SUBTYPE_MASK) == CPU_SUBTYPE_ARM64E ||
++	    filetype == MH_DYLINKER)) {   /* darwin-lisa: dyld is arm64e even under an arm64 program */
 +		ret = pac_protect_segment(map, vm_start, vm_end - vm_start);
 +		if (ret != LOAD_SUCCESS) {
 +			DEBUG4K_ERROR("pac_protect 0x%llx 0x%llx ret %d\n", (uint64_t)vm_start, (uint64_t)vm_end, ret);

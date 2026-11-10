@@ -49,3 +49,15 @@ the dyld shared cache, and the launchd/dyld boot path does not touch these binar
 unaffected: its decmpfs is zlib, which 7z inflates perfectly — verify.py confirms 0 stragglers there.)
 To finish them later: pull each file's `:com.apple.decmpfs` + `:com.apple.ResourceFork` alternate streams
 with 7z and inflate with an LZVN/LZFSE decmpfs decoder.
+
+## Display work additions (2026-11-10)
+
+- `init/init-26.c`: boot-arg `init_run=PROG[:ARG...][;...]` runs early boot tasks before Apple's launchd (launchd
+  runs as a *Restore environment* because of `rd=md0` and skips them); `usermanagerd --init` is the one needed
+  (`init_run=/usr/libexec/usermanagerd:--init`). It also creates `/private/var/keybags` (where usermanagerd keeps
+  its user session and persona manifest), and `console_open=1` makes `/dev/console` writable to everyone.
+  Never run `keybagd --init` that way: without a system keybag it reboots the phone into recovery.
+- `scripts/mkimage-trim.sh LEAN=1` leaves out the LaunchDaemons listed in `scripts/lean-daemons.txt` (memory).
+- `tools/fbtest.c` + `tools/build-fbtest.sh`: draws through IOSurface/CoreGraphics/IOMobileFramebuffer of iOS 26
+  (`/usr/local/bin/fbtest`). `tools/cmquery.c`: containermanagerd query/console tail diagnostics.
+- See `kernel/drivers/display/README.md` for the whole picture.

@@ -1,12 +1,30 @@
 --- a/osfmk/console/video_console.c	2026-11-09 13:41:16.570100545 -0400
 +++ b/osfmk/console/video_console.c	2026-11-09 13:41:16.580738046 -0400
-@@ -1247,6 +1247,10 @@
+@@ -1229,6 +1229,13 @@
+ void
+ vcputc_options(char c, __unused bool poll)
+ {
++	{	/* darwin-lisa: the framebuffer shows a picture (MiniIOMobileFramebuffer): text goes to the log only */
++		extern int dlisa_vc_quiet;
++
++		if (dlisa_vc_quiet) {
++			return;
++		}
++	}
+ 	if (gc_initialized && gc_enabled) {
+ 		VCPUTC_LOCK_LOCK();
+ 		if (gc_enabled) {
+@@ -1247,6 +1254,14 @@
  void
  vcputc(char c)
  {
 +	{	/* darwin-lisa: tee the video console into the loader log for live capture */
 +		extern void loader_log_putc(char lc);
++		extern int dlisa_vc_quiet;
 +		loader_log_putc(c);
++		if (dlisa_vc_quiet) {
++			return;         /* the framebuffer shows a picture now: the text goes to the log only */
++		}
 +	}
  	vcputc_options(c, false);
  }

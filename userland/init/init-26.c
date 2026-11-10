@@ -188,7 +188,149 @@ mountVar(void)
 			close(fd);
 		}
 	}
+	/*
+	 * /private/var/keybags is made by the restore on a real device (systembag.kb lives there) and is not in the
+	 * rootfs listing the skeleton comes from. usermanagerd --init writes its user session and persona manifest
+	 * there (usersession.kb, persona.kb); without the directory it cannot, and the daemon aborts at every start.
+	 */
+	if (mkdir("/private/var/keybags", 0755) != 0 || chown("/private/var/keybags", 0, 0) != 0) {
+		printf("init26: VAR /private/var/keybags: %s\n", strerror(errno));
+		bad++;
+	}
 	printf("init26: VAR /private/var is ramfs: %d entries made, %d failed\n", made, bad);
+}
+
+/*
+ * The early boot tasks launchd skips here. launchd reads "rd=md0" in kern.bootargs and runs as a Restore
+ * environment ("Restore environment starting."), and in it every boot task that is not PerformInRestore is
+ * skipped -- `keybagd --init` and `usermanagerd --init` among them. Without the second, usermanagerd has no
+ * persona manifest and aborts at every start ("Daemon failed to load persona manifest."), runningboardd waits
+ * on it forever (UserManagement personaAttributesForPersonaType:), and backboardd and SpringBoard wait on
+ * runningboardd: the window server never starts.
+ *
+ * Boot-arg init_run=PROG[:ARG...][;PROG[:ARG...]]...: run these, in order, before Apple's launchd, the way
+ * launchd runs a boot task (XPC_NULL_BOOTSTRAP, XPC_SERVICES_UNAVAILABLE), each for init_run_secs seconds at
+ * most (default 20; then it is killed). Nothing is run without the boot-arg. OS_ACTIVITY_DT_MODE makes their
+ * os_log messages go to stderr too, which is the console here.
+ */
+static void
+runOne(char *spec, unsigned secs)
+{
+	char *argv[8];
+	int argc = 0;
+	char *at = spec;
+	char *envp[] = {
+		"DYLD_SHARED_CACHE_DIR=/System/Cryptexes/OS/System/Library/Caches/com.apple.dyld",
+		"XPC_NULL_BOOTSTRAP=1", "XPC_SERVICES_UNAVAILABLE=1", "PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+		"OS_ACTIVITY_DT_MODE=YES", NULL
+	};
+	int status = 0;
+	pid_t pid, done = 0;
+
+	while (at != NULL && *at != 0 && argc < 7) {
+		char *colon = strchr(at, ':');
+
+		argv[argc++] = at;
+		if (colon == NULL) {
+			break;
+		}
+		*colon = 0;
+		at = colon + 1;
+	}
+	argv[argc] = NULL;
+	if (argc == 0) {
+		return;
+	}
+	pid = fork();
+	if (pid == 0) {
+		execve(argv[0], argv, envp);
+		printf("init26: RUN cannot exec %s: %s\n", argv[0], strerror(errno));
+		_exit(127);
+	}
+	if (pid < 0) {
+		printf("init26: RUN fork for %s: %s\n", argv[0], strerror(errno));
+		return;
+	}
+	printf("init26: RUN %s (pid %d, %d args)\n", argv[0], pid, argc);
+	for (unsigned t = 0; t < secs * 10 && done == 0; t++) {
+		done = wait4(pid, &status, 1 /* WNOHANG */, NULL);
+		if (done == 0) {
+			usleep(100000);
+		}
+	}
+	if (done == 0) {
+		mini_syscall(SYS_kill, pid, 9, 0, 0, 0, 0);
+		wait4(pid, &status, 0, NULL);
+		printf("init26: RUN %s: still running after %u s, killed\n", argv[0], secs);
+		return;
+	}
+	printf("init26: RUN %s: exit status 0x%x\n", argv[0], status);
+}
+
+static char *
+findArg(char *hay, const char *needle)
+{
+	size_t n = strlen(needle);
+
+	for (; *hay != 0; hay++) {
+		if (strncmp(hay, needle, n) == 0) {
+			return hay;
+		}
+	}
+	return NULL;
+}
+
+/* boot-arg console_open=1: anybody may write to /dev/console (diagnostic jobs that run as mobile) */
+static int
+findConsoleArg(void)
+{
+	static char args[1024];
+	size_t len = sizeof(args) - 1;
+
+	if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+		return 0;
+	}
+	args[len] = 0;
+	return findArg(args, "console_open=1") != NULL;
+}
+
+static void
+runEarlyTasks(void)
+{
+	static char args[1024];
+	size_t len = sizeof(args) - 1;
+	char *spec, *end;
+	unsigned secs = 20;
+
+	if (sysctlbyname("kern.bootargs", args, &len, NULL, 0) != 0) {
+		return;
+	}
+	args[len] = 0;
+	spec = findArg(args, "init_run_secs=");
+	if (spec != NULL) {
+		secs = 0;
+		for (spec += strlen("init_run_secs="); *spec >= '0' && *spec <= '9'; spec++) {
+			secs = secs * 10 + (unsigned)(*spec - '0');
+		}
+	}
+	spec = findArg(args, "init_run=");
+	if (spec == NULL) {
+		return;
+	}
+	spec += strlen("init_run=");
+	end = strchr(spec, ' ');
+	if (end != NULL) {
+		*end = 0;
+	}
+	while (spec != NULL && *spec != 0) {
+		char *semi = strchr(spec, ';');
+
+		if (semi != NULL) {
+			*semi = 0;
+		}
+		runOne(spec, secs);
+		spec = semi ? semi + 1 : NULL;
+	}
 }
 
 static void
@@ -245,6 +387,11 @@ main(int argc, char **argv, char **envp)
 	cacheProbe();
 	memProbe();
 	mountVar();
+	/* darwin-lisa: diagnostics jobs that run as mobile (com.darwinlisa.*) write to the console, which is the log */
+	if (findConsoleArg()) {
+		chmod("/dev/console", 0666);
+	}
+	runEarlyTasks();
 
 	handOff(envp);
 

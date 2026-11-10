@@ -13,7 +13,7 @@ docker run --rm -v $M:/work darwin-lisa/unixnu-toolchain:latest sh -c '
 	S=/work/research/hackios-xnu-kernel/xnu-deps/theos/sdks-git/iPhoneOS16.5.sdk
 	clang -target arm64-apple-ios16.0 -isysroot $S -O1 -Wall -dynamiclib \
 	    --ld-path=/work/research/hackios-xnu-kernel/xnu-deps/host/bin/ld64-lld \
-	    -install_name /usr/local/lib/libdlisa.dylib -lobjc \
+	    -install_name /usr/local/lib/libdlisa.dylib -lobjc -framework CoreFoundation \
 	    -Wl,-fixup_chains -Wl,-adhoc_codesign -o /tmp/libdlisa.dylib /work/darwin-lisa/userland/inject/dlisa-inject.c >&2 &&
 	cat /tmp/libdlisa.dylib' > /tmp/libdlisa.$$
 mkdir -p $SR/usr/local/lib

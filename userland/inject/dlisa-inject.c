@@ -5,6 +5,10 @@
  * (sysctl kern.exec_inject, set by init26; kernel/execaids). What is done depends on the program; each fix is
  * one entry of FIXES below.
  *
+ *   backboardd
+ *       The HID event server. With no Apple multitouch driver it has no touch screen: a virtual HID service made
+ *       from inside it turns the samples of /dev/hakios-touch into digitizer events (HakiOS 16.5's way).
+ *
  *   containermanagerd (both of them)
  *       It asks the user manager for the "personas" of the user. This port has no data volume, no keybag and
  *       no Secure Enclave, so the persona usermanagerd --init writes is not one containermanagerd can resolve a
@@ -15,9 +19,14 @@
  *
  * Only Objective-C runtime calls: nothing here depends on addresses inside the dyld shared cache.
  */
+#include <CoreFoundation/CoreFoundation.h>
+#include <dispatch/dispatch.h>
+#include <dlfcn.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <pthread.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -212,6 +221,420 @@ fixLaunchServices(void)
 	probeUserContainer(NULL);
 }
 
+/* ---- backboardd: the touch screen ----------------------------------------------------------------------- */
+
+/*
+ * backboardd is the HID event server, and without Apple's multitouch driver it has no touch screen. We give it one,
+ * as HakiOS did on 16.5 (userland/src/inject.c): a "virtual" HID service, created from inside backboardd, that turns
+ * the samples of /dev/hakios-touch (the Goodix driver, or the kernel's touch_synth test hook) into the digitizer
+ * events Apple's driver would have sent. The IOHID functions are private (no SDK header or stub), so they are looked
+ * up at run time; all of them are still exported by iOS 26's IOKit.
+ */
+/* sys/hakios.input.h (kernel/drivers/sys): one sample of /dev/hakios-touch */
+struct hakiosTouch {
+	uint64_t time;                  /* mach_absolute_time() when the kernel took it */
+	uint32_t type;                  /* 1 down, 2 move, 3 up, 4/5 a button down/up */
+	uint32_t finger;
+	uint32_t x, y;                  /* 0..65535, 0 = left/top */
+};
+#define TOUCH_DEVICE    "/dev/hakios-touch"
+#define TOUCH_DOWN      1
+#define TOUCH_MOVE      2
+#define TOUCH_UP        3
+#define BUTTON_DOWN     4
+#define BUTTON_LOCK     1
+#define BUTTON_VOLUME_UP 2
+#define BUTTON_VOLUME_DOWN 3
+#define BUTTON_HOME     4
+
+typedef struct __IOHIDEvent *IOHIDEventRef;
+typedef struct __IOHIDEventSystemClient *IOHIDEventSystemClientRef;
+typedef struct __IOHIDServiceClient *IOHIDServiceClientRef;
+
+/* IOHIDVirtualServiceClientCallbacksV2 */
+struct virtualServiceCallbacks {
+	uint64_t version;               /* 2 */
+	void (*notification)(void *target, void *refcon, IOHIDServiceClientRef service, uint32_t type, CFDictionaryRef property);
+	Boolean (*setProperty)(void *target, void *refcon, IOHIDServiceClientRef service, CFStringRef key, CFTypeRef value);
+	CFTypeRef (*copyProperty)(void *target, void *refcon, IOHIDServiceClientRef service, CFStringRef key);
+	IOHIDEventRef (*copyEvent)(void *target, void *refcon, IOHIDServiceClientRef service, uint32_t type, IOHIDEventRef matching,
+	    uint32_t options);
+	int (*setOutputEvent)(void *target, void *refcon, IOHIDServiceClientRef service, IOHIDEventRef event);
+	CFTypeRef (*copyMatchingEvent)(void *target, void *refcon, IOHIDServiceClientRef service, CFDictionaryRef matching);
+};
+
+static struct {
+	IOHIDEventSystemClientRef (*clientCreateWithType)(CFAllocatorRef, int, CFDictionaryRef);
+	void (*clientScheduleWithDispatchQueue)(IOHIDEventSystemClientRef, dispatch_queue_t);
+	IOHIDServiceClientRef (*virtualCreate)(IOHIDEventSystemClientRef, CFDictionaryRef, const struct virtualServiceCallbacks *,
+	    void *, void *);
+	Boolean (*virtualRemove)(IOHIDServiceClientRef);
+	Boolean (*virtualDispatch)(IOHIDServiceClientRef, IOHIDEventRef);
+	IOHIDEventRef (*createDigitizer)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, double, double,
+	    double, double, double, double, Boolean, Boolean, uint32_t);
+	IOHIDEventRef (*createFinger)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, uint32_t, double, double, double, double, double,
+	    Boolean, Boolean, uint32_t);
+	IOHIDEventRef (*createKeyboard)(CFAllocatorRef, uint64_t, uint32_t, uint32_t, Boolean, uint32_t);
+	void (*appendEvent)(IOHIDEventRef, IOHIDEventRef, uint32_t);
+	void (*setInteger)(IOHIDEventRef, uint32_t, CFIndex);
+} hid;
+
+static bool
+findHidFunctions(void)
+{
+	static const struct {
+		const char *name;
+		void **slot;
+	} wanted[] = {
+		{ "IOHIDEventSystemClientCreateWithType", (void **)&hid.clientCreateWithType },
+		{ "IOHIDEventSystemClientScheduleWithDispatchQueue", (void **)&hid.clientScheduleWithDispatchQueue },
+		{ "IOHIDVirtualServiceClientCreateWithCallbacks", (void **)&hid.virtualCreate },
+		{ "IOHIDVirtualServiceClientRemove", (void **)&hid.virtualRemove },
+		{ "IOHIDVirtualServiceClientDispatchEvent", (void **)&hid.virtualDispatch },
+		{ "IOHIDEventCreateDigitizerEvent", (void **)&hid.createDigitizer },
+		{ "IOHIDEventCreateDigitizerFingerEvent", (void **)&hid.createFinger },
+		{ "IOHIDEventCreateKeyboardEvent", (void **)&hid.createKeyboard },
+		{ "IOHIDEventAppendEvent", (void **)&hid.appendEvent },
+		{ "IOHIDEventSetIntegerValue", (void **)&hid.setInteger },
+	};
+	void *iokit = dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_LAZY);
+
+	for (size_t i = 0; i < sizeof(wanted) / sizeof(wanted[0]); i++) {
+		*wanted[i].slot = dlsym(iokit != NULL ? iokit : RTLD_DEFAULT, wanted[i].name);
+		if (*wanted[i].slot == NULL) {
+			say("dlisa[%s]: input: %s not found\n", getprogname(), wanted[i].name);
+			return false;
+		}
+	}
+	return true;
+}
+
+#define HID_CLIENT_SIMPLE               4       /* a client that only sends */
+#define HID_CLIENT_RATE_CONTROLLED      3       /* what IOHIDEventSystemClientCreate() makes */
+#define HID_PAGE_DIGITIZER              0x0d
+#define HID_USAGE_TOUCH_SCREEN          0x04
+#define HID_PAGE_CONSUMER               0x0c
+#define HID_USAGE_CONSUMER_CONTROL      0x01
+#define HID_USAGE_POWER                 0x30
+#define HID_USAGE_MENU                  0x40
+#define HID_USAGE_VOLUME_UP             0xe9
+#define HID_USAGE_VOLUME_DOWN           0xea
+#define DIGITIZER_HAND                  3       /* kIOHIDDigitizerTransducerTypeHand */
+#define DIGITIZER_RANGE                 0x1     /* event mask: what has changed */
+#define DIGITIZER_TOUCH                 0x2
+#define DIGITIZER_POSITION              0x4
+#define DIGITIZER_FROM_EDGE_TIP         0x800   /* this finger came in over an edge of the screen */
+#define FIELD_IS_BUILT_IN               0x4
+#define FIELD_DIGITIZER_DISPLAY_INTEGRATED 0xb0019
+#define TOUCH_MODE_WAKE                 0xfe    /* "TouchDetectionMode": the display is off, a tap is to wake it */
+
+#define MAX_FINGERS     10
+
+/*
+ * A finger that lands this close to an edge (a fraction of the width or height) came in over that edge. Apple's
+ * controller tells that from the contact's shape; UIKit's screen-edge gestures (the swipe up from the home bar that
+ * opens the phone) take no touch that is not so marked.
+ */
+#define EDGE_SIDE       (16.0 / 375)
+#define EDGE_TOP        (16.0 / 812)
+#define EDGE_BOTTOM     (34.0 / 812)
+
+static struct {
+	bool touching, edge;
+	double x, y;
+} fingers[MAX_FINGERS];
+
+static volatile int touchMode;
+
+struct hidService {
+	CFMutableDictionaryRef properties;
+	volatile bool opened;
+};
+
+static CFNumberRef
+cfNumber(int value)
+{
+	return CFNumberCreate(NULL, kCFNumberIntType, &value);
+}
+
+static const char *
+cfText(CFTypeRef value, char *buffer, size_t size)
+{
+	CFStringRef description = value != NULL ? CFCopyDescription(value) : NULL;
+
+	snprintf(buffer, size, "?");
+	if (description != NULL) {
+		CFStringGetCString(description, buffer, (CFIndex)size, kCFStringEncodingUTF8);
+		CFRelease(description);
+	}
+	return buffer;
+}
+
+static CFTypeRef
+serviceCopyProperty(__unused void *target, void *refcon, __unused IOHIDServiceClientRef service, CFStringRef key)
+{
+	static CFMutableSetRef asked;
+	CFTypeRef value = CFDictionaryGetValue(((struct hidService *)refcon)->properties, key);
+
+	if (asked == NULL) {
+		asked = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+	}
+	if (value == NULL && !CFSetContainsValue(asked, key) && CFSetGetCount(asked) < 40) {
+		char name[96] = "?";
+
+		CFSetAddValue(asked, key);
+		CFStringGetCString(key, name, sizeof(name), kCFStringEncodingUTF8);
+		say("dlisa[%s]: input: the event server asks for \"%s\", which we do not have\n", getprogname(), name);
+	}
+	return value != NULL ? CFRetain(value) : NULL;
+}
+
+static Boolean
+serviceSetProperty(__unused void *target, void *refcon, __unused IOHIDServiceClientRef service, CFStringRef key, CFTypeRef value)
+{
+	static CFMutableSetRef told;
+	char name[96] = "?", text[160];
+
+	if (key == NULL) {
+		return true;
+	}
+	/* the last thing the event server does when it opens a service; see makeService() */
+	if (value != NULL && CFEqual(key, CFSTR("DeviceOpenedByEventSystem")) && CFGetTypeID(value) == CFBooleanGetTypeID() &&
+	    CFBooleanGetValue(value)) {
+		((struct hidService *)refcon)->opened = true;
+	}
+	if (value != NULL && CFEqual(key, CFSTR("TouchDetectionMode")) && CFGetTypeID(value) == CFNumberGetTypeID()) {
+		int mode = 0;
+
+		CFNumberGetValue(value, kCFNumberIntType, &mode);
+		if (mode != touchMode) {
+			say("dlisa[%s]: input: touch detection mode %#x\n", getprogname(), mode);
+		}
+		touchMode = mode;
+	}
+	if (told == NULL) {
+		told = CFSetCreateMutable(NULL, 0, &kCFTypeSetCallBacks);
+	}
+	if (!CFSetContainsValue(told, key) && CFSetGetCount(told) < 24) {
+		CFSetAddValue(told, key);
+		CFStringGetCString(key, name, sizeof(name), kCFStringEncodingUTF8);
+		say("dlisa[%s]: input: the event server sets \"%s\" = %s\n", getprogname(), name, cfText(value, text, sizeof(text)));
+	}
+	return true;
+}
+
+static void
+serviceNotification(__unused void *target, __unused void *refcon, __unused IOHIDServiceClientRef service, __unused uint32_t type,
+    __unused CFDictionaryRef property)
+{
+}
+
+static const struct virtualServiceCallbacks serviceCallbacks = {
+	.version = 2, .notification = serviceNotification, .setProperty = serviceSetProperty, .copyProperty = serviceCopyProperty,
+};
+
+/*
+ * A built-in HID service of ours inside the event server (this very program, still starting). A client that reaches
+ * it at the wrong moment is left with a service the server never opens ("still waiting for a main screen
+ * digitizer"), and when that moment comes depends on the machine's speed, so the service is made again until the
+ * server has opened it.
+ */
+static IOHIDServiceClientRef
+makeService(IOHIDEventSystemClientRef client, const char *product, int page, int usage, bool display)
+{
+	struct hidService *made = calloc(1, sizeof(*made));
+	IOHIDServiceClientRef service = NULL;
+	CFMutableDictionaryRef properties = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	CFMutableDictionaryRef pair = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
+	    &kCFTypeDictionaryValueCallBacks);
+	CFStringRef name = CFStringCreateWithCString(NULL, product, kCFStringEncodingUTF8);
+	CFNumberRef pageNumber = cfNumber(page), usageNumber = cfNumber(usage), zero = cfNumber(0);
+	CFArrayRef pairs;
+
+	CFDictionarySetValue(pair, CFSTR("DeviceUsagePage"), pageNumber);
+	CFDictionarySetValue(pair, CFSTR("DeviceUsage"), usageNumber);
+	pairs = CFArrayCreate(NULL, (const void **)&pair, 1, &kCFTypeArrayCallBacks);
+	CFDictionarySetValue(properties, CFSTR("PrimaryUsagePage"), pageNumber);
+	CFDictionarySetValue(properties, CFSTR("PrimaryUsage"), usageNumber);
+	CFDictionarySetValue(properties, CFSTR("DeviceUsagePage"), pageNumber);
+	CFDictionarySetValue(properties, CFSTR("DeviceUsage"), usageNumber);
+	CFDictionarySetValue(properties, CFSTR("DeviceUsagePairs"), pairs);
+	CFDictionarySetValue(properties, CFSTR("Built-In"), kCFBooleanTrue);
+	CFDictionarySetValue(properties, CFSTR("Transport"), CFSTR("SPI"));
+	CFDictionarySetValue(properties, CFSTR("Manufacturer"), CFSTR("darwin-lisa"));
+	CFDictionarySetValue(properties, CFSTR("Product"), name);
+	CFDictionarySetValue(properties, CFSTR("VendorID"), zero);
+	CFDictionarySetValue(properties, CFSTR("ProductID"), zero);
+	if (display) {
+		CFDictionarySetValue(properties, CFSTR("DisplayIntegrated"), kCFBooleanTrue);
+	}
+	made->properties = properties;  /* stays: serviceCopyProperty() answers from it */
+	for (int attempt = 1; attempt <= 20; attempt++) {
+		made->opened = false;
+		service = hid.virtualCreate(client, properties, &serviceCallbacks, NULL, made);
+		if (service == NULL) {
+			break;
+		}
+		for (int tenths = 0; tenths < 20 && !made->opened; tenths++) {
+			usleep(100000);
+		}
+		if (made->opened) {
+			say("dlisa[%s]: input: \"%s\" opened by the event server (attempt %d)\n", getprogname(), product, attempt);
+			break;
+		}
+		say("dlisa[%s]: input: the event server has not opened \"%s\" (attempt %d): making it again\n", getprogname(), product,
+		    attempt);
+		hid.virtualRemove(service);
+		CFRelease(service);
+		service = NULL;
+	}
+	return service;
+}
+
+/* One frame of the touch screen: the hand, and under it every finger that is down or has just lifted. */
+static void
+sendTouch(IOHIDServiceClientRef screen, const struct hakiosTouch *t)
+{
+	uint32_t change = t->type == TOUCH_MOVE ? DIGITIZER_POSITION : DIGITIZER_RANGE | DIGITIZER_TOUCH;
+	IOHIDEventRef hand, finger;
+	bool any = false;
+	unsigned f = t->finger;
+
+	if (f >= MAX_FINGERS || (t->type != TOUCH_DOWN && !fingers[f].touching)) {
+		return;
+	}
+	fingers[f].touching = t->type != TOUCH_UP;
+	fingers[f].x = t->x / 65535.0;
+	fingers[f].y = t->y / 65535.0;
+	if (t->type == TOUCH_DOWN) {
+		fingers[f].edge = fingers[f].x < EDGE_SIDE || fingers[f].x > 1 - EDGE_SIDE || fingers[f].y < EDGE_TOP ||
+		    fingers[f].y > 1 - EDGE_BOTTOM;
+	}
+	for (unsigned i = 0; i < MAX_FINGERS; i++) {
+		any |= fingers[i].touching;
+	}
+	hand = hid.createDigitizer(NULL, t->time, DIGITIZER_HAND, 0, 0, change & ~DIGITIZER_RANGE, 0, fingers[f].x, fingers[f].y, 0, 0,
+	    0, 0, any, any, 0);
+	hid.setInteger(hand, FIELD_DIGITIZER_DISPLAY_INTEGRATED, 1);
+	hid.setInteger(hand, FIELD_IS_BUILT_IN, 1);
+	for (unsigned i = 0; i < MAX_FINGERS; i++) {
+		if (!fingers[i].touching && i != f) {
+			continue;
+		}
+		finger = hid.createFinger(NULL, t->time, i + 1, i + 2,
+		    (i == f ? change : 0) | (fingers[i].edge ? DIGITIZER_FROM_EDGE_TIP : 0), fingers[i].x, fingers[i].y, 0,
+		    fingers[i].touching ? 1.0 : 0.0, 0, fingers[i].touching, fingers[i].touching, 0);
+		hid.setInteger(finger, FIELD_DIGITIZER_DISPLAY_INTEGRATED, 1);
+		hid.appendEvent(hand, finger, 0);
+		CFRelease(finger);
+	}
+	hid.virtualDispatch(screen, hand);
+	CFRelease(hand);
+}
+
+static void
+sendButton(IOHIDServiceClientRef buttons, const struct hakiosTouch *t)
+{
+	static const uint32_t usages[] = { [BUTTON_LOCK] = HID_USAGE_POWER, [BUTTON_HOME] = HID_USAGE_MENU,
+		                           [BUTTON_VOLUME_UP] = HID_USAGE_VOLUME_UP, [BUTTON_VOLUME_DOWN] = HID_USAGE_VOLUME_DOWN };
+	IOHIDEventRef event;
+
+	if (t->finger >= sizeof(usages) / sizeof(usages[0]) || usages[t->finger] == 0) {
+		return;
+	}
+	event = hid.createKeyboard(NULL, t->time, HID_PAGE_CONSUMER, usages[t->finger], t->type == BUTTON_DOWN, 0);
+	hid.setInteger(event, FIELD_IS_BUILT_IN, 1);
+	hid.virtualDispatch(buttons, event);
+	CFRelease(event);
+}
+
+/* The display is off and a tap is to wake it: the lock button wakes it; the rest of that touch is kept back. */
+static bool
+isWakingTap(IOHIDServiceClientRef buttons, const struct hakiosTouch *t, unsigned *waking)
+{
+	struct hakiosTouch press = { .time = t->time, .type = BUTTON_DOWN, .finger = BUTTON_LOCK };
+	unsigned bit = 1u << (t->finger & 31);
+
+	if (*waking & bit) {
+		*waking &= t->type == TOUCH_UP ? ~bit : ~0u;
+		return true;
+	}
+	if (t->type != TOUCH_DOWN || (touchMode & 0xff) != TOUCH_MODE_WAKE || buttons == NULL) {
+		return false;
+	}
+	sendButton(buttons, &press);
+	press.type = BUTTON_DOWN + 1;
+	sendButton(buttons, &press);
+	*waking |= bit;
+	return true;
+}
+
+static void *
+inputThread(__unused void *argument)
+{
+	static const int types[] = { HID_CLIENT_SIMPLE, HID_CLIENT_RATE_CONTROLLED };
+	IOHIDEventSystemClientRef client = NULL;
+	IOHIDServiceClientRef screen = NULL, buttons = NULL;
+	struct hakiosTouch t;
+	unsigned count = 0, waking = 0;
+	int device;
+
+	pthread_setname_np("dlisa input");
+	if (!findHidFunctions()) {
+		return NULL;
+	}
+	device = open(TOUCH_DEVICE, O_RDONLY);
+	if (device < 0) {
+		say("dlisa[%s]: input: %s: %s\n", getprogname(), TOUCH_DEVICE, strerror(errno));
+		return NULL;
+	}
+	sleep(3);                       /* let backboardd get as far as starting its event server */
+	for (size_t i = 0; screen == NULL && i < sizeof(types) / sizeof(types[0]); i++) {
+		client = hid.clientCreateWithType(NULL, types[i], NULL);      /* waits until the server (this program) answers */
+		if (client == NULL) {
+			say("dlisa[%s]: input: no HID client of type %d\n", getprogname(), types[i]);
+			continue;
+		}
+		hid.clientScheduleWithDispatchQueue(client, dispatch_queue_create("dlisa.input", NULL));
+		screen = makeService(client, "darwin-lisa touch screen", HID_PAGE_DIGITIZER, HID_USAGE_TOUCH_SCREEN, true);
+	}
+	if (screen != NULL) {
+		buttons = makeService(client, "darwin-lisa buttons", HID_PAGE_CONSUMER, HID_USAGE_CONSUMER_CONTROL, false);
+	}
+	say("dlisa[%s]: input: touch screen service %p, buttons %p\n", getprogname(), (void *)screen, (void *)buttons);
+	if (screen == NULL) {
+		return NULL;
+	}
+	while (read(device, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
+		if (count++ < 64) {
+			say("dlisa[%s]: input: sample %u type %u finger %u at %u %u (mode %#x)\n", getprogname(), count, t.type, t.finger,
+			    t.x, t.y, touchMode);
+		}
+		if (t.type > TOUCH_UP) {
+			if (buttons != NULL) {
+				sendButton(buttons, &t);
+			}
+			continue;
+		}
+		if (!isWakingTap(buttons, &t, &waking)) {
+			sendTouch(screen, &t);
+		}
+	}
+	say("dlisa[%s]: input: %s: %s\n", getprogname(), TOUCH_DEVICE, strerror(errno));
+	return NULL;
+}
+
+static void
+startTouchScreen(void)
+{
+	pthread_t thread;
+
+	if (pthread_create(&thread, NULL, inputThread, NULL) == 0) {
+		pthread_detach(thread);
+	}
+}
+
 /* ---- which program gets which fix ------------------------------------------------------------------ */
 
 static const struct {
@@ -221,6 +644,7 @@ static const struct {
 	{ "containermanagerd", fixContainerManager },
 	{ "containermanagerd_system", fixContainerManager },
 	{ "lsd", fixLaunchServices },
+	{ "backboardd", startTouchScreen },
 };
 
 /*

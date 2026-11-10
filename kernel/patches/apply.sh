@@ -33,4 +33,13 @@ for p in sleh-pac-emulate conf-files-pac machdep-grade-arm64e mach_loader-pac-pa
 	fi
 done
 
+# 3. the boot framebuffer mapped write-combined on BCM2837 too, as HakiOS (kernel/drivers/gpu/fb-wcomb.patch):
+#    as Device memory MiniIOMobileFramebuffer took ~78 ms a frame and DC ZVA (bzero) faulted on the panel.
+wcomb=$here/../drivers/gpu/fb-wcomb.patch
+if patch -d "$tree" -p1 --forward --reverse --dry-run <"$wcomb" >/dev/null 2>&1; then
+	echo "already applied: fb-wcomb"
+else
+	patch -d "$tree" -p1 --forward <"$wcomb"
+fi
+
 echo "darwin-lisa kernel emulation patches applied to $tree"

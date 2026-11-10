@@ -122,3 +122,44 @@ The lisa postmarketOS rootfs has the working WCN6750 firmware and is the easiest
 - Board data: `lib/firmware/ath11k/WCN6750/hw1.0/board-2.bin.zst` -> `fw-wifi/board-2.bin`.
 - Regulatory: ath11k `regdb.bin` (same db across WCN parts) -> `fw-wifi/regdb.bin`.
 Blobs are proprietary + device-local, so they live in `fw-wifi/` (not committed), like `fw-wifi/mac`.
+
+## iOS 26 root: where the firmware goes (2026-11-10)
+
+There is no small `root.apfs` any more: the kernel boots the big resident root as md0, and `hakios_image_file("fw",
+name)` (hakios.image.c) parses md1, then md0, itself and opens `/fw/<name>` in any volume (compressed files are
+inflated into a kernel buffer, up to 256 MB a file, 64 files). So the firmware lives in the root image:
+
+- `userland-26/out/sysroot-26/fw/`: `wpss.mdt`, `wpss.b02`..`wpss.b07` (from `fw-wifi/`, split from pmOS's
+  `wpss.mbn` by `wpss-unsquash.py`), `regdb_xiaomi.bin` (= pmOS `regdb.bin`).
+- `bd_m20gl.elf` (the board data) is NOT there yet: pmOS's `board-2.bin` is a multi-board container, not lisa's own
+  ELF. ath11k asks for it at step 15 onwards; extract lisa's entry from board-2.bin or take
+  `/vendor/firmware_mnt/image/qca6750/bd_m20gl.elf` from Android.
+- Rebuild the image: `cd ~/Dev/mobile/userland-26 && LEAN=1 bash scripts/mkimage-trim.sh` (run the userland-26 copy:
+  the darwin-lisa copy resolves `out/` under darwin-lisa/userland).
+
+Boot-args: `wifi_step=14` walks the DSP bring-up (WPSS boot, GLINK, QRTR, the WLFW service), printing everything.
+`wifi=1` is quiet unless `wifi_loud=1`, and with wifi=1 `wlan_stub` steps aside (no en0 unless ath11k is linked).
+Step 15 and on (firmware handshake, scan) need `wifi-ath11k-wire.sh` (ath11k.o + hakios.wlfw_ath11k.h).
+
+## Status on the phone (2026-11-10, iOS 26.5.2, kernel-16k-drivers-tap.bak)
+
+ath11k is linked (`wifi-ath11k-wire.sh`: HakiOS `tools/mk-ath11k.sh`, Linux 7.0.14 ath11k on FreeBSD 15.1 LinuxKPI,
+510 KB, 0 stubs; `.work/rebuild26.sh` passes it as `XNU_EXTRA_LD_ARCHIVES`), with the WLFW QMI tables generated
+(36 tables) and pmOS's `board-2.bin` served from /fw.
+
+- `wifi=1 wifi_irq=0 wifi_loud=1 wifi_mac=02:6c:69:73:61:01` (logs/wifi-run1.log):
+  `wifi: 8: TRUSTZONE ACCEPTS THE WI-FI DSP'S SIGNATURE FROM THIS KERNEL`, `wifi: 11: TRUSTZONE HAS AUTHENTICATED THE
+  IMAGE AND LET THE WI-FI DSP OUT OF RESET`, `wifi: the radio's DSP is up and linked, 850 ms in`, `lx: the driver asks
+  for the file "ath11k/WCN6750/hw1.0/board-2.bin": there`, `lx: ... the driver IS UP ...: the firmware has said
+  "unified ready"`, `lx: an interface in station mode is added to it`, `wifi: THE RADIO IS UP, 12.2 s after the kernel
+  began on it`; configd opens MiniIONetworkStack.
+- `wifi=1 wifi_station=0 wifi_scan=1 wifi_irq=0` (logs/wifi-run2.log): `lx: THE DRIVER IS ASKED TO SCAN 98 channels,
+  listening only`, `lx: 8141 ms later the scan is OVER`, `lx: THE SCAN HEARD 12 NETWORKS (access points): 11 at 2.4
+  GHz, 1 at 5 GHz ... the strongest at -30 dBm, the weakest at -91`, with a `lx: heard:` line per network (channel,
+  dBm, BSSID, security, SSID; the log names other people's networks: not for passing on).
+- Notes: `wifi=1` implies `wifi_station=1`, which wins over `wifi_scan` in lx_bus.c (the driver waits to be asked
+  by the kernel's station API, i.e. wifid through apple80211), so a scan at start needs `wifi_station=0`, after which
+  the driver is taken down again. `wifi_irq=0`: the GIC SPI routing is still stubbed (polling every ms).
+- Next: wifid (left out by LEAN: com.apple.wifid.plist / wifiFirmwareLoader in lean-daemons.txt) talking to
+  `hakios.apple80211.c` for scan + join with `wifi_station=1`; credentials go in /fw/network (SSID, passphrase) or
+  through wifid.

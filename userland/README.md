@@ -62,6 +62,15 @@ with 7z and inflate with an LZVN/LZFSE decmpfs decoder.
   (`/usr/local/bin/fbtest`). `tools/cmquery.c`: containermanagerd query/console tail diagnostics.
 - See `kernel/drivers/display/README.md` for the whole picture.
 
+## Data volume on the flash (2026-11-10, not on the phone yet)
+
+`init/init-26.c`: with boot-arg `var_ufs=1`, `/private/var` is the journaled HFSX volume on `/dev/ufs_data`, kept
+between boots. That device is super's tail, given out by the loader and the kernel with `ufs_write=1 ufs_data=super`.
+If the mount fails, init falls back to ramfs. On the kept volume, init lays down only the missing skeleton entries,
+empties `tmp`/`run`/`vm`, and syncs every `var_sync=` s (default 30). `var_grow=1` grows the volume to the whole
+device once. The image is made by `tools/mkvarvol.py` and written by `tools/var-write.sh`; the full run book is
+`docs/data-volume.md`. A new init only reaches the phone inside a rebuilt root image (`FULL=1 mkimage-trim.sh`).
+
 ## Window-server chain additions (2026-11-10)
 
 - `inject/` — **libdlisa.dylib**, our code inside stock daemons (the iOS 26 counterpart of HakiOS's libhakios).
@@ -72,6 +81,9 @@ with 7z and inflate with an LZVN/LZFSE decmpfs decoder.
   writes cpusubtype ALL) and re-hashes the signature. What it does per program:
   - containermanagerd: `+[MCMUserIdentityCache personasAreSupported]` -> NO (HakiOS's 16.5 fix), plus tracing of
     the command dispatcher.
+  - backboardd: the touch screen. A virtual IOHID service ("darwin-lisa touch screen", digitizer, built in, display
+    integrated) made inside backboardd turns the samples of the kernel's /dev/hakios-touch into digitizer events
+    (HakiOS 16.5's way; private IOKit HID functions found with dlsym). See `kernel/drivers/touch/README.md`.
   - lsd: repeats lsd's own user container lookup (class 10, primary persona, flags 0x900000001) from inside lsd and
     prints containermanagerd's answer; CoreServices branches straight into libsystem_containermanager, so the
     lookup cannot be interposed.

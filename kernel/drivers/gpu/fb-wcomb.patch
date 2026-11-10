@@ -1,0 +1,17 @@
+--- a/osfmk/console/video_console.c
++++ b/osfmk/console/video_console.c
+@@ -2875,8 +2875,13 @@
+ 			gc_acquired = TRUE;
+ 		} else {
+ 			if (makeMapping) {
+-#if HAS_UCNORMAL_MEM || APPLEVIRTUALPLATFORM
++#if HAS_UCNORMAL_MEM || APPLEVIRTUALPLATFORM || defined(BCM2837)
+ 				/*
++				 * darwin-lisa (as HakiOS's xnu-8796 tree): on BCM2837-class boards too. As Device memory
++				 * every store the display driver makes to the panel is one bus write (a frame took
++				 * MiniIOMobileFramebuffer ~78 ms on iOS 26 against ~9 ms per core on HakiOS), and DC ZVA
++				 * (bzero) faults on it.
++				 *
+ 				 * Framebuffers would normally use VM_WIMG_RT, which
+ 				 * io_map doesn't support.  However this buffer is set up
+ 				 * by the bootloader and doesn't require D$ cleaning, so

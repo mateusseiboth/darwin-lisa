@@ -1,0 +1,12 @@
+--- a/src/texture.cpp	2026-11-10 18:01:33.971108955 -0400
++++ b/src/texture.cpp	2026-11-10 18:01:33.983239128 -0400
+@@ -964,6 +964,9 @@
+     struct FourCC { uint32_t code; uint32_t bytes; };
+     static const FourCC kFourCCs[] = {
+         {0x42475241u, 4},   // 'BGRA'
++        // '&BGA': CoreAnimation 26 asks for the display's surfaces in Apple's lossless-compressed BGRA. Our IOSurfaces
++        // know nothing of compression: the bytes are plain linear BGRA8 (1080 pixels in rows of 4352 bytes), read as such.
++        {0x26424741u, 4},   // '&BGA'
+         {0x52474241u, 4},   // 'RGBA'
+         {0x4c413038u, 2},   // 'LA08'
+         {0x4c303038u, 1},   // 'L008'

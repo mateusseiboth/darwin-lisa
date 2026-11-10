@@ -15,6 +15,7 @@ Hard rules for every step: never touch slot b, never `--slot all`, never `set_ac
 
 | Artifact | sha256 (first 16) | What |
 |---|---|---|
+| `out/u-boot-lisa-ums.img` | `a1f926c019727047` | `u-boot-lisa-ossel.img` + ums that says why it ended (`fastboot getvar ums`), stays in U-Boot fastboot when it fails, and ends only on a real eject. Same `.config` |
 | `out/u-boot-lisa-ossel.img` | `796474c9b931dc67` | U-Boot boot image (v3, gzip kernel, no ramdisk). Same `.config` as the flashed one; only the environment differs: `osel_check` and the "USB disk" menu entry |
 | `out/vendor_boot-lisa-ossel.img` | `633f56a0a7a93aa3` | `vendor_boot-multiboot-lisa.img` with only the vendor ramdisk replaced (the HKUB with the patched loader). Header and DTB bytes are identical, so pmOS gets the same DTB |
 | `out/loader-usb-lisa-ossel.hkub` | `526a17a760057bec` | the same HKUB on its own, for U-Boot's "HakiOS over fastboot" (RAM only) |
@@ -77,6 +78,13 @@ through.
 line). The tree's f_mass_storage handles 4096-byte LUNs (`blkbits` from the block size), and the UFS uclass sends
 WRITE10 with `UTP_HOST_TO_DEVICE`. U-Boot's own `fastboot flash` only knows MMC, so ums is the PC's write path. Reads
 are validated first (step B2). The first real write is the image itself, and it is read back in full.
+
+On the PC the disk is vendor `Linux`, model `UMS disk 0` (`bootos.sh` and `ums-guard.sh` match that; the
+`File-Store Gadget` string in f_mass_storage is never sent). With `u-boot-lisa-ums.img`, `ums_disk` restarts the
+phone only after an eject; a key opens the menu; any other end leaves U-Boot's fastboot up and `fastboot getvar ums`
+says why (`init`, `udc -19`, `gadget -16`, ...). `bootos.sh ums` prints that reason. The first `bootos.sh ums` with
+`u-boot-lisa-ossel.img` (2026-11-10 09:34) never showed a USB device on the PC: the loader left at 09:34:25 and was
+back at 09:34:36, a full reset, so `ums` failed at once and `ums_disk` reset.
 
 ## 3. Device sequence
 

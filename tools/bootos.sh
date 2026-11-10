@@ -48,12 +48,13 @@ pmos_ssh() {
 	fi
 }
 
-# the ums disk: U-Boot's mass-storage gadget answers INQUIRY as vendor "Linux", model "File-Store Gadget"
+# the ums disk: U-Boot's mass-storage gadget answers INQUIRY as vendor "Linux", model "UMS disk 0" (the name
+# cmd/usb_mass_storage.c gives the LUN; f_mass_storage's "File-Store Gadget" string is never sent)
 ums_disk() {
 	local d
 	for d in /sys/block/sd*; do
 		[[ -e $d/device/vendor && -e $d/device/model ]] || continue
-		if [[ $(tr -d ' ' <"$d/device/vendor") == Linux && $(sed 's/ *$//' <"$d/device/model") == "File-Store Gadget" ]]; then
+		if [[ $(tr -d ' ' <"$d/device/vendor") == Linux && $(sed 's/ *$//' <"$d/device/model") == "UMS disk 0" ]]; then
 			echo "/dev/${d##*/}"
 			return 0
 		fi
@@ -158,6 +159,10 @@ ums)
 	ask_loader ums
 	t=0
 	until d=$(ums_disk); do
+		# a ums that ended without an eject leaves U-Boot's fastboot up, with the reason (hakios-lisa.env ums_disk)
+		if [[ $(state) == uboot-fastboot ]]; then
+			die "ums ended: $(fb getvar ums | sed -n 's/^ums: *//p' | head -1) (U-Boot fastboot is up: fastboot oem console, fastboot reboot)"
+		fi
 		((t < WAIT_UMS)) || die "no USB disk within ${WAIT_UMS}s"
 		sleep 2
 		t=$((t + 2))

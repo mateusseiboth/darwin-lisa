@@ -14,13 +14,13 @@ disk=${1:?usage: ums-guard.sh /dev/sdX [PARTNUM...]}
 shift
 name=${disk##*/}
 [[ $(tr -d ' ' <"/sys/block/$name/device/vendor") == Linux &&
-	$(sed 's/ *$//' <"/sys/block/$name/device/model") == "File-Store Gadget" ]] ||
-	{ echo "ums-guard: $disk is not U-Boot's USB disk (vendor Linux, model File-Store Gadget)" >&2; exit 1; }
+	$(sed 's/ *$//' <"/sys/block/$name/device/model") == "UMS disk 0" ]] ||
+	{ echo "ums-guard: $disk is not U-Boot's USB disk (vendor Linux, model UMS disk 0)" >&2; exit 1; }
 
 rule=/run/udev/rules.d/99-lisa-ums-ignore.rules
 if [[ ! -e $rule ]]; then
 	mkdir -p /run/udev/rules.d
-	echo 'SUBSYSTEM=="block", ATTRS{vendor}=="Linux*", ATTRS{model}=="File-Store Gadget*", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"' >"$rule"
+	echo 'SUBSYSTEM=="block", ATTRS{vendor}=="Linux*", ATTRS{model}=="UMS disk 0*", ENV{UDISKS_IGNORE}="1", ENV{UDISKS_AUTO}="0"' >"$rule"
 	udevadm control --reload
 	udevadm trigger --subsystem-match=block --action=change
 fi

@@ -1,0 +1,139 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -7,6 +7,22 @@
+  * tools/ca-metallib.py.
+  */
+ /*
++ * (darwin-lisa) iOS 26 (Metal 373.2, QuartzCore with its own default.metallib), applied by
++ * darwin-lisa/kernel/drivers/gpu/userland/HakiosMetalCA-ios26.patch and decided at run time (hm_ios26()), so 16.5 is
++ * served as before:
++ *   - CoreAnimation 26 makes its specialised functions with -[MTLLibrary newFunctionWithDescriptor:error:], and Metal 26
++ *     specialises through the device's compiler, which this device does not have; and -[_MTLFunctionInternal
++ *     baseFunctionConstantValues] is gone. hm_fn_descriptor() gives the library's own function back with the
++ *     descriptor's MTLFunctionConstantValues kept beside it, and hm_function_constants_declared() reads them from there
++ *     (-[MTLFunctionConstantValuesInternal constantValueWithFunctionConstant:] is still in 26). Boot-arg
++ *     metal_fc_native=1 tries Metal's own specialisation first.
++ *   - the 16.5-only shader choices stay out: QuartzCore 26 has every function it asks for, so no stand-ins
++ *     (hm_stand_ins, the edr_scale copy) and no variants by label (hm_bitcode_for() returns the function's own module).
++ *     It asks neither for a pipeline library nor for -targetDeviceInfo, so those two paths are simply never reached.
++ *   - featureProfile 1 still fills -[_MTLDevice initLimits]' table on 26 (decoded off 26's Metal under an emulator:
++ *     0, 1 and 4 to 12 pass; 2, 3 and 13 and up end in _MTLReleaseAssertionFailure on _limits.maxIndirect...PerDevice).
++ */
++/*
+  * HakiosMetal: the Metal plug-in of hakios, over the C interface of hakios-metal.
+  *
+  * Metal.framework finds a GPU by reading MetalPluginName and MetalPluginClassName off the IOAcceleratorES service
+@@ -1601,6 +1617,8 @@
+ 	return best;
+ }
+ 
++static BOOL hm_ios26(void);    /* (darwin-lisa) below, with the library hooks */
++
+ /* The module to compile for FUNCTION (of the pipeline labelled PIPELINE, vertex stage or not): its variant when
+  * CoreAnimation's labels name one, else what the function itself has. */
+ static NSData *
+@@ -1610,6 +1628,9 @@
+ 	NSString *name = [function respondsToSelector:@selector(name)] ? [function name] : nil, *label = nil, *chosen = nil;
+ 	NSData *own = ((NSData *(*)(id, SEL))objc_msgSend)(function, sel_getUid("bitcodeData")), *variant = nil;
+ 
++	if (hm_ios26()) {
++		return own;     /* (darwin-lisa) QuartzCore 26's own functions: no variants, no stand-ins */
++	}
+ 	if (name != nil && [name hasPrefix:@"edr_scale_"]) {
+ 		/* the stand-in at compile time too: the window server gets edr_scale by a road the library hooks do not see,
+ 		 * and the later CoreAnimation's reads buffers iOS 16.5's never binds (see hm_stand_ins) */
+@@ -1894,6 +1915,59 @@
+ };
+ static id (*hm_orig_fn_name)(id, SEL, NSString *);
+ static id (*hm_orig_fn_constants)(id, SEL, NSString *, MTLFunctionConstantValues *, NSError **);
++static id (*hm_orig_fn_descriptor)(id, SEL, MTLFunctionDescriptor *, NSError **);
++static char hm_fc_key;          /* (darwin-lisa) a function's MTLFunctionConstantValues, kept by hm_fn_descriptor() */
++static bool hm_boot_arg_set(const char *what);
++
++/* (darwin-lisa) iOS 26's Metal: newFunctionWithDescriptor:error: on the library, baseFunctionConstantValues gone */
++static BOOL
++hm_ios26(void)
++{
++	static dispatch_once_t once;
++	static BOOL yes;
++
++	dispatch_once(&once, ^{
++		Class function = NSClassFromString(@"_MTLFunctionInternal"), library = NSClassFromString(@"_MTLLibrary");
++
++		yes = function != Nil && library != Nil &&
++		      ![function instancesRespondToSelector:sel_getUid("baseFunctionConstantValues")] &&
++		      [library instancesRespondToSelector:@selector(newFunctionWithDescriptor:error:)];
++	});
++	return yes;
++}
++
++/* (darwin-lisa) A specialised function on iOS 26 (see the header): the library's own, with the values beside it. A
++ * descriptor without values, or a name the library does not have, goes Metal's own way. */
++static id
++hm_fn_descriptor(id self, SEL sel, MTLFunctionDescriptor *descriptor, NSError **error)
++{
++	NSString *name = [descriptor name];
++	MTLFunctionConstantValues *values = [descriptor constantValues];
++	id f = nil;
++
++	if (name == nil || values == nil) {
++		return hm_orig_fn_descriptor(self, sel, descriptor, error);
++	}
++	if (hm_boot_arg_set("metal_fc_native=1")) {
++		f = hm_orig_fn_descriptor(self, sel, descriptor, error);
++		if (f != nil) {
++			HM_ONCE("function constants: Metal specialised %s itself (metal_fc_native=1)\n", [name UTF8String]);
++			return f;
++		}
++		HM_ONCE("function constants: Metal could not specialise %s (%s); the values are kept beside it instead\n",
++			[name UTF8String], error != NULL && *error != nil ? [[*error description] UTF8String] : "no reason");
++	}
++	f = [self newFunctionWithName:name];
++	if (f == nil) {
++		return hm_orig_fn_descriptor(self, sel, descriptor, error);
++	}
++	objc_setAssociatedObject(f, &hm_fc_key, [[values copy] autorelease], OBJC_ASSOCIATION_RETAIN);
++	if (error != NULL) {
++		*error = nil;
++	}
++	HM_ONCE("function constants: %s and the next ones keep their descriptor's values beside them (iOS 26)\n", [name UTF8String]);
++	return f;
++}
+ 
+ static NSString *
+ hm_stand_in(NSString *name, BOOL found)
+@@ -1946,6 +2020,15 @@
+ 
+ 	dispatch_once(&once, ^{
+ 		Class library = NSClassFromString(@"_MTLLibrary");
++
++		if (hm_ios26()) {
++			/* (darwin-lisa) no stand-ins: QuartzCore 26's library has every function it asks for */
++			Method d = library ? class_getInstanceMethod(library, @selector(newFunctionWithDescriptor:error:)) : NULL;
++
++			if (d != NULL) hm_orig_fn_descriptor = (id (*)(id, SEL, MTLFunctionDescriptor *, NSError **))
++				method_setImplementation(d, (IMP)hm_fn_descriptor);
++			return;
++		}
+ 		Method a = library ? class_getInstanceMethod(library, @selector(newFunctionWithName:)) : NULL;
+ 		Method b = library ? class_getInstanceMethod(library, @selector(newFunctionWithName:constantValues:error:)) : NULL;
+ 
+@@ -2829,11 +2912,16 @@
+ 	id values;
+ 	unsigned n = 0;
+ 
+-	if (function == nil || ![function respondsToSelector:@selector(functionConstantsDictionary)] || ![function respondsToSelector:baseSel]) {
++	if (function == nil || ![function respondsToSelector:@selector(functionConstantsDictionary)]) {
++		return 0;
++	}
++	/* (darwin-lisa) iOS 26: the values hm_fn_descriptor() kept beside the function */
++	values = [function respondsToSelector:baseSel] ? ((id(*)(id, SEL))objc_msgSend)(function, baseSel) :
++		 objc_getAssociatedObject(function, &hm_fc_key);
++	if (values == nil) {
+ 		return 0;
+ 	}
+ 	declared = [function functionConstantsDictionary];
+-	values = ((id(*)(id, SEL))objc_msgSend)(function, baseSel);
+ 	if ([declared count] == 0 || values == nil || ![values respondsToSelector:valueSel]) {
+ 		return 0;
+ 	}

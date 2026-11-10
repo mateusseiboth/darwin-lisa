@@ -1,7 +1,7 @@
 # GPU (Adreno 642L) for iOS 26
 
-Offline preparation, 2026-11-10. Nothing here is wired into the kernel tree or the image yet, and none of it has run on
-the phone. The kernel half of the Adreno bring-up (`../hakios.adreno.c`, tag `hakios_adreno`) is already in today's
+Offline preparation, 2026-11-10 (second round: the compiler, the plug-in for iOS 26, the AIR front end). Nothing here
+is wired into the kernel tree or the image yet, and none of it has run on the phone. The kernel half of the Adreno bring-up (`../hakios.adreno.c`, tag `hakios_adreno`) is already in today's
 iOS 26 kernel; this directory holds the rest.
 
 ## Files
@@ -13,7 +13,13 @@ iOS 26 kernel; this directory holds the rest.
 | `fw-gpu-stage.py` | Firmware: `stage` (pmOS set, split), `check DIR` (the driver's own checks), `install DIR DEST` (into the image's `fw/`). |
 | `fb-wcomb.patch` | Not GPU, not applied: maps the panel write-combined, as HakiOS's tree does. See "CPU load". |
 | `userland/build-gpu-probe.sh` | `hakios-metal-probe` for iOS 26 (iPhoneOS 26.5 SDK). Built. |
-| `userland/build-hakios-metal.sh` | `HakiosMetal.bundle` (arm64e label) + `metal_test`, `PLUGIN=probe` or `PLUGIN=ca`. Both built, without Mesa. |
+| `userland/build-hakios-metal.sh` | `HakiosMetal.bundle` (arm64e label) + `metal_test`. `PLUGIN=probe` (metal_test only) or `PLUGIN=ca` (the window server's, with `HakiosMetalCA-ios26.patch`); `MESA=1` links the shader compiler. All built on the host with clang 22 + ld64.lld, no container. |
+| `userland/HakiosMetalCA-ios26.patch` | The plug-in's iOS 26 changes, decided at run time (16.5 keeps its behaviour). See "The plug-in on iOS 26". |
+| `userland/hakios-metal-fbslots.patch` | hakios-metal's compiler: recount the texture slots a function still samples before giving `[[color(n)]]` reads their slots. Without it CoreAnimation 26's uber shader is refused. |
+| `userland/ca-metallib-stage.sh` | `check` / `apply` / `remove`: QuartzCore's `default.metallib` copied from the OS cryptex into the rootfs `QuartzCore.framework`, for the `metallib_url != nil` assertion. Dry-run on a copy; not applied to the sysroot. |
+| `mesa/mk-mesa-darwin.sh` | The Darwin Mesa build for `MESA=1`: Mesa 25.0.7 + HakiOS's patches + the AIR front end + `air-*.patch`, the 13 compiler archives, in `~/Dev/mobile/userland-26/gpu-build/mesa` (418 MB). Runs on the host (Fedora clang 22, ld64.lld): nothing of `xnu-deps/host/bin` is used or changed. Built. |
+| `mesa/air-read-sampler.patch` | The AIR front end takes AIR 2.8's `air.get_read_sampler` and the read form that carries it. |
+| `tools/metal-initlimits.py` | Runs Metal's `-[_MTLDevice initLimits]` under unicorn for every `featureProfile`. |
 
 Wire order on a fresh tree: `../adreno-wire.py`, `../display/display-wire.py`, then `gpu-wire.py` last. Both earlier
 scripts rewrite a file `gpu-wire.py` guards, so after rerunning either one, rerun `gpu-wire.py` too.
@@ -60,12 +66,15 @@ library). 26 has `/System/Cryptexes/OS/.../QuartzCore.framework/default.metallib
 Precompiled pipelines (`newBinaryArchiveWithDescriptor:`) and tile pipelines sit behind `supportsFamily:` checks, so a
 device that answers NO for the Apple families gets the AIR path.
 
-**HakiOS's AIR front end on that library** (`tools/air/corpus.py`, host build in the scratchpad): the reader takes all
-189 modules, translation to NIR reaches 157 (all 37 vertex, 116 of 128 fragment, 4 of 24 kernels). The 32 that stop:
-16 tile/imageblock shaders CoreAnimation only builds for Apple4+ GPUs, and 16 on the `air.get_read_sampler` intrinsic
-(SDF generation, rim/brim outlines, variable blur, APL/luma). All 12 Liquid Glass shaders (`glass_*`) translate. ir3
-was not measured here (the host has no libdrm headers); on the 16.5 corpus every module that translated also compiled.
-The `fixed_vert/fixed_frag` uber shaders read function constants, which is why the break above matters.
+**HakiOS's AIR front end on that library** (`tools/air/corpus.py`, host build): the reader takes all 189 modules. Before
+`air-read-sampler.patch` translation reached 157; with it, 173. The 16 left are tile/imageblock shaders CoreAnimation
+only builds for Apple4+ GPUs, which this device is not. Through hakios-metal's whole compiler (its `tools/sweep`, AIR ->
+NIR -> ir3, host build): **all 37 vertex and all 128 fragment functions compile**, and 8 of 24 kernels (the 16 tile
+ones are the rest). Two of the 128, the uber shaders `fixed_frag_lph_cph`/`_cpf` (the module CoreAnimation asks for
+most), compile only with `hakios-metal-fbslots.patch`; they also read function constants, which is why the break
+above matters. With realistic constants (`sweep -f fixed_frag_lph_cph -c 0=0 -c 4=0 -c 5=1 -c 15=1 ...`) it compiles
+too. The 16.5 corpus (456 modules) gives the same numbers with and without both patches (321 translate; 3 + 271 + 47
+compile).
 
 **Kernel interfaces.** The IOSurface and IOMobileFramebuffer layouts were already ported (`../display/README.md`).
 HakiosGPU's interface is ours on both ends, so it needs no layout change. The 26 framebuffer driver already has every
@@ -170,15 +179,40 @@ Pass: `the accelerator names HakiosMetal`, `HakiosMetal: the class HakiosMetalDe
 the device, its queue, a buffer round trip and a blit/fill on the GPU. Every `not implemented` line names a 26-only
 selector to answer. backboardd is not shown the device at `metal=1` and keeps drawing in software.
 
-3b. CoreAnimation. Not buildable yet; it needs, in order: `tools/mk-mesa.sh` (Darwin Mesa 25.0.7 with the AIR front
-end), `make ios MESA=1` in hakios-metal, the plug-in changes listed under "Work left", then
-`PLUGIN=ca build-hakios-metal.sh` and the image. Boot with
+3b. CoreAnimation. Build: `mesa/mk-mesa-darwin.sh` (once), then `PLUGIN=ca MESA=1 userland/build-hakios-metal.sh`,
+`userland/ca-metallib-stage.sh apply`, and the image. Boot with
 `$BASE gpu=1 metal=1 metal_fps=1 metal_defer=1 touch_lat=1 dlisa_oslog=backboardd`. Look for: backboardd loads the
 bundle and does not restart, no `metallib_url != nil` assertion (if it appears, copy QuartzCore's `default.metallib`
 from the OS cryptex into `/System/Library/Frameworks/QuartzCore.framework/` of the sysroot), the `HakiosGPU: N
 submissions` stats every 5 s, framebuffer stats with non-zero `waiting for the GPU`, the plug-in's `fps:` lines, and a
 correct lock screen in `XL_SHOT_EVERY` shots. `ui_lite=1` (Reduce Transparency/Motion) takes Liquid Glass's blur out
 of the first runs.
+
+## The plug-in on iOS 26 (`HakiosMetalCA-ios26.patch`)
+
+- **Function constants.** CoreAnimation 26 makes its specialised functions with `-[MTLLibrary newFunctionWithDescriptor:
+  error:]`. Metal 26 specialises through `newSpecializedFunctionWithDescriptor:...compilerTask:`, which asks the device for
+  `compiler` and `compilerFlags` (this device has none). `hm_fn_descriptor()` hooks that selector on `_MTLLibrary`: it
+  returns the library's own function (`newFunctionWithName:`) and keeps the descriptor's `MTLFunctionConstantValues`
+  beside it (an associated object); `hm_function_constants_declared()` reads them there with
+  `-[MTLFunctionConstantValuesInternal constantValueWithFunctionConstant:]`, which 26 still has. A descriptor without
+  values goes Metal's own way. Boot-arg `metal_fc_native=1` tries Metal's specialisation first (the 16.5 road through
+  `specializationAirScript`), as an experiment on the phone.
+- **16.5-only code.** On 26 the plug-in installs no stand-ins (`hm_stand_ins`, the `edr_scale` copy) and chooses no
+  variants by label (`hm_bitcode_for()` returns the function's own module). QuartzCore 26 calls neither
+  `newPipelineLibraryWithFilePath:error:` nor `-targetDeviceInfo` (none in its disassembly), so those paths stay in the
+  file and are never reached.
+- **The device queries.** QuartzCore 26 sends 46 selectors of `MTLDevice`/`MTLDeviceSPI` (its disassembly against the
+  protocols' class dump). None falls through to the plug-in's forwarder: 18 the plug-in answers, 28 `_MTLDevice`
+  answers from the tables `featureProfile` selects (limits such as `maxTextureWidth2D`, and `supportsFamily:`,
+  `supportsMemorylessRenderTargets`, `supportsSIMDGroup`, ...). That is what 16.5 ran with, so they are left to Metal.
+- **featureProfile.** Decoded with `tools/metal-initlimits.py`: on 26, 0, 1 and 4 to 12 fill the table; 2, 3 and 13 and
+  up assert in `initLimits`. The plug-in's 1 stays valid (max 8 colour attachments, 8192 texels a side). On 16.5 it was
+  chosen because SpringBoard's MPS needs Apple2, which 1 claims.
+
+Not done offline: whether Metal 26 takes the AIR64 slice of the fat `default.metallib` for this device (16.5's UniXNU
+experience says it does; if `bitcodeData` comes back nil on the phone, the plug-in must open the library itself, thin,
+as `hakios_metallib_thin()` in the generic plug-in does).
 
 ## Work left, and how big it is
 
@@ -187,25 +221,28 @@ of the first runs.
 | Step 1 on the phone | device | one session; the driver and firmware are the ones that passed 21/21 on 16.5 |
 | Wire + rebuild + step 2 | kernel build, device | one session |
 | Step 3a | device | one or two sessions, mostly reading which 26 selectors Metal sends |
-| Darwin Mesa build with the AIR front end | offline (docker) | about a day. mk-mesa.sh wants `xnu-deps/host/bin/ld64 -> ld64-lld`, the same symlink the 16.5 kernel build needs pointing at cctools; use a private copy of `host/bin` instead of flipping it under the other worker |
-| HakiosMetalCA.m for 26 | offline | 2-4 days: function constants from `MTLFunctionDescriptor` / `newFunctionWithDescriptor:error:` (the removed `baseFunctionConstantValues`), drop the 16.5-only pipelinelib, label-variant and `ca_metallib` code, answer the new `_MTLDevice`/`MTLDeviceSPI` queries CA makes |
-| AIR front end | offline (host build) | `air.get_read_sampler` (16 modules); then ir3 and CPU-reference checks over the 157 |
+| Darwin Mesa build with the AIR front end | offline | done (`mesa/mk-mesa-darwin.sh`, on the host) |
+| HakiosMetalCA.m for 26 | offline | done as a patch; built with the compiler (`PLUGIN=ca MESA=1`, 8.4 MB arm64e bundle) |
+| AIR front end | offline | `air.get_read_sampler` done; 165/165 vertex+fragment compile. Left: the CPU-reference and softpipe checks (`tools/air/cpuref.py`, `air_run`) over the new modules, which need the host `air_run`/`ir3_compiler` (libdrm headers on this machine) |
 | CoreAnimation on Metal on the phone | device | the open-ended part: HakiOS needed about a week of device iterations on 16.5 (27 Oct to 3-4 Nov) from "device exists" to the window server drawing. Expect 1-3 weeks on 26 |
 
 Total: a few days to step 3a, then two to four weeks to a GPU-composited home screen, if nothing below bites hard.
 
 ## Risks
 
-- `featureProfile` and `initLimits`. On 16.5 only profile 0 filled the limits table and 2, 3, 10-12 aborted. 26's
-  `initLimits` reads the same selector, but its table was not decoded here. The first sign is an abort in `MTLAddDevice`.
+- `featureProfile` and `initLimits`: decoded for 26, profile 1 passes (see above). `initFeatureQueries` (which sets
+  `supportsFamily:`) was not emulated; it runs Objective-C allocation and is cheaper to read on the phone (metal_test
+  prints the families).
 - Liquid Glass. Many full-screen blur and refraction passes at 1125x2436 on a 550 MHz Adreno 642L. The SDF and
   variable-blur compute shaders do not translate yet. `ui_lite=1` and `fbscale=2` are the fallbacks.
 - The present copy. Until `fb-wcomb.patch` (or a GPU blit to the panel) lands, the frame rate stays near 11 fps
   whatever renders.
 - Memory. User space already takes about 1.6 GB with the root in RAM. Mesa adds 14 MB per client and HakiosGPU wires
   buffers (up to 160 MB kept per client).
-- Function constants silently zero. Shaders then compile and draw wrong instead of failing, so screenshots, not logs,
-  catch it.
+- Function constants. The descriptor hook keeps them, but whether CoreAnimation 26 makes every specialised function
+  through `newFunctionWithDescriptor:error:` was read off one call site. A function that comes another way compiles
+  with its constants at zero and draws wrong instead of failing, so screenshots, not logs, catch it. The plug-in's
+  "function constants: ..." lines say which road each took.
 - Process restarts. A Metal device that exists but fails makes launchd restart backboardd over and over (88 crashes in
   100 s on 16.5). Keep `metal=1` with the probe plug-in until 3a is clean.
 - Log capture. On 16.5 the adreno output pushed touch lines out of the loader's ring buffer. Run steps 1-2 without the

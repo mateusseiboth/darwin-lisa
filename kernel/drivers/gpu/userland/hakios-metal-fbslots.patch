@@ -1,0 +1,24 @@
+--- a/src/compiler.cpp
++++ b/src/compiler.cpp
+@@ -577,6 +577,21 @@
+     nir_shader_intrinsics_pass(nir, countLayerSample, nir_metadata_all, &own);
+     nir_lower_fb_read(nir);
+     nir_shader_intrinsics_pass(nir, zeroLayerSample, nir_metadata_control_flow, &own);
++    // (darwin-lisa) the slots the function still samples AFTER its constants have been applied and ir3_finalize_nir has
++    // removed what they switch off -- the front end marks every texture the function declares, and CoreAnimation 26's
++    // uber shader declares 15 of the 16 (fixed_frag_lph_cph: 0..14), so its 3 [[color(n)]] reads found no slot even
++    // where a pipeline uses one texture. Recounted as nir_shader_gather_info would (gather_tex_info).
++    BITSET_ZERO(nir->info.textures_used);
++    nir_foreach_function_impl(impl, nir) {
++        nir_foreach_block(block, impl) {
++            nir_foreach_instr(instr, block) {
++                if (instr->type != nir_instr_type_tex) continue;
++                nir_tex_instr* tex = nir_instr_as_tex(instr);
++                if (tex->op != nir_texop_txf_ms_fb && tex->texture_index < kMaxTextureSlots)
++                    BITSET_SET(nir->info.textures_used, tex->texture_index);
++            }
++        }
++    }
+     int slotOf[kMaxTextureSlots];   // a target's slot, -1 before its first read
+     for (int& x : slotOf) x = -1;
+     unsigned nextFree = 0;

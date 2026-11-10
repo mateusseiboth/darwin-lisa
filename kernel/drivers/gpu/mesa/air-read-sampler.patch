@@ -1,0 +1,95 @@
+--- a/air_intrinsics.c
++++ b/air_intrinsics.c
+@@ -2273,6 +2273,21 @@
+ 
+    unsigned arg = 2;   /* operands[0] is the callee, [1] the texture */
+    struct air_ptr samp = { 0 };
++   /* AIR 2.8 (iOS 26) gives a read a sampler and an offset that AIR 2.5 (16.5)
++    * did not have: (tex, sampler, coord, offset, which, access) against (tex,
++    * coord, which, access). The sampler is skipped (see read_sampler_op); the
++    * offset is read after the coordinate below.
++    */
++   bool read_with_sampler = false;
++   if (!strcmp(t.op, "read") && in->num_operands > arg) {
++      struct air_val *second = air_get(c, in->operands[arg]);
++      if (!second)
++         return false;
++      if (second->kind == AIR_VAL_PTR && second->ptr.class == AIR_PTR_SAMPLER) {
++         read_with_sampler = true;
++         arg++;
++      }
++   }
+    bool have_sampler = !strcmp(t.op, "sample") || !strcmp(t.op, "gather") ||
+                        !strcmp(t.op, "lod");
+    if (have_sampler) {
+@@ -2374,6 +2389,21 @@
+    if (!coord)
+       return false;
+ 
++   /* the AIR 2.8 read's offset: every call in iOS 26's QuartzCore passes zero */
++   nir_def *read_offset = NULL;
++   if (read_with_sampler) {
++      if (in->num_operands <= arg)
++         return air_error(c, "intrinsic: air.%s without the offset its signature has",
++                          n->part[0]);
++      if (!(read_offset = air_get_ssa(c, in->operands[arg++])))
++         return false;
++      if (all_zero(read_offset))
++         read_offset = NULL;
++      else if (tex.is_image)
++         return air_error(c, "intrinsic: air.%s of an image with an offset that is not "
++                             "zero (no module of the corpus has one)", n->part[0]);
++   }
++
+    if (!strcmp(t.op, "read") && tex.is_image) {
+       uint64_t extra;
+       if (!tex_flag(c, in, arg, &extra))
+@@ -2557,6 +2587,9 @@
+          .src_type = t.is_ms ? nir_tex_src_ms_index : nir_tex_src_lod,
+          .src = nir_src_for_ssa(which),
+       };
++      if (read_offset)
++         srcs[nsrc++] = (nir_tex_src){ .src_type = nir_tex_src_offset,
++                                       .src = nir_src_for_ssa(nir_u2u32(&c->b, read_offset)) };
+    }
+ 
+    nir_tex_instr *tex_instr = nir_tex_instr_create(c->nir, nsrc);
+@@ -2609,6 +2642,29 @@
+    return true;
+ }
+ 
++/* air.get_read_sampler(): AIR 2.8's handle for the sampler a read takes.
++ *
++ * iOS 26's QuartzCore (AIR 2.8.4, 16 of its 189 modules) calls it once per
++ * function and passes the result as the second operand of every
++ * air.read_texture_* there:
++ *   %s = call ptr addrspace(2) @air.get_read_sampler()
++ *   call { <4 x half>, i8 } @air.read_texture_2d.v4f16(ptr as(1) %tex, ptr as(2) %s,
++ *        <2 x i32> %coord, <2 x i32> zeroinitializer, i32 %lod, i32 0)
++ * A read fetches by integer coordinate and filters nothing, so nothing of a
++ * sampler state reaches the instruction: the handle only has to be a sampler
++ * so that texture_op can recognise and skip it. AIR_READ_SAMPLER is no slot of
++ * the pipeline's and never becomes a sampler_index.
++ */
++#define AIR_READ_SAMPLER (~0u)
++
++static bool
++read_sampler_op(struct air_ctx *c, const struct air_inst *in)
++{
++   struct air_ptr p = { .class = AIR_PTR_SAMPLER, .binding = AIR_READ_SAMPLER };
++   air_set(c, &in->base, air_val_ptr(c, p));
++   return true;
++}
++
+ /* -- the dispatcher ----------------------------------------------------- */
+ 
+ bool
+@@ -2626,6 +2682,8 @@
+ 
+    if (!strcmp(n.part[0], "is_function_constant_defined"))
+       return fc_defined_op(c, in);
++   if (!strcmp(n.part[0], "get_read_sampler"))
++      return read_sampler_op(c, in);
+    if (n.num >= 2 && !strcmp(n.part[0], "wg") && !strcmp(n.part[1], "barrier"))
+       return barrier_op(c, in, false);
+    if (n.num >= 2 && !strcmp(n.part[0], "simdgroup") && !strcmp(n.part[1], "barrier"))

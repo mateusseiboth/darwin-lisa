@@ -136,7 +136,56 @@
  	/* (hakios) metal_m2v=1: the device is UniXNU's Metal on Vulkan instead (AdrenoMetal's frontend over metal2vulkan
  	 * over Turnip, tools/mk-m2v.sh; linked in by userland/build.sh M2V=1): its own objects, from the device down */
  	if (native_bridge_metal_open != NULL && hm_boot_arg_set("metal_m2v=1")) {
-@@ -2829,11 +2923,16 @@
+@@ -2395,6 +2489,48 @@
+ /* The answer that cannot be nil: see the header. A zeroed struct with an empty name is what Metal's own second cache
+  * (the one for `functions`) builds for itself, which is the measurement that says this shape is acceptable; the pipeline
+  * cache file then fails to open, Metal fills an NSError "Could not open pipeline cache file" and QuartzCore carries on. */
++/* (darwin-lisa) iOS 26: Metal asks the device which GPU architecture its precompiled binaries must be for
++ * (+[MTLLoader sliceIDForDevice:legacyDriverVersion:airntDriverVersion:] -> -targetDeviceArchitecture: cpuType,
++ * subType, driverVersion, versionCombined) and asserts "Target device architecture is nil" when the answer is nil.
++ * CoreAnimation 26 reached it through its binary archive (-[_MTLDevice newBinaryArchiveWithDescriptor:error:] ->
++ * -[_MTLBinaryArchive initWithOptions:device:url:error:] -> loadFromURL -> deserializeBinaryArchiveHeader), killing
++ * backboardd at every start (logs/gpu-ca-1625.log). The answer is an architecture no slice of Apple's is made for, so
++ * nothing precompiled matches and Metal keeps to the AIR, which this driver compiles. */
++#define HM_ARCH_CPU_TYPE 0x0100a642u     /* not a type of Apple's: the Adreno 642L */
++- (id)targetDeviceArchitecture
++{
++	static id arch;
++	static dispatch_once_t once;
++
++	dispatch_once(&once, ^{
++		Class c = NSClassFromString(@"MTLTargetDeviceArchitecture");
++		id a = c != Nil ? [[c alloc] init] : nil;
++
++		if (a != nil) {
++			((void (*)(id, SEL, unsigned int))objc_msgSend)(a, sel_getUid("setCpuType:"), HM_ARCH_CPU_TYPE);
++			((void (*)(id, SEL, unsigned int))objc_msgSend)(a, sel_getUid("setSubType:"), 0);
++			((void (*)(id, SEL, unsigned long long))objc_msgSend)(a, sel_getUid("setDriverVersion:"), 0);
++		}
++		arch = a;
++		hm_print("targetDeviceArchitecture: %s (cpu type %#x): no precompiled slice is for this GPU, Metal keeps to AIR\n",
++			 a != nil ? "made" : "no MTLTargetDeviceArchitecture class in this Metal", HM_ARCH_CPU_TYPE);
++	});
++	return arch;
++}
++
++/* (darwin-lisa) a binary archive holds code for Apple's GPUs: none is made here, and CoreAnimation 26 takes the nil
++ * (its MetalContext skips the archive: QuartzCore 0x1841550b4 "cbz x22") and compiles from AIR. */
++- (id)newBinaryArchiveWithDescriptor:(id)descriptor error:(NSError **)error
++{
++	(void)descriptor;
++	HM_ONCE("binary archives hold code for Apple's GPUs: none is made on this device (the AIR is compiled instead)\n");
++	if (error != NULL) {
++		*error = [NSError errorWithDomain:@"MTLBinaryArchiveDomain" code:1
++					 userInfo:@{ NSLocalizedDescriptionKey: @"binary archives are not supported by this device" }];
++	}
++	return nil;
++}
++
+ - (const struct MTLTargetDeviceArch *)targetDeviceInfo
+ {
+ 	if (_target.name == NULL) {
+@@ -2829,11 +2965,16 @@
  	id values;
  	unsigned n = 0;
  

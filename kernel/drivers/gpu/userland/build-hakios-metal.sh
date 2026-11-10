@@ -84,6 +84,10 @@ mkdir -p "$HMS"
 cp -r "$H/hakios-metal/src" "$H/hakios-metal/include" "$H/hakios-metal/tests" "$HMS/"
 for p in "$HERE"/hakios-metal-*.patch; do patch -s -d "$HMS" -p1 < "$p"; done
 
+# metal_test, from a copy: it starts its own sub-tests by its own path (metal_test-selfpath.patch; HakiOS had /redwood/bin)
+cp "$H/userland/src/metal_test.m" "$WORK/metal_test.m"
+patch -s -d "$WORK" -p1 < "$HERE/metal_test-selfpath.patch"
+
 cd "$WORK"
 for f in pm4 gpu command compute texture render link compiler metallib c_api fake_gpu iokit_transport; do
 	# shellcheck disable=SC2086
@@ -99,7 +103,7 @@ clang $T -O1 -w -bundle -fuse-ld=lld -DHAKIOS_METAL_GPU -I"$HMS/include" $INC \
     -Wl,-adhoc_codesign -o HakiosMetal $SOURCES ./*.o $MESA_LIBS
 clang $T -O1 -w -fobjc-arc -Wno-deprecated-declarations -fuse-ld=lld \
     -framework Foundation -framework CoreGraphics -framework CoreImage -framework IOKit -framework Metal \
-    -framework OpenGLES -lMobileGestalt -Wl,-adhoc_codesign -o metal_test "$H/userland/src/metal_test.m"
+    -framework OpenGLES -lMobileGestalt -Wl,-adhoc_codesign -o metal_test "$WORK/metal_test.m"
 
 python3 -I "$HERE/../../../../userland/inject/arm64e-mark.py" "$WORK/HakiosMetal"
 mkdir -p "$DEST/$BUNDLE.bundle" "$DEST_BIN"

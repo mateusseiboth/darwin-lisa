@@ -1,0 +1,32 @@
+--- a/metal_test.m
++++ b/metal_test.m
+@@ -49,6 +49,20 @@
+ #import <sys/wait.h>
+ #import <time.h>
+ #import <unistd.h>
++#import <mach-o/dyld.h>
++
++/* (darwin-lisa) the path this program was started by: HakiOS had it at /redwood/bin, the iOS 26 root at /usr/local/bin */
++static const char *
++self_path(void)
++{
++	static char path[1024];
++	uint32_t size = sizeof(path);
++
++	if (path[0] == 0 && _NSGetExecutablePath(path, &size) != 0) {
++		strlcpy(path, "/usr/local/bin/metal_test", sizeof(path));
++	}
++	return path;
++}
+ 
+ extern CFTypeRef MGCopyAnswer(CFStringRef key);
+ 
+@@ -122,7 +136,7 @@
+ in_a_new_process(const char *what, const char *argument, int secs)
+ {
+ 	extern char **environ;
+-	char *const argv[] = { (char *)"/redwood/bin/metal_test", (char *)argument, NULL };
++	char *const argv[] = { (char *)self_path(), (char *)argument, NULL };
+ 	pid_t pid;
+ 	int status = 0, waited = 0;
+ 

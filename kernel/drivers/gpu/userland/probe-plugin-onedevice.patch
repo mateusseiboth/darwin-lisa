@@ -1,6 +1,52 @@
 --- a/plugin/HakiosMetal.m
 +++ b/plugin/HakiosMetal.m
-@@ -51,6 +51,14 @@
+@@ -44,6 +44,45 @@
+ 	NSLog(@"HakiosMetal: %@", text);
+ }
+ 
++/* (darwin-lisa) iOS 26: Metal asks the device which GPU architecture its precompiled binaries must be for
++ * (+[MTLLoader sliceIDForDevice:legacyDriverVersion:airntDriverVersion:] -> -targetDeviceArchitecture: cpuType,
++ * subType, driverVersion, versionCombined) and asserts "Target device architecture is nil" when the answer is nil.
++ * CoreAnimation 26 reached it through its binary archive (-[_MTLDevice newBinaryArchiveWithDescriptor:error:] ->
++ * -[_MTLBinaryArchive initWithOptions:device:url:error:] -> loadFromURL -> deserializeBinaryArchiveHeader), killing
++ * backboardd at every start (logs/gpu-ca-1625.log). The answer is an architecture no slice of Apple's is made for, so
++ * nothing precompiled matches and Metal keeps to the AIR, which this driver compiles. */
++#define HM_ARCH_CPU_TYPE 0x0100a642u     /* not a type of Apple's: the Adreno 642L */
++static id
++deviceTargetArchitecture(__unused id self, __unused SEL _cmd)
++{
++	static id arch;
++	static dispatch_once_t once;
++
++	dispatch_once(&once, ^{
++		Class c = NSClassFromString(@"MTLTargetDeviceArchitecture");
++		id a = c != Nil ? [[c alloc] init] : nil;
++
++		if (a != nil) {
++			((void (*)(id, SEL, unsigned int))objc_msgSend)(a, sel_getUid("setCpuType:"), HM_ARCH_CPU_TYPE);
++			((void (*)(id, SEL, unsigned int))objc_msgSend)(a, sel_getUid("setSubType:"), 0);
++			((void (*)(id, SEL, unsigned long long))objc_msgSend)(a, sel_getUid("setDriverVersion:"), 0);
++		}
++		arch = a;
++	});
++	return arch;
++}
++
++/* (darwin-lisa) a binary archive holds code for Apple's GPUs: none is made here */
++static id
++deviceNewBinaryArchive(__unused id self, __unused SEL _cmd, __unused id descriptor, NSError **error)
++{
++	if (error != NULL) {
++		*error = [NSError errorWithDomain:@"MTLBinaryArchiveDomain" code:1
++					 userInfo:@{ NSLocalizedDescriptionKey: @"binary archives are not supported by this device" }];
++	}
++	return nil;
++}
++
+ /* -initWithAcceleratorPort: the fifth step of how Metal finds a device. */
+ static id
+ deviceInit(id self, SEL _cmd, unsigned int port)
+@@ -51,6 +90,14 @@
  	struct objc_super sup = { self, gBase };
  	id (*send)(struct objc_super *, SEL) = (id (*)(struct objc_super *, SEL))objc_msgSendSuper;
  
@@ -15,3 +61,12 @@
  	self = send(&sup, @selector(init));
  	gPort = port;
  	gDevice = self;                         /* what the objects it hands out answer to -device */
+@@ -1623,6 +1670,8 @@
+ 		}
+ 	}
+ 	class_addMethod(device, @selector(initWithAcceleratorPort:), (IMP)deviceInit, "@@:I");
++	class_addMethod(device, sel_getUid("targetDeviceArchitecture"), (IMP)deviceTargetArchitecture, "@@:");      /* (darwin-lisa) iOS 26 */
++	class_addMethod(device, sel_getUid("newBinaryArchiveWithDescriptor:error:"), (IMP)deviceNewBinaryArchive, "@@:@^@");
+ 	class_addMethod(device, @selector(name), (IMP)deviceName, "@@:");
+ 	class_addMethod(device, @selector(registryID), (IMP)deviceRegistryID, "Q@:");
+ 	class_addMethod(device, sel_registerName("maxBufferLength"), (IMP)deviceMaxBufferLength, "Q@:");

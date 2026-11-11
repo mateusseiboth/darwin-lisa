@@ -329,6 +329,94 @@ emptyTree(const char *path, int depth)
 }
 
 /*
+ * darwin-lisa, boot-arg ls_reset=1: LaunchServices' database and installd's build markers removed from a kept data
+ * volume, so that lsd seeds its database again on this boot and installd scans the applications as on a first boot.
+ * Why: the first boot registered a handful of applications (installd was restarted twice during the scan; lsd kept
+ * the partial seed and every later boot says "System App Migration is complete" and skips), so the home screen
+ * shows 3 of 252 apps and nothing RunningBoard has to launch by identity (the widget renderer, the poster
+ * extensions) can start. The stores live in lsd's data container, whose name is a UUID made on this device:
+ * every InternalDaemon container's Library/Caches is looked at.
+ */
+static unsigned
+unlinkLaunchServicesStores(const char *dir)
+{
+	char buf[4096], child[1100];
+	off_t position = 0;
+	ssize_t n;
+	unsigned gone = 0;
+	int fd = open(dir, O_RDONLY | O_DIRECTORY, 0);
+
+	if (fd < 0) {
+		return 0;
+	}
+	while ((n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+		for (ssize_t at = 0; at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+			const struct dirent *de = (const struct dirent *)(buf + at);
+			size_t ld = strlen(dir), ln = strlen(de->d_name);
+
+			if (de->d_reclen == 0) {
+				break;
+			}
+			/* com.apple.LaunchServices-*.csstore, SystemDataOnly-com.apple.LaunchServices-*.csstore, ...AppProtectionStore.plist */
+			if ((strncmp(de->d_name, "com.apple.LaunchServices", 24) != 0 &&
+			    strncmp(de->d_name, "SystemDataOnly-com.apple.LaunchServices", 39) != 0) || ld + ln + 2 > sizeof(child)) {
+				continue;
+			}
+			memcpy(child, dir, ld);
+			child[ld] = '/';
+			memcpy(child + ld + 1, de->d_name, ln + 1);
+			if (unlink(child) == 0) {
+				gone++;
+			}
+		}
+	}
+	close(fd);
+	return gone;
+}
+
+static void
+resetLaunchServices(void)
+{
+	static const char containers[] = "/private/var/mobile/Containers/Data/InternalDaemon";
+	static const char *const markers[] = { "/private/var/installd/Library/MobileInstallation/LastBuildInfo.plist",
+		"/private/var/installd/Library/MobileInstallation/MigrationInfo.plist" };
+	char buf[4096], dir[1100];
+	off_t position = 0;
+	ssize_t n;
+	unsigned stores = 0, gone = 0;
+	int fd = open(containers, O_RDONLY | O_DIRECTORY, 0);
+
+	if (fd >= 0) {
+		while ((n = getdirentries(fd, buf, sizeof(buf), &position)) > 0) {
+			for (ssize_t at = 0; at < n; at += ((struct dirent *)(buf + at))->d_reclen) {
+				const struct dirent *de = (const struct dirent *)(buf + at);
+				int len;
+
+				if (de->d_reclen == 0) {
+					break;
+				}
+				if (de->d_name[0] == '.') {
+					continue;
+				}
+				len = (int)(sizeof(containers) - 1 + 1 + strlen(de->d_name) + strlen("/Library/Caches"));
+				if ((size_t)len < sizeof(dir)) {
+					memcpy(dir, containers, sizeof(containers) - 1);
+					dir[sizeof(containers) - 1] = '/';
+					strcpy(dir + sizeof(containers), de->d_name);
+					strcpy(dir + sizeof(containers) + strlen(de->d_name), "/Library/Caches");
+					stores += unlinkLaunchServicesStores(dir);
+				}
+			}
+		}
+		close(fd);
+	}
+	for (unsigned i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
+		gone += unlink(markers[i]) == 0;
+	}
+	printf("init26: VAR ls_reset: %d LaunchServices store(s) and %d installd marker(s) removed; lsd seeds again this boot\n", (int)stores, (int)gone);
+}
+
+/*
  * var_sync=N (default 30 with the volume on the flash; 0: never): a child of init that calls sync() every N seconds,
  * so that a run that ends in a reset (the usual end here: no orderly shutdown reaches the kernel) loses at most N
  * seconds of what was written. HFS's journal keeps the volume whole either way.
@@ -563,6 +651,9 @@ mountVar(void)
 
 		for (unsigned i = 0; i < sizeof(own) / sizeof(own[0]); i++) {
 			emptyTree(own[i], 0);
+		}
+		if (bootArgNumber("ls_reset", 0) == 1) {
+			resetLaunchServices();
 		}
 	}
 	for (const struct var_skel *e = VAR_SKEL; e->path != NULL; e++) {

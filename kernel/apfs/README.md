@@ -28,3 +28,13 @@ ramdisk over (`ramdisk=` payload -> a `RAMDisk` memory-map DT node -> the stock 
 md0, with `rd=md0` auto-added to the cmdline). Getting past IOServicePH needs HakiOS's core platform/stub
 drivers (hakios.platform.c/stubs.c/...) and/or resolving the single-wake-source idle stall. A matching
 read-verified iOS-26 test root (static no-PAC /sbin/launchd) is at ~/Dev/mobile/userland-26/out/root-26.apfs.
+
+## readdir (2026-11-11)
+
+`apfs_vnop_readdir` serves both dirent formats (`VNODE_READDIR_EXTENDED` gives `struct direntry`, with `d_seekoff`
+for `VNODE_READDIR_REQSEEKOFF`) and uses the entry's INDEX as the directory cookie. Before, it served 32-bit dirents
+only with a byte offset into that stream, and every 64-bit enumeration (`getdirentries64`, `getattrlistbulk`:
+NSFileManager, LaunchServices' scan of `/Applications`) went through `vnode_readdir64()`'s conversion and stopped
+short: lsd saw 25 of 252 applications, 32 of 272 frameworks, 161 of 2767 private frameworks, and the home screen had
+three icons (the host `apfs-tool ls` lists them all, so the walk itself was fine). `apfs-wire.py` also flags the
+vfsconf entry `VFC_VFSREADDIR_EXTENDED`, so VFS calls the vnop directly. Kernel: `kernel-16k-apfs-readdir.bak`.

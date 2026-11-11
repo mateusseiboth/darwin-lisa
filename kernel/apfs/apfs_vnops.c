@@ -11,6 +11,7 @@
 #include <miscfs/apfs/apfs.h>
 #include <sys/attr.h>
 #include <sys/dirent.h>
+#include <pexpert/pexpert.h>	/* darwin-lisa: PE_parse_boot_argn (apfs_rdlog) */
 #include <sys/errno.h>
 #include <sys/namei.h>
 #include <sys/stat.h>
@@ -839,13 +840,26 @@ apfs_vnop_pagein(struct vnop_pagein_args *ap)
 
 #define APFS_DIRSIZ(namlen) \
 	((sizeof(struct dirent) - (MAXNAMLEN + 1)) + (((namlen) + 1 + 3) & ~3))
+/* struct direntry (VNODE_READDIR_EXTENDED): the name after the fixed part, 8-byte aligned */
+#define APFS_DIRSIZ64(namlen) \
+	((offsetof(struct direntry, d_name) + (namlen) + 1 + 7) & ~7)
 
+/*
+ * darwin-lisa: the directory cookie is the INDEX of the next entry to hand over ("." is 0, ".." 1, the
+ * volume's records from 2 in tree order, the synthetic directories after them), and both dirent formats are
+ * served. Before, only 32-bit dirents were, with a byte offset into that stream as the cookie, and every
+ * 64-bit enumeration (getdirentries64, getattrlistbulk: NSFileManager, LaunchServices' scan of /Applications)
+ * went through vnode_readdir64()'s conversion; lsd then saw 25 of 252 applications, 32 of 272 frameworks,
+ * and the home screen had three icons. An index cookie is what every other XNU file system hands out, and
+ * d_seekoff can be filled (VNODE_READDIR_REQSEEKOFF) for free.
+ */
 struct apfs_rd_ctx {
 	struct uio *rd_uio;
-	off_t       rd_start;           /* where this call is to resume */
-	off_t       rd_pos;             /* where we are in the stream of entries */
+	uint64_t    rd_start;           /* the index of the first entry this call hands over */
+	uint64_t    rd_index;           /* the index of the entry being looked at */
 	int         rd_count;
 	bool        rd_full;
+	bool        rd_extended;
 	int         rd_error;
 };
 
@@ -853,30 +867,49 @@ static int
 apfs_vnop_readdir_one(struct apfs_rd_ctx *rc, const char *name, size_t name_len,
     uint64_t file_id, uint8_t d_type)
 {
-	struct dirent de;
+	union {
+		struct dirent d32;
+		struct direntry d64;
+	} de;
+	uint16_t reclen;
 
 	if (name_len > MAXNAMLEN) {
 		return 0;               /* cannot be named through this interface; skip it */
 	}
-	bzero(&de, sizeof(de));
-	de.d_fileno = (ino_t)file_id;
-	de.d_type = d_type;
-	de.d_namlen = (uint8_t)name_len;
-	de.d_reclen = (uint16_t)APFS_DIRSIZ(name_len);
-
-	if (rc->rd_pos >= rc->rd_start) {
-		if (uio_resid(rc->rd_uio) < (user_ssize_t)de.d_reclen) {
-			rc->rd_full = true;
-			return EEXIST;      /* stop the walk: no room for this one */
-		}
-		memcpy(de.d_name, name, name_len);
-		rc->rd_error = uiomove((caddr_t)&de, de.d_reclen, rc->rd_uio);
-		if (rc->rd_error) {
-			return EEXIST;
-		}
-		rc->rd_count++;
+	if (rc->rd_index < rc->rd_start) {
+		rc->rd_index++;         /* handed over by an earlier call */
+		return 0;
 	}
-	rc->rd_pos += de.d_reclen;
+	if (rc->rd_extended) {
+		reclen = (uint16_t)APFS_DIRSIZ64(name_len);
+		bzero(&de.d64, offsetof(struct direntry, d_name));
+		de.d64.d_ino = file_id;
+		de.d64.d_seekoff = rc->rd_index + 1;
+		de.d64.d_reclen = reclen;
+		de.d64.d_namlen = (uint16_t)name_len;
+		de.d64.d_type = d_type;
+		memcpy(de.d64.d_name, name, name_len);
+		bzero(de.d64.d_name + name_len, reclen - offsetof(struct direntry, d_name) - name_len);
+	} else {
+		reclen = (uint16_t)APFS_DIRSIZ(name_len);
+		bzero(&de.d32, offsetof(struct dirent, d_name));
+		de.d32.d_fileno = (ino_t)file_id;
+		de.d32.d_type = d_type;
+		de.d32.d_namlen = (uint8_t)name_len;
+		de.d32.d_reclen = reclen;
+		memcpy(de.d32.d_name, name, name_len);
+		bzero(de.d32.d_name + name_len, reclen - offsetof(struct dirent, d_name) - name_len);
+	}
+	if (uio_resid(rc->rd_uio) < (user_ssize_t)reclen) {
+		rc->rd_full = true;
+		return EEXIST;          /* stop the walk: no room for this one; the cookie stays at its index */
+	}
+	rc->rd_error = uiomove((caddr_t)&de, reclen, rc->rd_uio);
+	if (rc->rd_error) {
+		return EEXIST;
+	}
+	rc->rd_count++;
+	rc->rd_index++;
 	return 0;
 }
 
@@ -896,15 +929,19 @@ apfs_vnop_readdir(struct vnop_readdir_args *ap)
 	struct apfs_rd_ctx rc;
 	int error;
 
-	if (ap->a_flags & (VNODE_READDIR_EXTENDED | VNODE_READDIR_REQSEEKOFF)) {
+	if (ap->a_flags & ~(VNODE_READDIR_EXTENDED | VNODE_READDIR_REQSEEKOFF)) {
 		return EINVAL;
 	}
 	if (!vnode_isdir(vp)) {
 		return ENOTDIR;
 	}
+	if (uio_offset(ap->a_uio) < 0) {
+		return EINVAL;
+	}
 	bzero(&rc, sizeof(rc));
 	rc.rd_uio = ap->a_uio;
-	rc.rd_start = uio_offset(ap->a_uio);
+	rc.rd_start = (uint64_t)uio_offset(ap->a_uio);
+	rc.rd_extended = (ap->a_flags & VNODE_READDIR_EXTENDED) != 0;
 
 	/*
 	 * A directory's entries are a run of records in the tree with no index, so there is
@@ -940,12 +977,31 @@ apfs_vnop_readdir(struct vnop_readdir_args *ap)
 	if (error != 0) {
 		return error;
 	}
-	uio_setoffset(ap->a_uio, rc.rd_pos);
+	uio_setoffset(ap->a_uio, (off_t)rc.rd_index);
 	if (ap->a_eofflag != NULL) {
 		*ap->a_eofflag = rc.rd_full ? 0 : 1;
 	}
 	if (ap->a_numdirent != NULL) {
 		*ap->a_numdirent = rc.rd_count;
+	}
+	/* darwin-lisa, boot-arg apfs_rdlog=1: every call on a directory that has more than 20 entries, 300 lines at most;
+	 * apfs_rdlog=ID (above 1): every call on the directory with that file id, 2000 lines at most */
+	{
+		static int64_t logging = -1;
+		static int lines;
+
+		if (logging < 0) {
+			uint64_t on = 0;
+
+			logging = PE_parse_boot_argn("apfs_rdlog", &on, sizeof(on)) ? (int64_t)on : 0;
+		}
+		if ((logging == 1 && lines < 300 && (rc.rd_index > 20 || rc.rd_start > 0)) ||
+		    (logging > 1 && lines < 2000 && an->an_id == (uint64_t)logging)) {
+			lines++;
+			printf("apfs readdir: dir %llu flags %#x cookie %llu -> %llu, %d entries, %s, resid left %lld\n",
+			    (unsigned long long)an->an_id, ap->a_flags, (unsigned long long)rc.rd_start, (unsigned long long)rc.rd_index,
+			    rc.rd_count, rc.rd_full ? "more" : "eof", (long long)uio_resid(ap->a_uio));
+		}
 	}
 	return 0;
 }

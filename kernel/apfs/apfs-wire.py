@@ -104,7 +104,7 @@ edit(vc,
      "\t\t.vfc_next = NULL,\n"
      "\t\t.vfc_reserved1 = 0,\n"
      "\t\t.vfc_reserved2 = 0,\n"
-     "\t\t.vfc_vfsflags = VFC_VFSGENERICARGS | VFC_VFS64BITREADY | VFC_VFSNATIVEXATTR,\n"
+     "\t\t.vfc_vfsflags = VFC_VFSGENERICARGS | VFC_VFS64BITREADY | VFC_VFSNATIVEXATTR | VFC_VFSREADDIR_EXTENDED,\n"
      "\t\t.vfc_descptr = NULL,\n"
      "\t\t.vfc_descsize = 0,\n"
      "\t\t.vfc_sysctl = NULL\n"

@@ -57,6 +57,21 @@ PerfPowerServicesExtended disabled by default + plug-in ac73402d (`ca_prof_all=1
 - `ui_lite=1` is named in `gpu-run.sh` but implemented nowhere.
 - PAC emulation: one trap per run; not a factor.
 
+**Measured with the display driver's own clock (nc10, nc11: `touch_lat=1`, `tl: s` swap timestamps).** The gesture
+times count from bsd_init and the screenshots from `oem run`, about 5 s apart, which had inflated the earlier
+estimates. Control Center: the lift is followed by 68 swaps in 2-3 s at 60 fps (the pull-in animation), then CA is
+idle: it opens in about 2 s and dismisses in 0.7 s. Notification Center: the date at once; the clock within 3-5 s in
+nc11 (25-45 s in nc5/nc7/nc8, nc12 checks whether that was run variance or the log path).
+
+**The empty Control Center tiles are not a GPU defect.** SpringBoard's log (nc11, `dlisa_oslog=SpringBoard`): the
+controls, like the home screen's "Waiting…" widget, are rendered by `com.apple.chrono.WidgetRenderer-Default`
+(`/Applications/WidgetRenderer_Default.app`), which RunningBoard never launches: "Bootstrapping failed ...
+RBSRequestErrorDomain code 5", "Connection to remote process was not established", scene updates fail, a relaunch
+loop; the kernel never execs it. LaunchServices does not know it: installd's log on the data volume
+(`installd/Library/Logs/MobileInstallation/mobile_installation.log.0`) shows the first boot registered "4 content"
+and scanned 0 bundle containers, then every boot says "System App Migration is complete" and skips. That is the
+queue's item 4 (apps missing on the home screen); fixing it brings the controls and the widget.
+
 ## Session 3 (night of 2026-11-10): CoreAnimation draws the UI on the GPU
 
 **Result.** Host run `gpu-q1` (logs `research/hackios-xnu-kernel/logs/gpu-q1-*`):

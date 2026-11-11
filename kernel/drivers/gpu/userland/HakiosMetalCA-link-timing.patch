@@ -1,0 +1,31 @@
+--- a/HakiosMetalCA.m	2026-11-11 15:26:29.227345740 -0400
++++ b/HakiosMetalCA.m	2026-11-11 15:26:55.366244751 -0400
+@@ -3388,13 +3388,17 @@
+ 				      why:[NSString stringWithFormat:@"%@ or %@ has no bitcode", [vs name], [fs name]]];
+ 	}
+ 	format = (unsigned)[[[descriptor colorAttachments] objectAtIndexedSubscript:0] pixelFormat];
++	/* darwin-lisa: how long the link took on the caller's thread, the window server's; a few ms is the cache, hundreds a compile */
++	double linkMs = 0;
+ 	{
+ 		hakios_metal_constant vsConstants[64], fsConstants[64];
+ 		unsigned vsCount = hm_function_constants(vs, vsConstants, 64), fsCount = hm_function_constants(fs, fsConstants, 64);
++		const double linkBegan = hm_now();
+ 
+ 		program = hakios_metal_program_new_bitcode_constants([vsAir bytes], [vsAir length], vsConstants, vsCount, fsAir != nil ? [fsAir bytes] : NULL,
+ 								     fsAir != nil ? [fsAir length] : 0,
+ 								     fsConstants, fsCount, format);
++		linkMs = (hm_now() - linkBegan) * 1000.0;
+ 		if (program != NULL) {
+ 			hm_dump_function("vs", vs, "metal_dump=fn", vsConstants, vsCount);
+ 			if (fs != nil) hm_dump_function("fs", fs, "metal_dump=fn", fsConstants, fsCount);
+@@ -3486,8 +3490,8 @@
+ 				}
+ 			}
+ 		}
+-		hm_print("linked %s (%p) for pixel format %u: the vertex stage binds %u resources, the fragment stage %u; fragment constants not 0:%s\n",
+-			 hakios_metal_program_name(program), (void *)program, format, hakios_metal_program_resource_count(program, 0),
++		hm_print("linked %s (%p) for pixel format %u in %.0f ms: the vertex stage binds %u resources, the fragment stage %u; fragment constants not 0:%s\n",
++			 hakios_metal_program_name(program), (void *)program, format, linkMs, hakios_metal_program_resource_count(program, 0),
+ 			 hakios_metal_program_resource_count(program, 1), [set UTF8String]);
+ 	}
+ 	{

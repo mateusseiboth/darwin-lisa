@@ -26,6 +26,10 @@ iOS 26 kernel; this directory holds the rest.
 | `userland/hakios-metal-unbound-push.patch` | A constant range ir3 pushes from a buffer the draw leaves unbound gets zeros instead of refusing the draw (the status bar and the app switcher). |
 | `userland/HakiosMetalCA-spec-bound.patch` | The plug-in specialises a program that is still huge by the buffer the draw binds. With `metal_spec_wait=1` the draw waits for that compile, and the whole uber shader never runs. |
 | `gpu-quietrun.sh`, `gpu-endrun.sh` | A host run that leaves the loader alone, so its console doesn't scroll the panel, with spaced screenshots; and the orderly end (`oem stop`, the GPU given back). |
+| `userland/HakiosMetalCA-link-timing.patch` | The plug-in's `linked ...` line says how long the link took (`in N ms`): a few ms is the stage cache, hundreds to thousands a compile on the window server's render thread. |
+| `userland/hakios-metal-cache-fsync.patch` | hakios-metal's compiler writes each cached stage with F_FULLFSYNC (file and directory): a run on lisa ends abruptly, and without it only the first minute's stages reached the data volume. |
+| `../../../tools/metal-cache-seed.sh` | The compiled stages from the phone's data volume (read through pmOS, read only) into the sysroot's `/redwood/share/hakios-metal-cache` (HM_CACHE_SEED): the first boot of a new image is as warm as the last run. |
+| `../../../tools/flash-root.sh` | A COMPLETE root image into super's root region from pmOS: size and APFS checks, read-back, the data region hashed before and after. |
 
 **Device test: `darwin-lisa/docs/gpu-device-test.md`.** Since the third round `gpu-wire.py` also builds the stock
 firmware into the kernel (step 7, `bsd/dev/hakios.adreno_fw.h`, generated in xnu-work only, never in git: the flash

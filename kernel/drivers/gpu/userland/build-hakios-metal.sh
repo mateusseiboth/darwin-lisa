@@ -52,6 +52,10 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-trace-binds.patch"
        # the uber shader specialised by the lowest small constant buffer a draw binds; metal_spec_wait=1
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-spec-bound.patch"
+       # the "linked" line says how long the link took (a few ms: the stage cache; hundreds: a compile)
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-link-timing.patch"
+       # ca_prof_all=1: the ca_prof sampler in every process that loads the plug-in (SpringBoard's main thread)
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ca-prof-all.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

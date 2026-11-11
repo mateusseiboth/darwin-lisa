@@ -90,7 +90,11 @@ UI_SHELLS = ("com.apple.ClarityBoard", "com.apple.checkerboard", "com.apple.devi
 #   startup (-[SBTelephonyManager isInEmergencyCallbackMode] -> _CTServerConnectionGetEmergencyCallBackMode, a
 #   synchronous XPC with retries): the full image's SpringBoard never drew a frame. Disabled, the lookup fails at
 #   once, as on the lean image, and the full image reaches the home screen (2026-11-10, ld_disable=CommCenter).
-ALWAYS_DISABLED = ("com.apple.CommCenter",)
+#   PerfPowerServices (and its Extended half): the power/performance metrics daemon. After every swipe it kept one
+#   core at 100 % for 20-40 s (kernel cpuload=5000 "tl: busy 4:PerfPowerService/1996"), and SpringBoard, which
+#   reports its events to it, followed the finger at a crawl: Notification Center 25-90 s late, the app switcher's
+#   transition still under way a minute later. Nothing here needs its metrics (2026-11-11, gpu-nc6 and gpu-nc7).
+ALWAYS_DISABLED = ("com.apple.CommCenter", "com.apple.PerfPowerServices", "com.apple.PerfPowerServicesExtended")
 
 
 def readLabels(sysroot, listing):

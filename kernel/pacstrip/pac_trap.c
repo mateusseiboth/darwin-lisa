@@ -19,8 +19,83 @@
 #include <mach/arm/thread_status.h>
 #include <vm/vm_map_xnu.h>	/* copyin() */
 
+#include <kern/processor.h>	/* darwin-lisa: dlisa_cpu_active_thread() */
+#include <kern/task.h>	/* darwin-lisa: task_pid() for the counts */
+
 #include "pac_emulate.h"
 #include "pac_trap.h"
+
+/*
+ * darwin-lisa: how many instructions this emulator ran, by task (pid): a process whose hot path still has PAC
+ * instructions traps on every one of them, and runs 10-100 times slower than it should. hakios.cpufreq.c prints
+ * these with the cpuload=N lines ("tl: pac").
+ */
+#define DLISA_PAC_TASKS 8
+struct dlisa_pac_count { int pid; uint64_t count; };
+struct dlisa_pac_count dlisa_pac_counts[DLISA_PAC_TASKS];
+uint64_t dlisa_pac_total;
+
+/* ... and by instruction address (pid, pc): which code still traps ("tl: pacpc") */
+#define DLISA_PAC_PCS 32
+struct dlisa_pac_pc { int pid; uint64_t pc; uint64_t count; };
+struct dlisa_pac_pc dlisa_pac_pcs[DLISA_PAC_PCS];
+
+static void
+dlisa_pac_note_pc(int pid, uint64_t pc)
+{
+	unsigned least = 0;
+
+	for (unsigned i = 0; i < DLISA_PAC_PCS; i++) {
+		if (dlisa_pac_pcs[i].count != 0 && dlisa_pac_pcs[i].pid == pid && dlisa_pac_pcs[i].pc == pc) {
+			dlisa_pac_pcs[i].count++;
+			return;
+		}
+		if (dlisa_pac_pcs[i].count < dlisa_pac_pcs[least].count) {
+			least = i;
+		}
+	}
+	dlisa_pac_pcs[least].pid = pid;
+	dlisa_pac_pcs[least].pc = pc;
+	dlisa_pac_pcs[least].count = 1;
+}
+
+static void
+dlisa_pac_note(uint64_t pc)
+{
+	int pid = task_pid(current_task());
+	unsigned least = 0;
+
+	dlisa_pac_total++;
+	dlisa_pac_note_pc(pid, pc);
+	for (unsigned i = 0; i < DLISA_PAC_TASKS; i++) {
+		if (dlisa_pac_counts[i].pid == pid && dlisa_pac_counts[i].count != 0) {
+			dlisa_pac_counts[i].count++;
+			return;
+		}
+		if (dlisa_pac_counts[i].count < dlisa_pac_counts[least].count) {
+			least = i;
+		}
+	}
+	dlisa_pac_counts[least].pid = pid;
+	dlisa_pac_counts[least].count = 1;
+}
+
+/* darwin-lisa: the thread running on a processor, THREAD_NULL when it is idle (for hakios.cpufreq.c's "tl: busy";
+ * struct processor is osfmk's, the BSD side sees only its forward declaration) */
+thread_t dlisa_cpu_active_thread(unsigned cpu);
+
+thread_t
+dlisa_cpu_active_thread(unsigned cpu)
+{
+	processor_t p = cpu < MAX_CPUS ? processor_array[cpu] : PROCESSOR_NULL;
+	thread_t t;
+
+	if (p == PROCESSOR_NULL) {
+		return THREAD_NULL;
+	}
+	t = p->active_thread;
+	return t == p->idle_thread ? THREAD_NULL : t;
+}
 
 static int
 pac_trap_load64(void *mem_ctx, uint64_t addr, uint64_t *out)
@@ -86,5 +161,6 @@ pac_emulate_user_trap(arm_saved_state_t *state, uint32_t instr)
 	set_saved_state_pc(state, ctx.pc);
 	set_saved_state_cpsr(state,
 	    (get_saved_state_cpsr(state) & ~PSR64_NZCV_MASK) | (ctx.nzcv & PSR64_NZCV_MASK));
+	dlisa_pac_note(ctx.pc - 4);   /* (ctx.pc is past the instruction already) */
 	return true;
 }

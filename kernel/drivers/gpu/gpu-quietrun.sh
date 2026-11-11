@@ -31,7 +31,9 @@ for t in $TIMES; do
 		echo "### +${t}s: logs/$TAG-q$n.png"
 	fi
 	timeout 5 fastboot oem log >/dev/null 2>&1
-	timeout 15 fastboot get_staged "$S/q.log" >/dev/null 2>&1 && tr -d '\000' < "$S/q.log" > "logs/$TAG.log"
+	# every snapshot kept (TAG-tSECS.log): the kernel's ring wraps, so the latest alone loses what came before
+	timeout 15 fastboot get_staged "$S/q.log" >/dev/null 2>&1 && tr -d '\000' < "$S/q.log" > "logs/$TAG.log" &&
+		cp "logs/$TAG.log" "logs/$TAG-t$t.log"
 	grep -a -c "no answer" "logs/$TAG.log" | sed 's/^/### no answer lines: /'
 done
 "$HERE/gpu-endrun.sh" "logs/$TAG-end.log"

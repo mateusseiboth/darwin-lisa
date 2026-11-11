@@ -33,6 +33,13 @@ function used is still exported by iOS 26's IOKit). See `userland/inject/dlisa-i
 - `touch_synth=SECS` posts one swipe up from the home bar SECS seconds after bsd_init; `touch_synth_every=SECS`,
   `touch_synth_count=N`, `touch_synth_steps=N`, `touch_synth_tap=1` (a tap first), `touch_synth_tap=2` (a tap only),
   `touch_synth_x=N touch_synth_y=N` (where the tap lands; the cover sheet's (i) is 58060, 62030).
+- `touch_seq=G@S,G@S,...` named gestures, each S seconds after bsd_init, in order (independent of `touch_synth`):
+  `nc` swipe down from the top-left edge (Notification Center), `cc` swipe down from the top-right edge (Control
+  Center on the split status bar; on today's classic layout it opens Notification Center too), `sw` swipe up from the
+  home bar held 1.5 s before lifting (the app switcher; on the classic layout the bottom edge is Control Center), `up`
+  swipe up from the home bar (home, or dismiss what is open), `tap` a tap at the middle. Kernel log:
+  `touch_synth: seq nc posted (x, y) -> (x, y), 25 moves, held 0 ms`, then `touch_synth: seq done`.
+  Example (GPU runs): `touch_seq=nc@200,up@235,cc@270,up@305,sw@340`.
 - `touch_lat=1` latency lines; `touch_poll_us=N` how often the INT line is looked at.
 
 ## Log markers

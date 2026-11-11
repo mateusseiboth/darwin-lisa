@@ -38,6 +38,9 @@ static const struct var_skel VAR_SKEL[] = {
 	{ "/db/DumpPanic", 'd', 0755, 0, 0, "" },
 	{ "/db/ExtensibleSSO", 'd', 0755, 0, 0, "" },
 	{ "/db/Sandbox", 'd', 0700, 0, 0, "" },
+	/* darwin-lisa: the window server's compiled shader stages (HakiosMetalCA.m HM_CACHE_DIR), kept across boots; without
+	 * it backboardd (mobile) cannot make the directory and falls back to /var/tmp, which is emptied at every boot */
+	{ "/db/hakios-metal-cache", 'd', 01777, 0, 0, "" },
 	{ "/db/UpdateMetrics", 'd', 0777, 501, 501, "" },
 	{ "/db/accessoryupdater", 'd', 0751, 278, 278, "" },
 	{ "/db/analyticsd", 'd', 0750, 263, 263, "" },

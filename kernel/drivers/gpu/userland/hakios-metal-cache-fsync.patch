@@ -1,0 +1,46 @@
+--- a/src/compiler.cpp	2026-11-11 15:48:21.188385552 -0400
++++ b/src/compiler.cpp	2026-11-11 15:48:21.199290574 -0400
+@@ -1,5 +1,7 @@
+ #include "hakios-metal/compiler.hpp"
+ 
++#include <fcntl.h>   // darwin-lisa: stageCacheSave (F_FULLFSYNC)
++#include <unistd.h>
+ #include <algorithm>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -1221,9 +1223,33 @@
+     const std::string tmp = path + ".tmp";
+     FILE* f = fopen(tmp.c_str(), "wb");
+     if (f == nullptr) return;
+-    const bool written = fwrite(w.out.data(), 1, w.out.size(), f) == w.out.size();
++    bool written = fwrite(w.out.data(), 1, w.out.size(), f) == w.out.size();
++    // darwin-lisa: the stage on the flash before the file is named, and its directory entry with it. A run on lisa
++    // ends abruptly (the loader stops the kernel, nothing unmounts), and what HFS+ still held in memory is lost: of a
++    // 5-minute run only the first minute's stages had reached the data volume. F_FULLFSYNC flushes the journal too.
++    if (written) {
++        fflush(f);
++#ifdef F_FULLFSYNC
++        written = fcntl(fileno(f), F_FULLFSYNC) == 0 || fsync(fileno(f)) == 0;
++#else
++        written = fsync(fileno(f)) == 0;
++#endif
++    }
+     fclose(f);
+-    if (!written || rename(tmp.c_str(), path.c_str()) != 0) remove(tmp.c_str());
++    if (!written || rename(tmp.c_str(), path.c_str()) != 0) {
++        remove(tmp.c_str());
++        return;
++    }
++    const std::string dir = path.substr(0, path.rfind('/'));
++    const int dfd = open(dir.c_str(), O_RDONLY);
++    if (dfd >= 0) {
++#ifdef F_FULLFSYNC
++        if (fcntl(dfd, F_FULLFSYNC) != 0) fsync(dfd);
++#else
++        fsync(dfd);
++#endif
++        close(dfd);
++    }
+ }
+ 
+ std::unique_ptr<CompiledStage> stageCacheLoad(const std::string& path) {

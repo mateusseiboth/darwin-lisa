@@ -1,5 +1,62 @@
 # GPU on the phone: the run book (one session)
 
+## Session 4 (2026-11-11 afternoon): Notification Center, Control Center, the app switcher, and the crawl
+
+**Input without a hand on the glass.** Kernel `kernel-16k-gpustop2-touchseq.bak` (88aede9c) = gpustop2 + boot-arg
+`touch_seq=nc@200,up@235,cc@270,up@305,sw@340` (`kernel/drivers/touch/README.md`). Host runs only.
+
+**What the runs showed** (`logs/gpu-nc1-*`, `gpu-nc2-*`; `metal_trace=1`, then `cpuload=5000`):
+- Notification Center, the blur passes (`downsample_8`, `narrow_blur_19`, `variable_blur`, `glass_background`,
+  `glass_foreground_sdf`) and the app switcher's blurred, dimmed home all draw on the GPU. No draw is refused, no
+  compile fails. What the user saw as "black" is the UI running tens of seconds behind the finger: the NC's clock
+  appears 25-90 s after the swipe, the switcher's transition is still under way 60 s later.
+- SpringBoard runs the classic (home-button) layout here: a swipe from the top-right opens Notification Center, and
+  Control Center is the bottom edge (see the status bar item of the queue).
+- `cpuload=5000`: after each gesture exactly one core sits at 100 % for ~40 s while the other six idle; the GPU is
+  99 % idle (`fps:` lines: GPU busy 136 ms in 33 s). One thread, the window server's render thread, is the whole
+  bottleneck.
+- The shader cache never survives a boot: init26 empties `/private/var/tmp` at every boot and the data-volume skeleton
+  had no `/db/hakios-metal-cache`, so backboardd (uid mobile) cannot make it and falls back to `/var/tmp`. Every boot
+  pays every uber-shader variant again (53 links in one 6-minute run). The data volume also held only the first
+  minute's stages: nothing after was flushed before the run's abrupt end.
+
+**Fixes, root `system-26.apfs.full-aba9ab2b` (complete image, flashed and verified):**
+- `userland-26/init/var-skel.h`: `/db/hakios-metal-cache` 1777 (init26 cd4f00e3).
+- Plug-in adbaca54: `HakiosMetalCA-link-timing.patch` (`linked ... in N ms`), `hakios-metal-cache-fsync.patch`
+  (F_FULLFSYNC on every saved stage and its directory).
+- `tools/flash-root.sh IMAGE` and `tools/metal-cache-seed.sh` (the stages out of the HFSX data volume, read through
+  pmOS, into the image's `/redwood/share/hakios-metal-cache`).
+
+**The cache alone did not cure the crawl** (runs nc3-nc5 on aba9ab2b: 43 links in 47 ms, and still one core at
+100 % for 20-40 s after each gesture while every backboardd thread sat idle in `mach_msg`, `ca_prof=20000`). The
+kernel then named the thread: `kernel-16k-gpustop2-tlwho2.bak` (bce0cbec) prints with `cpuload=N` the task and
+thread on every core more than half busy (`tl: busy 4:PerfPowerService/1996()`), the PAC emulator's traps by task
+(`tl: pac +N name:N`) and by instruction address (`tl: pacpc`). Result (nc6): the hot thread is **PerfPowerServices**,
+the power/performance metrics daemon, and PAC traps are 1 per run (the offline stripping is complete). With it
+disabled (nc7, `ld_disable=lean1`) the cores are idle after a swipe, the 20-30 % background load is gone, the NC
+clock shows within 35 s and the switcher reaches its blurred state within 25 s. `plist-tweaks.py` now disables
+`com.apple.PerfPowerServices` and `...Extended` by default (root e5dc5fd7 and after). What is left is SpringBoard
+waiting with idle CPUs; its `com.apple.commcenter.xpc` lookup fails once a second (SBTelephonyManager's retry loop,
+CommCenter being disabled). `ca_prof_all=1` (plug-in ac73402d) runs the sampler inside SpringBoard to see where.
+
+**Root `system-26.apfs.full-5c661408`** (complete image, flashed and verified 16:55): aba9ab2b + PerfPowerServices and
+PerfPowerServicesExtended disabled by default + plug-in ac73402d (`ca_prof_all=1`).
+
+**Where it stands (nc8, nc9):**
+- The bottom-edge swipe opens the classic Control Center: its chrome draws (the + button, the power button, the
+  chevron, the blurred and dimmed home behind), but the glass module tiles stay black. Notification Center's date
+  draws at once, its clock 25-45 s after the swipe. SpringBoard's main thread has no dominant stack in those
+  seconds (`ca_prof_all=1`): it is not blocked on one call.
+- The tiles and the clock are the draws that go through RGBA16Float offscreen passes (`fmt 115`: 1216x576 for the
+  clock's backdrop, 576x1216 and 140x304 for Control Center; `metal_trace=1` in `logs/gpu-nc1-t400.log`). Nothing in
+  them is refused. Suspects, in order: the glass/vibrancy shaders' output on this GPU (`glass_background_sdf`,
+  `glass_foreground_sdf`, `variable_blur`, the uber shader with constants 35/47 reading the backdrop), the
+  half-float render target path, and SpringBoard rendering some of that content itself with no GPU.
+- `metal_all=1` (a device for every process) is not the answer today: SpringBoard crash-loops with 96 pipelines
+  refused as "the descriptor names no vertex function" (mesh/object pipelines).
+- `ui_lite=1` is named in `gpu-run.sh` but implemented nowhere.
+- PAC emulation: one trap per run; not a factor.
+
 ## Session 3 (night of 2026-11-10): CoreAnimation draws the UI on the GPU
 
 **Result.** Host run `gpu-q1` (logs `research/hackios-xnu-kernel/logs/gpu-q1-*`):

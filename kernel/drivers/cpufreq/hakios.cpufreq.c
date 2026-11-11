@@ -12,7 +12,11 @@
  * Register layout: Linux drivers/cpufreq/qcom-cpufreq-hw.c ("epss" variant).
  */
 #include <kern/clock.h>
+#include <kern/task.h>
 #include <kern/thread.h>
+#include <sys/bsdtask_info.h>	/* bsd_getthreadname */
+#include <sys/param.h>
+#include <sys/proc.h>
 #include <os/atomic_private.h>
 #include <libkern/libkern.h>
 #include <mach/mach_types.h>
@@ -262,6 +266,108 @@ bench_all(void *arg __unused, wait_result_t wr __unused)
  */
 static uint32_t load_every_ms;
 
+/*
+ * darwin-lisa: with the shares, WHO was running on a core that was more than half busy (the task's name and the
+ * thread's id and name, "tl: busy 6:SpringBoard/123(main)"), and the PAC emulator's counts since the last line, by
+ * task ("tl: pac +N SpringBoard:N backboardd:N"; osfmk/arm64/pac_trap.c): a process with PAC instructions left in
+ * its hot path traps on every one, and that is what a core at 100 % for half a minute after a swipe looked like.
+ */
+#define DLISA_PAC_TASKS 8
+struct dlisa_pac_count { int pid; uint64_t count; };
+extern struct dlisa_pac_count dlisa_pac_counts[DLISA_PAC_TASKS];
+extern uint64_t dlisa_pac_total;
+#define DLISA_PAC_PCS 32
+struct dlisa_pac_pc { int pid; uint64_t pc; uint64_t count; };
+extern struct dlisa_pac_pc dlisa_pac_pcs[DLISA_PAC_PCS];
+
+/* the six instruction addresses that trapped most since the last line: "tl: pacpc SpringBoard:0x1a2b3c4d8:1234 ..." */
+static void
+load_pac_pcs(char *line, size_t size)
+{
+	static uint64_t before[DLISA_PAC_PCS], pc_before[DLISA_PAC_PCS];
+	uint64_t delta[DLISA_PAC_PCS];
+	int at = snprintf(line, size, "tl: pacpc");
+	unsigned shown = 0;
+
+	for (unsigned i = 0; i < DLISA_PAC_PCS; i++) {
+		uint64_t count = dlisa_pac_pcs[i].count;
+
+		delta[i] = dlisa_pac_pcs[i].pc == pc_before[i] && count >= before[i] ? count - before[i] : count;
+		pc_before[i] = dlisa_pac_pcs[i].pc;
+		before[i] = count;
+	}
+	for (; shown < 6 && at < (int)size - 60; shown++) {
+		unsigned top = 0;
+		char name[2 * MAXCOMLEN + 1] = "?";
+
+		for (unsigned i = 1; i < DLISA_PAC_PCS; i++) {
+			if (delta[i] > delta[top]) {
+				top = i;
+			}
+		}
+		if (delta[top] == 0) {
+			break;
+		}
+		proc_name(dlisa_pac_pcs[top].pid, name, sizeof(name));
+		at += snprintf(line + at, size - (size_t)at, " %s:%#llx:%llu", name, (unsigned long long)dlisa_pac_pcs[top].pc,
+		    (unsigned long long)delta[top]);
+		delta[top] = 0;
+	}
+	if (shown == 0) {
+		line[0] = 0;
+	}
+}
+
+static void
+load_who(const ml_topology_info_t *topology, unsigned i, char *line, size_t size, int *at)
+{
+	extern thread_t dlisa_cpu_active_thread(unsigned cpu);   /* osfmk/arm64/pac_trap.c */
+	thread_t thread = dlisa_cpu_active_thread(topology->cpus[i].cpu_id);
+	task_t task;
+	char name[2 * MAXCOMLEN + 1] = "?", tname[64] = "";
+	void *uth;
+
+	if (thread == THREAD_NULL || *at >= (int)size - 48) {
+		return;
+	}
+	task = get_threadtask(thread);
+	if (task != TASK_NULL) {
+		proc_name(task_pid(task), name, sizeof(name));
+	}
+	if ((uth = get_bsdthread_info(thread)) != NULL) {
+		bsd_getthreadname(uth, tname);
+	}
+	*at += snprintf(line + *at, size - (size_t)*at, " %u:%s/%llu(%s)", (topology->cpus[i].phys_id >> 8) & 0xff, name,
+	    (unsigned long long)thread_tid(thread), tname);
+}
+
+static void
+load_pac(char *line, size_t size)
+{
+	static uint64_t total_before, before[DLISA_PAC_TASKS];
+	static int pid_before[DLISA_PAC_TASKS];
+	int at;
+
+	if (dlisa_pac_total == total_before) {
+		line[0] = 0;
+		return;
+	}
+	at = snprintf(line, size, "tl: pac +%llu", (unsigned long long)(dlisa_pac_total - total_before));
+	total_before = dlisa_pac_total;
+	for (unsigned i = 0; i < DLISA_PAC_TASKS && at < (int)size - 40; i++) {
+		char name[2 * MAXCOMLEN + 1] = "?";
+		uint64_t count = dlisa_pac_counts[i].count, delta = dlisa_pac_counts[i].pid == pid_before[i] && count >= before[i] ? count - before[i] : count;
+
+		pid_before[i] = dlisa_pac_counts[i].pid;
+		before[i] = count;
+		if (delta == 0) {
+			continue;
+		}
+		proc_name(dlisa_pac_counts[i].pid, name, sizeof(name));
+		at += snprintf(line + at, size - (size_t)at, " %s:%llu", name, (unsigned long long)delta);
+	}
+}
+
 static void
 load_thread(void *arg __unused, wait_result_t wr __unused)
 {
@@ -269,29 +375,44 @@ load_thread(void *arg __unused, wait_result_t wr __unused)
 	uint64_t idle_before[MAX_CPUS] = { 0 }, then = mach_absolute_time();
 
 	for (;;) {
-		char line[192];
-		int at;
+		char line[192], who[256], pac[256];
+		int at, who_at;
 		uint64_t now, us;
 
 		delay_for_interval(load_every_ms, NSEC_PER_MSEC);
 		now = mach_absolute_time();
 		absolutetime_to_nanoseconds(now, &us);
 		at = snprintf(line, sizeof(line), "tl: u at %llu", us / 1000);
+		who_at = snprintf(who, sizeof(who), "tl: busy");
 		for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
-			uint64_t idle = 0, busy;
+			uint64_t idle = 0, busy, share;
 
 			if (!ml_cpu_idle_time((int)i, &idle)) {
 				continue;
 			}
 			busy = (now - then) > (idle - idle_before[i]) ? (now - then) - (idle - idle_before[i]) : 0;
 			idle_before[i] = idle;
+			share = 100 * busy / (now - then);
 			if (at < (int)sizeof(line) - 12) {
-				at += snprintf(line + at, sizeof(line) - at, " %u:%llu", (topology->cpus[i].phys_id >> 8) & 0xff,
-				    100 * busy / (now - then));
+				at += snprintf(line + at, sizeof(line) - at, " %u:%llu", (topology->cpus[i].phys_id >> 8) & 0xff, share);
+			}
+			if (share >= 50) {
+				load_who(topology, i, who, sizeof(who), &who_at);
 			}
 		}
 		then = now;
 		hakios_tl("%s\n", line);
+		if (who_at > (int)strlen("tl: busy")) {
+			hakios_tl("%s\n", who);
+		}
+		load_pac(pac, sizeof(pac));
+		if (pac[0] != 0) {
+			hakios_tl("%s\n", pac);
+			load_pac_pcs(pac, sizeof(pac));
+			if (pac[0] != 0) {
+				hakios_tl("%s\n", pac);
+			}
+		}
 	}
 }
 

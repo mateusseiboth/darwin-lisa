@@ -1,0 +1,40 @@
+--- a/HakiosMetalCA.m	2026-11-11 16:45:30.158206275 -0400
++++ b/HakiosMetalCA.m	2026-11-11 16:45:30.170743438 -0400
+@@ -2101,6 +2101,7 @@
+ #define CA_PROF_DUMP    400
+ #define CA_PROF_DEPTH   10
+ static unsigned ca_prof_us;
++static int ca_prof_all;   /* darwin-lisa: ca_prof_all=1 and this is not the window server */
+ static struct {
+ 	char name[32];
+ 	uint64_t stack[CA_PROF_DEPTH];
+@@ -2186,6 +2187,11 @@
+ 
+ 			if (ca_prof_table[i].count == 0 || (i > 0 && strcmp(ca_prof_table[i].name, ca_prof_table[i - 1].name) == 0 && ++shown > 4)) continue;
+ 			if (i == 0 || strcmp(ca_prof_table[i].name, ca_prof_table[i - 1].name) != 0) shown = 0;
++			/* darwin-lisa (ca_prof_all=1, a process that is not the window server): its unnamed threads (the main one
++			 * among them) and any thread seen in a fifth of the looks or more; the window server: as before */
++			if (ca_prof_all) {
++				if (strcmp(ca_prof_table[i].name, "(unnamed)") != 0 && ca_prof_table[i].count * 5 < looks) continue;
++			} else
+ 			if (strstr(ca_prof_table[i].name, "render") == NULL && strstr(ca_prof_table[i].name, "coreanimation") == NULL &&
+ 			    strstr(ca_prof_table[i].name, "hakios") == NULL && strcmp(ca_prof_table[i].name, "(unnamed)") != 0) continue;
+ 			at = snprintf(line, sizeof(line), "ca-prof: %s %.0f%%:", ca_prof_table[i].name, 100.0 * ca_prof_table[i].count / looks);
+@@ -2223,6 +2229,7 @@
+ 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) != 0 || (at = strstr(args, "ca_prof=")) == NULL) return;
+ 		ca_prof_us = (unsigned)atoi(at + 8);
+ 		if (ca_prof_us == 0) return;
++		ca_prof_all = strstr(args, "ca_prof_all=1") != NULL && (getprogname() == NULL || strcmp(getprogname(), "backboardd") != 0);
+ 		pthread_create(&sampler, NULL, ca_prof_main, NULL);
+ 		hm_print("ca-prof: every thread looked at every %u us\n", ca_prof_us);
+ 	});
+@@ -2270,6 +2277,9 @@
+ 		}
+ 		if (!all && (name == NULL || strcmp(name, "backboardd") != 0)) {
+ 			HM_ONCE("%s is not shown the device: the window server alone is (metal_all=1: every process)\n", name ? name : "?");
++			/* darwin-lisa, boot-arg ca_prof_all=1: the sampler in this process too (SpringBoard's main thread: where it
++			 * waits between a swipe and the frame that answers it), although it is not shown the device */
++			if (strstr(args, "ca_prof_all=1") != NULL) ca_prof_start();
+ 			return nil;     /* (not released: before -init, _MTLDevice's -dealloc reads what -init never set) */
+ 		}
+ 	}

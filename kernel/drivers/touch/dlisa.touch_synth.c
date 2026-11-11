@@ -13,12 +13,20 @@
  *   touch_synth_tap=1       a tap before each swipe, at the middle of the screen or at touch_synth_x/_y
  *   touch_synth_tap=2       a tap only, no swipe (touch_synth_x=58060 touch_synth_y=62030: the cover sheet's (i))
  *   touch_synth_x=N, touch_synth_y=N   where the tap lands, 0..65535 (default the middle)
+ *   touch_seq=G@S,G@S,...   named gestures, each S seconds after bsd_init (a list, in order; independent of touch_synth):
+ *                           nc   swipe down from the top-left edge (Notification Center)
+ *                           cc   swipe down from the top-right edge (Control Center)
+ *                           sw   swipe up from the home bar and hold before lifting (the app switcher)
+ *                           up   swipe up from the home bar (home / dismiss)
+ *                           tap  a tap at the middle (dismiss)
+ *                           e.g. touch_seq=nc@90,up@120,cc@150,up@180,sw@210
  */
 #include <kern/clock.h>
 #include <kern/thread.h>
 #include <pexpert/pexpert.h>
 #include <sys/hakios.input.h>
 #include <sys/systm.h>
+#include <string.h>
 
 extern kern_return_t thread_terminate(thread_t thread);
 
@@ -72,6 +80,109 @@ synth_thread(__unused void *parameter, __unused wait_result_t result)
 	thread_terminate(current_thread());
 }
 
+/* touch_seq: a straight swipe from (x0, y0) to (x1, y1) in `steps` moves 16 ms apart, held `hold_ms` before lifting */
+static void
+seq_swipe(const char *name, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint32_t steps, uint32_t hold_ms)
+{
+	hakios_touch_post(HAKIOS_TOUCH_DOWN, SYNTH_FINGER, x0, y0);
+	for (uint32_t i = 1; i <= steps; i++) {
+		synth_sleep_ms(16);
+		hakios_touch_post(HAKIOS_TOUCH_MOVE, SYNTH_FINGER, x0 + ((int64_t)x1 - x0) * i / steps, y0 + ((int64_t)y1 - y0) * i / steps);
+	}
+	if (hold_ms) {
+		/* a finger that stays put still reports: the recogniser needs the pause to see a hold */
+		for (uint32_t t = 0; t < hold_ms; t += 50) {
+			synth_sleep_ms(50);
+			hakios_touch_post(HAKIOS_TOUCH_MOVE, SYNTH_FINGER, x1, y1);
+		}
+	}
+	synth_sleep_ms(16);
+	hakios_touch_post(HAKIOS_TOUCH_UP, SYNTH_FINGER, x1, y1);
+	printf("touch_synth: seq %s posted (%u, %u) -> (%u, %u), %u moves, held %u ms\n", name, x0, y0, x1, y1, steps, hold_ms);
+}
+
+static void
+seq_gesture(const char *g)
+{
+	/* 0..65535: the top edge strip is 0.3 %, the home bar 99 %, the panel's sides at 15 % and 88 % */
+	if (strncmp(g, "nc", 2) == 0) {
+		seq_swipe("nc", 9830, 200, 9830, 45875, 25, 0);
+	} else if (strncmp(g, "cc", 2) == 0) {
+		seq_swipe("cc", 57671, 200, 57671, 45875, 25, 0);
+	} else if (strncmp(g, "sw", 2) == 0) {
+		seq_swipe("sw", 32768, 64880, 32768, 32768, 25, 1500);
+	} else if (strncmp(g, "up", 2) == 0) {
+		seq_swipe("up", 32768, 64880, 32768, 22937, 20, 0);
+	} else if (strncmp(g, "tap", 3) == 0) {
+		hakios_touch_post(HAKIOS_TOUCH_DOWN, SYNTH_FINGER, 32768, 32768);
+		synth_sleep_ms(80);
+		hakios_touch_post(HAKIOS_TOUCH_UP, SYNTH_FINGER, 32768, 32768);
+		printf("touch_synth: seq tap posted at the middle\n");
+	} else {
+		printf("touch_synth: seq: unknown gesture \"%s\"\n", g);
+	}
+}
+
+static char seq_spec[160];
+
+static void
+seq_thread(__unused void *parameter, __unused wait_result_t result)
+{
+	uint64_t start, now;
+	char *p = seq_spec;
+
+	clock_get_uptime(&start);
+	while (*p) {
+		char *at, *next = p;
+		uint32_t secs = 0;
+
+		while (*next && *next != ',') {
+			next++;
+		}
+		if (*next) {
+			*next++ = '\0';
+		}
+		at = p;
+		while (*at && *at != '@') {
+			at++;
+		}
+		if (*at) {
+			*at++ = '\0';
+			while (*at >= '0' && *at <= '9') {
+				secs = secs * 10 + (uint32_t)(*at++ - '0');
+			}
+		}
+		for (;;) {
+			uint64_t ns;
+
+			clock_get_uptime(&now);
+			absolutetime_to_nanoseconds(now - start, &ns);
+			if (ns / NSEC_PER_SEC >= secs) {
+				break;
+			}
+			synth_sleep_ms(200);
+		}
+		seq_gesture(p);
+		p = next;
+	}
+	printf("touch_synth: seq done\n");
+	thread_terminate(current_thread());
+}
+
+static void
+seq_init(void)
+{
+	thread_t thread;
+
+	if (!PE_parse_boot_argn("touch_seq", seq_spec, sizeof(seq_spec)) || seq_spec[0] == '\0') {
+		return;
+	}
+	printf("touch_synth: seq \"%s\"\n", seq_spec);
+	if (kernel_thread_start(seq_thread, NULL, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
+}
+
 void dlisa_touch_synth_init(void);
 
 void
@@ -79,6 +190,7 @@ dlisa_touch_synth_init(void)
 {
 	thread_t thread;
 
+	seq_init();
 	if (!PE_parse_boot_argn("touch_synth", &synth_delay_s, sizeof(synth_delay_s)) || synth_delay_s == 0) {
 		return;
 	}

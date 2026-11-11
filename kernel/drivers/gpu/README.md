@@ -22,6 +22,10 @@ iOS 26 kernel; this directory holds the rest.
 | `tools/metal-initlimits.py` | Runs Metal's `-[_MTLDevice initLimits]` under unicorn for every `featureProfile`. |
 | `gpu-run.sh` | The device boots of `docs/gpu-device-test.md` (the run book), as host runs with only boot-args changed; checks the 460-character line. |
 | `userland/gputest.c` | The probe and `metal_test` in order under one `init_run=` entry. |
+| `userland/hakios-metal-spec-s2v.patch` | hakios-metal's compiler turns scratch at constant offsets back into values (`nir_lower_scratch_to_var`). CoreAnimation 26's uber shader goes from 38 560 instruction words to 32-768. |
+| `userland/hakios-metal-unbound-push.patch` | A constant range ir3 pushes from a buffer the draw leaves unbound gets zeros instead of refusing the draw (the status bar and the app switcher). |
+| `userland/HakiosMetalCA-spec-bound.patch` | The plug-in specialises a program that is still huge by the buffer the draw binds. With `metal_spec_wait=1` the draw waits for that compile, and the whole uber shader never runs. |
+| `gpu-quietrun.sh`, `gpu-endrun.sh` | A host run that leaves the loader alone, so its console doesn't scroll the panel, with spaced screenshots; and the orderly end (`oem stop`, the GPU given back). |
 
 **Device test: `darwin-lisa/docs/gpu-device-test.md`.** Since the third round `gpu-wire.py` also builds the stock
 firmware into the kernel (step 7, `bsd/dev/hakios.adreno_fw.h`, generated in xnu-work only, never in git: the flash

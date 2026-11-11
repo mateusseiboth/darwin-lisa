@@ -1,0 +1,19 @@
+--- a/src/render.cpp	2026-11-11 06:28:16.722272294 -0400
++++ b/src/render.cpp	2026-11-11 06:28:16.734869850 -0400
+@@ -242,7 +242,15 @@
+             continue;
+         }
+         if (r.block >= b.buffers.size() || b.buffers[r.block].buffer == nullptr) {
+-            return refuse(why, name() + ": no buffer bound at index " + n(r.block) + " (its constant buffer)");
++            // (darwin-lisa) a range ir3 pushes from a buffer the draw leaves unbound: zeros, as uboDescriptors gives such a
++            // buffer below the highest a null descriptor. CoreAnimation 26's fixed_vert_lph_spc reads its buffer 3 only
++            // in branches its draws without one do not take; since hakios-metal-spec-s2v.patch that read is at a constant
++            // offset, so pushed, and 532 draws of a boot (the status bar, the app switcher) were refused for it
++            if (r.sizeDwords == 0 || r.sizeDwords % 4 != 0 || r.offsetVec4 + r.sizeDwords / 4 > k.constlen) {
++                return refuse(why, name() + ": no buffer bound at index " + n(r.block) + " (its constant buffer)");
++            }
++            out->push_back(PushedRange{r.offsetVec4, r.sizeDwords / 4, 0, std::vector<uint32_t>(r.sizeDwords, 0u)});
++            continue;
+         }
+         const Binding& x = b.buffers[r.block];
+         if (x.offset % 4 != 0 || x.offset > x.buffer->length()) {

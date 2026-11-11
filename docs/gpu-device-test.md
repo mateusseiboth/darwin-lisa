@@ -31,10 +31,43 @@
 
   Kernel: `kernel-16k-final1-fix-gpustop2.bak` (25d0ce05).
 
+**Standalone (morning of 2026-11-11).** The phone left for the presentation with a GPU UI that renders and doesn't
+freeze, but is slow.
+
+| Piece | Version | sha |
+|---|---|---|
+| vendor_boot_a | `out/vendor_boot-lisa-final10-gpu.img` | 8b95354c |
+| root | `userland-26/out/system-26.apfs.full-0353997a` | 0353997a |
+
+- **final10** = the safe set's autoboot line + `gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1
+  interrupt-masked-debug-mode=0`. The line is exactly 460 characters.
+- **final9 panicked.** The first submission's cache flush ran with interrupts off for 693 µs, past XNU's 625 µs
+  limit (`Interrupts held disabled timed out`). Host runs had been lucky, measuring 300-690 µs per submission.
+  `interrupt-masked-debug-mode=0` switches the check off, so final10 boots.
+- **0353997a draws each pipeline with its own program.** It needs no specialisation per buffer content; df6423c1 did
+  that, at 0.8 s a content, which was unusable.
+- **Black status bar and app switcher on 0353997a.** 532 draws were refused with `fixed_vert_lph_spc: no buffer bound
+  at index 3 (its constant buffer)`. Since the scratch fix, that read is at a constant offset, so ir3 pushes the
+  range, and these draws don't bind the buffer. `hakios-metal-unbound-push.patch` pushes zeros for it, as an unbound
+  buffer below the highest already got a null descriptor.
+  - Root **9aebc2ae** (plug-in 8ad1a65e) has the fix. Built, not yet on the phone.
+  - Log: `research/hackios-xnu-kernel/logs/gpu-standalone-final10-0353997a.log`.
+
+**Performance, next steps:**
+- GPU: 10-18 ms per submission (sysmem passes at 1080x2400). Frames while UI moves: mostly 17-35 ms apart, the
+  longest 66-78 ms.
+- The worst stalls are each new pipeline's first compile, synchronous in the window server. They disappear once
+  `/private/var/db/hakios-metal-cache` (data volume) is warm.
+- Seed that cache into the image (`HM_CACHE_SEED`, `/redwood/share/hakios-metal-cache`) from a long session, so the
+  first boot is warm.
+- Then profile with `metal_fps=1`: encoding cost per draw, and GMEM vs sysmem (`metal_gmem_draws`) for the
+  full-screen passes.
+
 **Running a GPU test now:**
 - End every run with `fastboot oem stop` and wait for "the run is over" before any reset.
 - Screenshots taken while the host polls are wrong: the loader's console scrolls the whole panel. Take screenshots
-  in a quiet run instead: no polling, spaced screenshots.
+  in a quiet run instead: no polling, spaced screenshots (`kernel/drivers/gpu/gpu-quietrun.sh`; `gpu-endrun.sh` sends
+  `oem stop` and checks that the GPU was given back).
 
 ## Session 2 (after `gpu-probe-1551`): step 3a fixed, re-run 3a then 3b
 

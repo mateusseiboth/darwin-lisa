@@ -50,6 +50,8 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-unknown-selectors.patch"
        # metal_trace=1: per program, the resources each stage declares and the buffers a draw binds
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-trace-binds.patch"
+       # the uber shader specialised by the lowest small constant buffer a draw binds; metal_spec_wait=1
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-spec-bound.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

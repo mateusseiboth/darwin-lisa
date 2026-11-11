@@ -1,0 +1,97 @@
+--- a/HakiosMetalCA.m	2026-11-10 20:08:35.795157822 -0400
++++ b/HakiosMetalCA.m	2026-11-10 20:27:16.180274004 -0400
+@@ -1272,6 +1272,8 @@
+ 	hakios_metal_constant _fsConstants[64];
+ 	unsigned _fsConstantCount;
+ 	int _specBinding;
++	uint32_t _specCandidates;         /* darwin-lisa: constant buffers of 256 bytes or less, by index (bit n) */
++	unsigned _specCandidateLength[32];
+ 	unsigned _specLength;
+ 	NSMutableDictionary *_specialised;
+ }
+@@ -7586,6 +7588,21 @@
+ 
+ - (hakios_metal_program *)hakiosProgram { return _program; }
+ 
++/* darwin-lisa, boot-arg metal_spec_wait=1: see hakiosProgramFor: */
++static BOOL
++hm_spec_wait(void)
++{
++	static int on = -1;
++
++	if (on < 0) {
++		char args[1024] = {0};
++		size_t size = sizeof(args) - 1;
++
++		on = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_spec_wait=1") != NULL;
++	}
++	return on != 0;
++}
++
+ /* boot-arg metal_nospec: every draw with the pipeline's own program, no uber shader specialised */
+ static BOOL
+ hm_spec_off(void)
+@@ -7614,12 +7631,19 @@
+ 		unsigned kind, index, size;
+ 
+ 		if (hakios_metal_program_resource(_program, 1, i, &kind, &index, &size) == 0 && kind == HAKIOS_METAL_RESOURCE_CONSTANT_BUFFER &&
+-		    size != 0 && size <= 256 && (_specBinding < 0 || (unsigned)index < (unsigned)_specBinding)) {
+-			_specBinding = (int)index;
+-			_specLength = size;
++		    size != 0 && size <= 256 && index < 32) {
++			_specCandidates |= 1u << index;
++			_specCandidateLength[index] = size;
+ 		}
+ 	}
+-	if (_specBinding < 0) return;
++	/*
++	 * darwin-lisa: the deciding buffer is the lowest of them that a draw BINDS, chosen at the first draw
++	 * (hakiosProgramFor:). CoreAnimation 26's fixed_frag_lph_cph declares a 52-byte constant buffer 0 that it never
++	 * binds, and its 256 bytes at index 1; the lowest declared one never decided anything, and every draw ran the whole
++	 * uber shader.
++	 */
++	if (_specCandidates == 0) return;
++	_specBinding = -2;      /* (chosen at the first draw) */
+ 	_fsAir = [air retain];
+ 	_fsConstantCount = count < 64 ? count : 64;
+ 	memcpy(_fsConstants, constants, _fsConstantCount * sizeof(*constants));
+@@ -7634,6 +7658,19 @@
+ 	static dispatch_queue_t compiling;
+ 	static dispatch_once_t once;
+ 
++	if (_specBinding == -2) {
++		@synchronized(self) {
++			for (unsigned i = 0; _specBinding == -2 && i < count && i < 32; i++) {
++				if ((_specCandidates >> i & 1) != 0 && buffers[i] != NULL) {
++					_specLength = _specCandidateLength[i];
++					_specBinding = (int)i;
++				}
++			}
++		}
++		if (_specBinding == -2) return _program;
++		hm_print("specialise: %s decides by its buffer %d (%u bytes), the lowest small constant buffer a draw binds\n",
++			 hakios_metal_program_name(_program), _specBinding, _specLength);
++	}
+ 	if (_specBinding < 0 || (unsigned)_specBinding >= count || buffers[_specBinding] == NULL) return _program;
+ 	const uint8_t *bytes = (const uint8_t *)hakios_metal_buffer_contents(buffers[_specBinding]);
+ 	const uint64_t length = hakios_metal_buffer_length(buffers[_specBinding]), at = offsets[_specBinding];
+@@ -7678,6 +7715,9 @@
+ 			[self release];
+ 		});
+ 	}
++	/* darwin-lisa, boot-arg metal_spec_wait=1: no draw with the whole uber shader while its specialised program
++	 * compiles (the draw is left out, NULL): on this Adreno the generic fixed_frag_lph_cph stalls the GPU */
++	if (found == _program && hm_spec_wait()) return NULL;
+ 	return found;
+ }
+ 
+@@ -8534,6 +8574,9 @@
+ 	}
+ 	hakios_metal_cb_set_vertex_textures(cb, vsTex, _vsHighestTexture, vsSamp, _vsHighestSampler);
+ 	hakios_metal_program *program = [_pipeline hakiosProgramFor:fs offsets:_fsOffsets count:_fsHighest];
++	if (program == NULL) {
++		return;         /* (metal_spec_wait=1: its specialised program is still compiling) */
++	}
+ 
+ 	hm_dump_config(hakios_metal_program_name(program), fs, _fsOffsets, _fsHighest);
+ 	if (hm_tracing()) {

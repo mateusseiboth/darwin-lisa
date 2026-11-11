@@ -18,24 +18,7 @@
  @end
  
  @interface HakiosMetalCommandQueue : _MTLCommandQueue {
-@@ -2456,6 +2460,16 @@
- 		}
- 	}
- 	setenv("HAKIOS_METAL_LISTING", "0", 0);
-+	/* darwin-lisa, metal_spec_wait=1: an uber shader's own program is never drawn with, so hakios-metal compiles it
-+	 * cheaply (for a buffer 1 of zeros: 64 instruction words in a second, not 38 560 in ten); see hakiosKeepFragment: */
-+	{
-+		char args[1024] = {0};
-+		size_t size = sizeof(args) - 1;
-+
-+		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_spec_wait=1") != NULL) {
-+			setenv("HAKIOS_METAL_ZERO_BASE", "1", 1);
-+		}
-+	}
- 	hm_ensure_spi([self class]);
- 	hm_functions_encode_from_metadata();
- 	self = [super init];
-@@ -7566,6 +7580,7 @@
+@@ -7566,6 +7570,7 @@
  	}
  	_hakiosDevice = [device retain];
  	_program = program;
@@ -43,7 +26,7 @@
  	_hakiosUniqueIdentifier = hm_next_resource_id();
  	return self;
  }
-@@ -7576,6 +7591,7 @@
+@@ -7576,6 +7581,7 @@
  		if ([v isKindOfClass:[NSValue class]]) hakios_metal_program_free((hakios_metal_program *)[v pointerValue]);
  	}
  	[_specialised release];
@@ -51,7 +34,7 @@
  	[_fsAir release];
  	if (_program != NULL) {
  		hakios_metal_program_free(_program);   /* a draw in flight keeps its own reference */
-@@ -7586,6 +7602,21 @@
+@@ -7586,6 +7592,21 @@
  
  - (hakios_metal_program *)hakiosProgram { return _program; }
  
@@ -73,14 +56,13 @@
  /* boot-arg metal_nospec: every draw with the pipeline's own program, no uber shader specialised */
  static BOOL
  hm_spec_off(void)
-@@ -7609,17 +7640,26 @@
+@@ -7609,17 +7630,26 @@
  - (void)hakiosKeepFragment:(NSData *)air constants:(const hakios_metal_constant *)constants count:(unsigned)count
  {
  	_specBinding = -1;
--	if (hm_spec_off() || hakios_metal_program_stage_words(_program, 1) < 4096) return;
-+	/* (an uber shader: thousands of instructions; or, with metal_spec_wait=1, 64 KB of bitcode or more, whose own
-+	 * program hakios-metal compiled for a buffer 1 of zeros: HAKIOS_METAL_ZERO_BASE) */
-+	if (hm_spec_off() || (hakios_metal_program_stage_words(_program, 1) < 4096 && !(hm_spec_wait() && [air length] >= 65536))) return;
++	/* (darwin-lisa: CoreAnimation 26's uber shaders compile to 32-768 instruction words for their constants since
++	 * hakios-metal-spec-s2v.patch, and draw with their own program; this is for one that does not) */
+ 	if (hm_spec_off() || hakios_metal_program_stage_words(_program, 1) < 4096) return;
  	for (unsigned i = 0; i < hakios_metal_program_resource_count(_program, 1); i++) {
  		unsigned kind, index, size;
  
@@ -105,7 +87,7 @@
  	_fsAir = [air retain];
  	_fsConstantCount = count < 64 ? count : 64;
  	memcpy(_fsConstants, constants, _fsConstantCount * sizeof(*constants));
-@@ -7628,59 +7668,126 @@
+@@ -7628,59 +7658,126 @@
  
  /* the program for a draw whose fragment buffers are BUFFERS: the one compiled for what the deciding buffer holds, or
   * the pipeline's own while that one compiles (on a queue of its own: a compilation is 0.4 s on the host, and a frame
@@ -255,7 +237,7 @@
  /* The base's uniqueIdentifier is a nil-stub and its gpuResourceID is the resourceIndex ivar (0): a pipeline would be
   * told apart from every other by nothing. Answered from the textures' counter, for the same reason (never 0, never an
   * address). Matters only to argument buffers and indirect command buffers, neither of which is here. */
-@@ -8534,6 +8641,17 @@
+@@ -8534,6 +8631,17 @@
  	}
  	hakios_metal_cb_set_vertex_textures(cb, vsTex, _vsHighestTexture, vsSamp, _vsHighestSampler);
  	hakios_metal_program *program = [_pipeline hakiosProgramFor:fs offsets:_fsOffsets count:_fsHighest];

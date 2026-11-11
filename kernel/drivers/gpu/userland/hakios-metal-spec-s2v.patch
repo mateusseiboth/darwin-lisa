@@ -1,37 +1,39 @@
---- a/src/c_api.cpp	2026-11-10 21:56:01.463659722 -0400
-+++ b/src/c_api.cpp	2026-11-10 22:13:47.237932223 -0400
-@@ -1142,8 +1142,18 @@
-         fsConstants = nullptr;
-         fsCount = 0;
-     }
-+    // darwin-lisa: HAKIOS_METAL_ZERO_BASE (the plug-in's metal_spec_wait=1): an uber shader's own program (a fragment
-+    // function of 64 KB of bitcode or more: CoreAnimation 26's fixed_frag_lph_cph/_cpf, 113 KB; the next is 19 KB) is
-+    // never drawn with, only specialised (hakios_metal_program_specialize): compiled for a buffer 1 of zeros it is 64
-+    // instruction words in a second instead of 38 560 in ten, and its resources (the front end's, as declared) are the same
-+    static const bool zeroBase = [] { const char* e = getenv("HAKIOS_METAL_ZERO_BASE"); return e != nullptr && e[0] == '1'; }();
-+    KnownBuffer zero;
-+    zero.binding = 1;
-+    zero.bytes.assign(256, 0);
-+    const bool cheap = zeroBase && fsSize >= 65536;
-     // the FS's device buffers past the VS's in the one IBO table the two share
--    std::unique_ptr<CompiledStage> fs = compileStage(fsBitcode, fsSize, &why, constantsOf(fsConstants, fsCount), vs->stage.k.numSsbos);
-+    std::unique_ptr<CompiledStage> fs = compileStage(fsBitcode, fsSize, &why, constantsOf(fsConstants, fsCount), vs->stage.k.numSsbos,
-+                                                     cheap ? &zero : nullptr);
-     if (fs == nullptr) {
-         failed(why);
-         return nullptr;
 --- a/src/compiler.cpp	2026-11-10 21:56:01.467857208 -0400
-+++ b/src/compiler.cpp	2026-11-10 21:56:01.479601835 -0400
-@@ -292,6 +292,24 @@
++++ b/src/compiler.cpp	2026-11-10 23:14:56.871141265 -0400
+@@ -264,6 +264,21 @@
+     return true;
+ }
+ 
++// darwin-lisa: every load_scratch/store_scratch at a constant offset (nir_lower_scratch_to_var can then make values of it)
++bool scratchOffsetsConstant(nir_shader* nir) {
++    nir_foreach_function_impl(impl, nir) {
++        nir_foreach_block(block, impl) {
++            nir_foreach_instr(instr, block) {
++                if (instr->type != nir_instr_type_intrinsic) continue;
++                nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
++                if (in->intrinsic == nir_intrinsic_load_scratch && !nir_src_is_const(in->src[0])) return false;
++                if (in->intrinsic == nir_intrinsic_store_scratch && !nir_src_is_const(in->src[1])) return false;
++            }
++        }
++    }
++    return true;
++}
++
+ bool translate(const void* bitcode, size_t size, Translation& t, std::string* why, const FunctionConstants& supplied, const KnownBuffer* known = nullptr) {
+     t.mem = ralloc_context(nullptr);
+     air_constant_value* constants = nullptr;
+@@ -292,6 +307,28 @@
          progress = nir_opt_constant_folding(t.nir);
          progress = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || progress;
      }
-+    // darwin-lisa: CoreAnimation 26's uber shader (fixed_frag_lph_cph) keeps a private array of 148 bytes that the front
-+    // end gives as scratch memory. With the known buffer folded every access to it is at a constant offset: made back
-+    // into values (nir_lower_scratch_to_var: an array of words, then nir_lower_vars_to_ssa), the branches its reads
-+    // decided fold too, and the program for one configuration is 64 instruction words, not 26 176. A few rounds of
-+    // the clean-up after it (nir_copy_prop's own answer does not count, as above; 32 rounds at most).
-+    if (known != nullptr && t.nir->scratch_size != 0 && nir_lower_scratch_to_var(t.nir)) {
++    // darwin-lisa: CoreAnimation 26's uber shader (fixed_frag_lph_cph/_cpf) keeps a private array of 148 bytes, which the
++    // front end gives as scratch memory, and takes its path through 15 000 instructions by what the function constants
++    // put in it. Where every access to scratch is at a constant offset it is made back into values
++    // (nir_lower_scratch_to_var: an array of words, then nir_lower_vars_to_ssa), the branches fold with it, and the
++    // program for one set of constants is 32 to 768 instruction words, not 38 560 (all 43 sets the window server
++    // asked for on the phone). A scratch access at a computed offset leaves it as it was. A few rounds of the clean-up
++    // after it (nir_copy_prop's own answer does not count, as above; 32 rounds at most).
++    if (t.nir->scratch_size != 0 && scratchOffsetsConstant(t.nir) && nir_lower_scratch_to_var(t.nir)) {
 +        for (unsigned round = 0; round < 32; round++) {
 +            bool more = false;
 +            nir_copy_prop(t.nir);
@@ -40,7 +42,9 @@
 +            more = nir_opt_if(t.nir, nir_opt_if_optimize_phi_true_false) || more;
 +            more = nir_opt_constant_folding(t.nir) || more;
 +            more = nir_opt_algebraic(t.nir) || more;
-+            more = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || more;
++            if (known != nullptr) {
++                more = nir_shader_intrinsics_pass(t.nir, foldKnownLoad, nir_metadata_control_flow, const_cast<KnownBuffer*>(known)) || more;
++            }
 +            if (!more) break;
 +        }
 +    }

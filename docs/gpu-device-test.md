@@ -1,5 +1,41 @@
 # GPU on the phone: the run book (one session)
 
+## Session 3 (night of 2026-11-10): CoreAnimation draws the UI on the GPU
+
+**Result.** Host run `gpu-q1` (logs `research/hackios-xnu-kernel/logs/gpu-q1-*`):
+- the home screen is drawn by CoreAnimation on the Adreno;
+- a synthetic tap on the Settings icon (`touch_synth=200 touch_synth_tap=2 touch_synth_x=56675 touch_synth_y=4751`)
+  opened Settings, also drawn correctly;
+- no GPU hang;
+- the GPU was switched off at the end.
+
+**What was wrong, and the fixes:**
+- **The uber shader.** `fixed_frag_lph_cph`/`_cpf` is 38 560 instruction words because a 148-byte private array lives
+  in scratch memory. `hakios-metal-spec-s2v.patch` turns scratch at constant offsets back into values
+  (`nir_lower_scratch_to_var`) and cleans up. All 43 constant sets the window server asked for compile to 32-768 words,
+  and the full library sweep still compiles 37/37 vertex and 128/128 fragment functions. One draw used to take seconds
+  and could stall the GPU ("no answer").
+- **`HakiosMetalCA-spec-bound.patch`.** With `metal_spec_wait=1`, the whole uber shader never runs:
+  - a program that is still at 4096 words or more is specialised on the buffer the draw binds;
+  - the draw waits for that compile, because a dropped draw is never redrawn;
+  - a draw whose specialised program is refused is left out.
+
+  It is a safety net now; the window server's programs are below the threshold.
+- **The way out of a run.** The 16 KB-page kernel never returns to the loader (`loader_jump` exists only for 4 KB
+  pages), and nothing gave the GPU back, so every run ended in a warm reset with the GPU running.
+  `kernel/loader-console/loader_console.c` now handles `oem stop` and `loader_return_after` in order:
+  - it calls `hakios_adreno_stop()` (core finished or halted, GMU reset, zap shader given up, GX and CX off);
+  - it logs `--- the run is over: ... reset the phone now (fastboot reboot) ---`;
+  - `loader_return()` quiesces once;
+  - `hakios_gpu_submit()` refuses after the stop.
+
+  Kernel: `kernel-16k-final1-fix-gpustop2.bak` (25d0ce05).
+
+**Running a GPU test now:**
+- End every run with `fastboot oem stop` and wait for "the run is over" before any reset.
+- Screenshots taken while the host polls are wrong: the loader's console scrolls the whole panel. Take screenshots
+  in a quiet run instead: no polling, spaced screenshots.
+
 ## Session 2 (after `gpu-probe-1551`): step 3a fixed, re-run 3a then 3b
 
 **What failed.** Steps 1 and 2 passed on kernel-16k-final1. Step 3a aborted in metal_test:

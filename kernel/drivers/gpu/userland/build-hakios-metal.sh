@@ -48,6 +48,8 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ios26.patch"
        # selectors no protocol here declares (the AGX SPIs QuartzCore 26 sends) answered, not raised
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-unknown-selectors.patch"
+       # metal_trace=1: per program, the resources each stage declares and the buffers a draw binds
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-trace-binds.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

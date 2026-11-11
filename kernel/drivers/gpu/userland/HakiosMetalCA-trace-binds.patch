@@ -1,0 +1,48 @@
+--- a/HakiosMetalCA.m	2026-11-10 18:22:04.473788845 -0400
++++ b/HakiosMetalCA.m	2026-11-10 20:08:35.795157822 -0400
+@@ -8536,6 +8536,45 @@
+ 	hakios_metal_program *program = [_pipeline hakiosProgramFor:fs offsets:_fsOffsets count:_fsHighest];
+ 
+ 	hm_dump_config(hakios_metal_program_name(program), fs, _fsOffsets, _fsHighest);
++	if (hm_tracing()) {
++		/* darwin-lisa (metal_trace=1): once per program, what each stage declares (kind:index:bytes; kind 0 constant
++		 * buffer, 1 device buffer, 3 texture, 4 image, 5 sampler) and what this draw has bound at each buffer index
++		 * (index:length@offset), to match a slot the shader reads against what CoreAnimation gave it */
++		static NSMutableSet *bindsSeen;
++		NSValue *key = [NSValue valueWithPointer:program];
++		BOOL first = NO;
++
++		@synchronized ([NSMutableSet class]) {
++			if (bindsSeen == nil) bindsSeen = [[NSMutableSet alloc] init];
++			if (![bindsSeen containsObject:key] && [bindsSeen count] < 200) {
++				[bindsSeen addObject:key];
++				first = YES;
++			}
++		}
++		if (first) {
++			NSMutableString *line = [NSMutableString string];
++
++			for (unsigned stage = 0; stage < 2; stage++) {
++				[line appendString:stage == 0 ? @" vs declares" : @"; fs declares"];
++				for (unsigned i = 0; i < hakios_metal_program_resource_count(program, stage); i++) {
++					unsigned kind, index, size;
++
++					if (hakios_metal_program_resource(program, stage, i, &kind, &index, &size) == 0) {
++						[line appendFormat:@" %u:%u:%u", kind, index, size];
++					}
++				}
++			}
++			[line appendString:@"; vs bound"];
++			for (unsigned i = 0; i < _vsHighest; i++) {
++				if (vs[i] != NULL) [line appendFormat:@" %u:%llu@%llu", i, (unsigned long long)hakios_metal_buffer_length(vs[i]), (unsigned long long)_vsOffsets[i]];
++			}
++			[line appendString:@"; fs bound"];
++			for (unsigned i = 0; i < _fsHighest; i++) {
++				if (fs[i] != NULL) [line appendFormat:@" %u:%llu@%llu", i, (unsigned long long)hakios_metal_buffer_length(fs[i]), (unsigned long long)_fsOffsets[i]];
++			}
++			hm_print("binds: %s (%p)%s\n", hakios_metal_program_name(program), (void *)program, [line UTF8String]);
++		}
++	}
+ 	if (hm_trace_draw([_pipeline hakiosProgram], hakios_metal_program_name([_pipeline hakiosProgram]), &_pass, fsTex, _fsHighestTexture, (unsigned)primitive, 0)) {
+ 		return;
+ 	}

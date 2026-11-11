@@ -3466,6 +3466,11 @@ hakios_gpu_submit(const uint64_t *addresses, const uint32_t *words, uint32_t cou
 {
 	uint32_t wanted = 26 + 4 * count, room = 0;
 
+	/* darwin-lisa: given back (the run's orderly end; a 16 KB-page kernel goes on running after it): nothing is
+	 * taken, and no register of a GPU block whose power is off is read (fence 0: not submitted) */
+	if (!gpu_kept) {
+		return 0;
+	}
 	for (int i = 0; i < 20000; i++) {
 		room = (rd(gpu.base + CP_RB_RPTR) + RING_WORDS - ring_at - 1) % RING_WORDS;
 		if (room >= wanted) {

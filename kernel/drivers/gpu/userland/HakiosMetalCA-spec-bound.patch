@@ -1,15 +1,57 @@
---- a/HakiosMetalCA.m	2026-11-10 20:08:35.795157822 -0400
-+++ b/HakiosMetalCA.m	2026-11-10 20:27:16.180274004 -0400
-@@ -1272,6 +1272,8 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -1272,6 +1272,9 @@
  	hakios_metal_constant _fsConstants[64];
  	unsigned _fsConstantCount;
  	int _specBinding;
 +	uint32_t _specCandidates;         /* darwin-lisa: constant buffers of 256 bytes or less, by index (bit n) */
 +	unsigned _specCandidateLength[32];
++	NSData *_specFirst;               /* darwin-lisa: the first content compiled, for the log's "differs at" */
  	unsigned _specLength;
  	NSMutableDictionary *_specialised;
  }
-@@ -7586,6 +7588,21 @@
+@@ -1280,6 +1283,7 @@
+ - (hakios_metal_program *)hakiosProgram;
+ - (void)hakiosKeepFragment:(NSData *)air constants:(const hakios_metal_constant *)constants count:(unsigned)count;
+ - (hakios_metal_program *)hakiosProgramFor:(hakios_metal_buffer *const *)buffers offsets:(const uint64_t *)offsets count:(unsigned)count;
++- (hakios_metal_program *)hakiosSpecialise:(NSData *)key;
+ @end
+ 
+ @interface HakiosMetalCommandQueue : _MTLCommandQueue {
+@@ -2456,6 +2460,16 @@
+ 		}
+ 	}
+ 	setenv("HAKIOS_METAL_LISTING", "0", 0);
++	/* darwin-lisa, metal_spec_wait=1: an uber shader's own program is never drawn with, so hakios-metal compiles it
++	 * cheaply (for a buffer 1 of zeros: 64 instruction words in a second, not 38 560 in ten); see hakiosKeepFragment: */
++	{
++		char args[1024] = {0};
++		size_t size = sizeof(args) - 1;
++
++		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_spec_wait=1") != NULL) {
++			setenv("HAKIOS_METAL_ZERO_BASE", "1", 1);
++		}
++	}
+ 	hm_ensure_spi([self class]);
+ 	hm_functions_encode_from_metadata();
+ 	self = [super init];
+@@ -7566,6 +7580,7 @@
+ 	}
+ 	_hakiosDevice = [device retain];
+ 	_program = program;
++	_specBinding = -1;      /* darwin-lisa: no uber shader until hakiosKeepFragment: says so (0 was buffer 0) */
+ 	_hakiosUniqueIdentifier = hm_next_resource_id();
+ 	return self;
+ }
+@@ -7576,6 +7591,7 @@
+ 		if ([v isKindOfClass:[NSValue class]]) hakios_metal_program_free((hakios_metal_program *)[v pointerValue]);
+ 	}
+ 	[_specialised release];
++	[_specFirst release];
+ 	[_fsAir release];
+ 	if (_program != NULL) {
+ 		hakios_metal_program_free(_program);   /* a draw in flight keeps its own reference */
+@@ -7586,6 +7602,21 @@
  
  - (hakios_metal_program *)hakiosProgram { return _program; }
  
@@ -31,7 +73,15 @@
  /* boot-arg metal_nospec: every draw with the pipeline's own program, no uber shader specialised */
  static BOOL
  hm_spec_off(void)
-@@ -7614,12 +7631,19 @@
+@@ -7609,17 +7640,26 @@
+ - (void)hakiosKeepFragment:(NSData *)air constants:(const hakios_metal_constant *)constants count:(unsigned)count
+ {
+ 	_specBinding = -1;
+-	if (hm_spec_off() || hakios_metal_program_stage_words(_program, 1) < 4096) return;
++	/* (an uber shader: thousands of instructions; or, with metal_spec_wait=1, 64 KB of bitcode or more, whose own
++	 * program hakios-metal compiled for a buffer 1 of zeros: HAKIOS_METAL_ZERO_BASE) */
++	if (hm_spec_off() || (hakios_metal_program_stage_words(_program, 1) < 4096 && !(hm_spec_wait() && [air length] >= 65536))) return;
+ 	for (unsigned i = 0; i < hakios_metal_program_resource_count(_program, 1); i++) {
  		unsigned kind, index, size;
  
  		if (hakios_metal_program_resource(_program, 1, i, &kind, &index, &size) == 0 && kind == HAKIOS_METAL_RESOURCE_CONSTANT_BUFFER &&
@@ -55,10 +105,22 @@
  	_fsAir = [air retain];
  	_fsConstantCount = count < 64 ? count : 64;
  	memcpy(_fsConstants, constants, _fsConstantCount * sizeof(*constants));
-@@ -7634,6 +7658,19 @@
+@@ -7628,59 +7668,126 @@
+ 
+ /* the program for a draw whose fragment buffers are BUFFERS: the one compiled for what the deciding buffer holds, or
+  * the pipeline's own while that one compiles (on a queue of its own: a compilation is 0.4 s on the host, and a frame
+- * must not wait for it). 64 contents at most a pipeline; past them the pipeline's own. */
++ * must not wait for it). 256 contents at most a pipeline; past them the pipeline's own (none, with metal_spec_wait=1). */
+ - (hakios_metal_program *)hakiosProgramFor:(hakios_metal_buffer *const *)buffers offsets:(const uint64_t *)offsets count:(unsigned)count
+ {
  	static dispatch_queue_t compiling;
  	static dispatch_once_t once;
- 
+-
+-	if (_specBinding < 0 || (unsigned)_specBinding >= count || buffers[_specBinding] == NULL) return _program;
++	/* darwin-lisa, metal_spec_wait=1: an uber shader never draws with its whole program (NULL: the draw is left out),
++	 * whichever way the specialised one is missing (no deciding buffer bound, too short, past 64 contents, failed) */
++	hakios_metal_program *generic = _specBinding == -1 || !hm_spec_wait() ? _program : NULL;
++
 +	if (_specBinding == -2) {
 +		@synchronized(self) {
 +			for (unsigned i = 0; _specBinding == -2 && i < count && i < 32; i++) {
@@ -68,29 +130,145 @@
 +				}
 +			}
 +		}
-+		if (_specBinding == -2) return _program;
++		if (_specBinding == -2) return generic;
 +		hm_print("specialise: %s decides by its buffer %d (%u bytes), the lowest small constant buffer a draw binds\n",
 +			 hakios_metal_program_name(_program), _specBinding, _specLength);
 +	}
- 	if (_specBinding < 0 || (unsigned)_specBinding >= count || buffers[_specBinding] == NULL) return _program;
++	if (_specBinding < 0) return _program;
++	if ((unsigned)_specBinding >= count || buffers[_specBinding] == NULL) return generic;
  	const uint8_t *bytes = (const uint8_t *)hakios_metal_buffer_contents(buffers[_specBinding]);
  	const uint64_t length = hakios_metal_buffer_length(buffers[_specBinding]), at = offsets[_specBinding];
-@@ -7678,6 +7715,9 @@
+-	if (bytes == NULL || at > length || length - at < _specLength) return _program;
++	if (bytes == NULL || at > length || length - at < _specLength) return generic;
+ 	NSData *key = [NSData dataWithBytes:bytes + at length:_specLength];
+ 	hakios_metal_program *found = _program;
+-	BOOL start = NO;
++	BOOL start = NO, refused = NO;
+ 
+ 	@synchronized(self) {
+ 		id have = [_specialised objectForKey:key];
+ 
+ 		if ([have isKindOfClass:[NSValue class]]) {
+ 			found = (hakios_metal_program *)[have pointerValue];
+-		} else if (have == nil && [_specialised count] < 64) {
++		} else if ([have isKindOfClass:[NSNumber class]]) {
++			refused = YES;          /* (compiled, and refused: not tried again) */
++		} else if (have == nil && [_specialised count] < 256) {
+ 			[_specialised setObject:[NSNull null] forKey:key];
+ 			start = YES;
+ 		}
+ 	}
++	if (start && hm_fps_on()) {
++		/* darwin-lisa: which 32-bit words of this content differ from the first one's (the log's twenty first) */
++		static long told;
++		char at[200] = "";
++		size_t n = 0;
++
++		@synchronized(self) {
++			if (_specFirst == nil) _specFirst = [key retain];
++		}
++		const uint32_t *w = (const uint32_t *)[key bytes], *f = (const uint32_t *)[_specFirst bytes];
++		for (unsigned i = 0; i < _specLength / 4 && n + 8 < sizeof(at); i++) {
++			if (w[i] != f[i]) n += (size_t)snprintf(at + n, sizeof(at) - n, " %u", i);
++		}
++		if (__atomic_add_fetch(&told, 1, __ATOMIC_RELAXED) <= 20) {
++			hm_print("specialise: %s: content %lu of its buffer %d; words differing from the first:%s\n", hakios_metal_program_name(_program),
++				 (unsigned long)[_specialised count], _specBinding, n != 0 ? at : " none");
++		}
++	}
++	if (hm_spec_wait()) {
++		/*
++		 * darwin-lisa, metal_spec_wait=1: the draw waits for its program, compiled here (a second or so; from the disk
++		 * cache on a later boot, at once). A draw left out while it compiled stayed out: CoreAnimation draws a layer
++		 * again only when it changes, and the screen stayed black. Never the whole uber shader: on this Adreno the
++		 * generic fixed_frag_lph_cph stalls the GPU. A content another thread is compiling is waited for, 20 s at most.
++		 */
++		if (start) return [self hakiosSpecialise:key];
++		for (int i = 0; found == _program && !refused && i < 2000; i++) {
++			usleep(10000);
++			@synchronized(self) {
++				id have = [_specialised objectForKey:key];
++
++				if ([have isKindOfClass:[NSValue class]]) found = (hakios_metal_program *)[have pointerValue];
++				else if (![have isKindOfClass:[NSNull class]]) refused = YES;
++			}
++		}
++		return found == _program ? generic : found;
++	}
+ 	if (start) {
+ 		dispatch_once(&once, ^{
+ 			compiling = dispatch_queue_create("hakios.metal.specialise", DISPATCH_QUEUE_SERIAL);
+ 		});
+ 		[self retain];
+ 		dispatch_async(compiling, ^{
+-			struct timespec t0, t1;
+-
+-			clock_gettime(CLOCK_MONOTONIC, &t0);
+-			hakios_metal_program *p = hakios_metal_program_specialize(_program, [_fsAir bytes], [_fsAir length], _fsConstants, _fsConstantCount,
+-										 (unsigned)_specBinding, [key bytes], [key length]);
+-			clock_gettime(CLOCK_MONOTONIC, &t1);
+-			if (p == NULL) {
+-				hm_print("specialise: %s for its buffer %d: %s; its own program goes on\n", hakios_metal_program_name(_program), _specBinding,
+-					 hakios_metal_error());
+-			} else if (hm_fps_on()) {
+-				hm_print("specialise: %s for %u bytes of its buffer %d: %u instruction words, not %u, in %.0f ms\n", hakios_metal_program_name(_program),
+-					 _specLength, _specBinding, hakios_metal_program_stage_words(p, 1), hakios_metal_program_stage_words(_program, 1),
+-					 (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
+-			}
+-			@synchronized(self) {
+-				if (p != NULL) [_specialised setObject:[NSValue valueWithPointer:p] forKey:key];
+-			}
++			[self hakiosSpecialise:key];
  			[self release];
  		});
  	}
-+	/* darwin-lisa, boot-arg metal_spec_wait=1: no draw with the whole uber shader while its specialised program
-+	 * compiles (the draw is left out, NULL): on this Adreno the generic fixed_frag_lph_cph stalls the GPU */
-+	if (found == _program && hm_spec_wait()) return NULL;
  	return found;
  }
  
-@@ -8534,6 +8574,9 @@
++/* the program for one content KEY of the deciding buffer, compiled (one at a time), kept, and returned; NULL when
++ * hakios-metal refuses it (kept as refused) */
++- (hakios_metal_program *)hakiosSpecialise:(NSData *)key
++{
++	static pthread_mutex_t one = PTHREAD_MUTEX_INITIALIZER;
++	struct timespec t0, t1;
++
++	pthread_mutex_lock(&one);
++	clock_gettime(CLOCK_MONOTONIC, &t0);
++	hakios_metal_program *p = hakios_metal_program_specialize(_program, [_fsAir bytes], [_fsAir length], _fsConstants, _fsConstantCount,
++								 (unsigned)_specBinding, [key bytes], [key length]);
++	clock_gettime(CLOCK_MONOTONIC, &t1);
++	pthread_mutex_unlock(&one);
++	if (p == NULL) {
++		hm_print("specialise: %s for its buffer %d: %s; its draws are left out\n", hakios_metal_program_name(_program), _specBinding,
++			 hakios_metal_error());
++	} else if (hm_fps_on()) {
++		hm_print("specialise: %s for %u bytes of its buffer %d: %u instruction words, not %u, in %.0f ms\n", hakios_metal_program_name(_program),
++			 _specLength, _specBinding, hakios_metal_program_stage_words(p, 1), hakios_metal_program_stage_words(_program, 1),
++			 (t1.tv_sec - t0.tv_sec) * 1e3 + (t1.tv_nsec - t0.tv_nsec) / 1e6);
++	}
++	@synchronized(self) {
++		[_specialised setObject:p != NULL ? (id)[NSValue valueWithPointer:p] : (id)[NSNumber numberWithBool:NO] forKey:key];
++	}
++	return p;
++}
++
+ /* The base's uniqueIdentifier is a nil-stub and its gpuResourceID is the resourceIndex ivar (0): a pipeline would be
+  * told apart from every other by nothing. Answered from the textures' counter, for the same reason (never 0, never an
+  * address). Matters only to argument buffers and indirect command buffers, neither of which is here. */
+@@ -8534,6 +8641,17 @@
  	}
  	hakios_metal_cb_set_vertex_textures(cb, vsTex, _vsHighestTexture, vsSamp, _vsHighestSampler);
  	hakios_metal_program *program = [_pipeline hakiosProgramFor:fs offsets:_fsOffsets count:_fsHighest];
 +	if (program == NULL) {
-+		return;         /* (metal_spec_wait=1: its specialised program is still compiling) */
++		/* (metal_spec_wait=1: its specialised program was refused, or another thread took 20 s over it) */
++		static long skipped;
++		const long n = __atomic_add_fetch(&skipped, 1, __ATOMIC_RELAXED);
++
++		if (n == 1 || n % 500 == 0) {
++			hm_print("spec_wait: %ld draws left out so far (%s: no specialised program yet)\n", n,
++				 hakios_metal_program_name([_pipeline hakiosProgram]));
++		}
++		return;
 +	}
  
  	hm_dump_config(hakios_metal_program_name(program), fs, _fsOffsets, _fsHighest);

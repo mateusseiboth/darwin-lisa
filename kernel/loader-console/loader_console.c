@@ -316,9 +316,29 @@ loader_log_append_msgbuf(void)
 	}
 }
 
+/* darwin-lisa: the GPU driver's two ways back (bsd/dev/hakios.adreno.c; no-ops in hakios.stubs.c without it) */
+extern void hakios_adreno_stop(void);           /* in order, from a thread that may wait: power switched off */
+extern void hakios_adreno_quiesce(void);        /* any context: the GMU in reset, the bus halted, the SMMU off */
+
+static bool loader_return_once;                 /* darwin-lisa: what loader_return() collects, collected once */
+
 void
 loader_return(void)
 {
+	/*
+	 * darwin-lisa: loader_jump() takes a 4 KB-page kernel back only; a 16 KB one (this phone's) stays where it is
+	 * and the host resets the phone, so loader_return() may come back and be called again (the tick, a panic
+	 * after an orderly end): the GPU, the log and the message buffer are seen to once. On every way out (a
+	 * panic's too) nothing of the GPU block may go on into the reset (after a GPU hang a warm reset left it
+	 * running, and pmOS's start hung on it): quiesced here, which does nothing when the orderly end has already
+	 * switched it off, or when it was never started.
+	 */
+	if (loader_return_once) {
+		loader_jump(0, 0);
+		return;
+	}
+	loader_return_once = true;
+	hakios_adreno_quiesce();
 	loader_log_linearize();
 	if (!loader_return_entered) {
 		loader_log_append_msgbuf();
@@ -333,12 +353,73 @@ loader_return(void)
 	loader_jump(0, 0);
 }
 
+/*
+ * darwin-lisa: the orderly end, for the loader's "oem stop" (loader_live.stop, looked at on every tick) and for
+ * loader_return_after. HakiOS's loader_return.c gave the drivers back before it jumped; this port had dropped that,
+ * and "oem stop" did nothing. From a thread that may wait: the GPU given back (hakios_adreno_stop(): what it was
+ * given finished or its bus halted for good, the GMU slumbered and reset, the zap shader given up, both power
+ * switches off), ten seconds at most, then loader_return(). On this phone's 16 KB-page kernel that does not take
+ * the kernel back: the last line says the host may reset the phone (fastboot reboot), the GPU being off.
+ */
+static thread_call_t lc_end_call, lc_gpu_call;
+static uint32_t lc_end_asked;                   /* the orderly end has begun (atomic) */
+static volatile uint32_t lc_gpu_given_back;
+static volatile uint32_t lc_end_done;          /* lc_end() has got to its end */
+static uint64_t lc_end_asked_at;                /* the tick's deadline (seconds) for an orderly end it asked for */
+
+static void
+lc_gpu_stop(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
+{
+	hakios_adreno_stop();
+	lc_gpu_given_back = 1;
+}
+
+/* (thread_call_enter1() hands its argument over as the second parameter) */
+static void
+lc_end(__unused thread_call_param_t p0, thread_call_param_t why)
+{
+	loader_log_puts(why != NULL ? (const char *)why : "\n--- the run ends ---\n");
+	thread_call_enter(lc_gpu_call);
+	for (int i = 0; i < 1000 && !lc_gpu_given_back; i++) {
+		delay(10000);
+	}
+	loader_log_puts(lc_gpu_given_back ? "--- the GPU's way back is done ---\n" :
+	    "--- the GPU was not given back within 10 s: only quiesced ---\n");
+	lc_end_done = 1;
+	loader_return();
+	loader_log_puts("--- the run is over: the loader cannot take a 16 KB-page kernel back; reset the phone now (fastboot reboot) ---\n");
+}
+
+/* false when there is no thread to do it on (too early): then the caller returns at once */
+static bool
+loader_end_orderly(const char *why)
+{
+	if (lc_end_call == NULL) {
+		return false;
+	}
+	if (__atomic_exchange_n(&lc_end_asked, 1, __ATOMIC_SEQ_CST) == 0) {
+		thread_call_enter1(lc_end_call, (thread_call_param_t)(uintptr_t)why);
+	}
+	return true;
+}
+
+__startup_func
+static void
+loader_end_init(void)
+{
+	lc_gpu_call = thread_call_allocate_with_priority(lc_gpu_stop, NULL, THREAD_CALL_PRIORITY_HIGH);
+	lc_end_call = thread_call_allocate_with_priority(lc_end, NULL, THREAD_CALL_PRIORITY_HIGH);
+}
+STARTUP(EARLY_BOOT, STARTUP_RANK_LAST, loader_end_init);
+
 /* boot-arg loader_return_after=<seconds>: hand control back after that long. */
 static void
 loader_return_timer(__unused thread_call_param_t p0, __unused thread_call_param_t p1)
 {
-	loader_log_puts("\n--- loader_return_after expired ---\n");
-	loader_return();
+	if (!loader_end_orderly("\n--- loader_return_after expired ---\n")) {
+		loader_log_puts("\n--- loader_return_after expired ---\n");
+		loader_return();
+	}
 }
 
 __startup_func
@@ -406,6 +487,7 @@ static uint64_t lc_bringup_start;
 static uint64_t lc_bringup_next_pet;
 static uint32_t lc_bringup_return_secs;
 static int lc_bringup_inited;
+static int lc_tick_returned;                   /* darwin-lisa: the tick has called loader_return() */
 
 /* ---- bring-up diagnostic: does the vtimer survive WFI under the hv? ---- */
 static void
@@ -526,10 +608,34 @@ loader_bringup_tick(void)
 		lc_bringup_next_pet = elapsed + 5;
 	}
 
-	/* Hand control back once loader_return_after seconds have passed. */
-	if (lc_bringup_return_secs != 0 && elapsed >= lc_bringup_return_secs) {
-		loader_log_puts("\n--- loader_return_after expired (irq-driven) ---\n");
-		loader_return();	/* does not return */
+	/*
+	 * darwin-lisa: the host's "oem stop", and loader_return_after, end the run in order (loader_end_orderly(), on
+	 * a thread). From here, once, only when that cannot be: no thread for it yet, or it has not got to its end
+	 * 20 s after it was asked (30 s after loader_return_after when it was asked elsewhere); loader_return() still
+	 * quiesces the GPU.
+	 */
+	if (lc_end_asked == 0 && loader_live.stop != 0 && loader_end_orderly("\n--- the host asks for the end (oem stop) ---\n")) {
+		lc_end_asked_at = elapsed + 20;
+	}
+	if (lc_end_asked == 0 && lc_bringup_return_secs != 0 && elapsed >= lc_bringup_return_secs &&
+	    loader_end_orderly("\n--- loader_return_after expired (irq-driven) ---\n")) {
+		lc_end_asked_at = elapsed + 20;
+	}
+	if (!lc_tick_returned && !lc_end_done) {
+		const char *why = NULL;
+
+		if (lc_end_asked_at != 0 && elapsed >= lc_end_asked_at) {
+			why = "\n--- the orderly end has not got to its end in 20 s: from the tick ---\n";
+		} else if (lc_bringup_return_secs != 0 && elapsed >= lc_bringup_return_secs + (lc_end_asked != 0 ? 30 : 0)) {
+			why = "\n--- loader_return_after expired (irq-driven) ---\n";
+		} else if (loader_live.stop != 0 && lc_end_asked == 0) {
+			why = "\n--- the host asks for the end (oem stop), no thread for it yet ---\n";
+		}
+		if (why != NULL) {
+			lc_tick_returned = 1;
+			loader_log_puts(why);
+			loader_return();
+		}
 	}
 
 	lc_bringup_timer_floor(freq);

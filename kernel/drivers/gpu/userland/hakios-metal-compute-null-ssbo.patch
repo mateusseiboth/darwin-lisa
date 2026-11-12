@@ -1,0 +1,20 @@
+diff --color -ruN hm-b2/src/compute.cpp hm-n2/src/compute.cpp
+--- a/src/compute.cpp	2026-11-12 07:05:26.185513258 -0400
++++ b/src/compute.cpp	2026-11-12 07:05:26.207156395 -0400
+@@ -246,6 +246,16 @@
+         if (k.numBufs != 0 || slot < k.numSsbos) {
+             // a text kernel's @buf, or a device buffer (an SSBO) of an AIR kernel: Metal's [[buffer(slot)]]
+             uint64_t address = 0, bytes = 0;
++            // darwin-lisa: ir3 counts an AIR kernel's SSBOs by the highest index it declares, not by the ones it
++            // reaches, so a slot below the highest that nothing binds may be one no instruction addresses
++            // (CoreAnimation's compute_average_luma declares [[buffer(0)]] constant and [[buffer(2)]] device and nothing
++            // at 1; the pipeline binds nothing at 1 and the dispatch was refused). As the render path does for a
++            // fragment stage (render.cpp): the highest is refused as before, one below it gets the null descriptor
++            // (all zeros, turnip's nullDescriptor), which a load reads as 0 and a store leaves alone.
++            if (k.numBufs == 0 && slot + 1 < k.numSsbos && (slot >= buffers.size() || buffers[slot].buffer == nullptr)) {
++                memcpy(tableCpu + kTableIbosAt + 64 * slot, d.dword, sizeof d.dword);   // d is zero here
++                continue;
++            }
+             if (!bound(slot, &address, &bytes)) {
+                 return false;
+             }

@@ -73,7 +73,9 @@ def main():
         marker = f'__DLISA_DONE_{n}_'
         # the shell echoes the line: the marker is split in what is sent ("" between its halves) so only the
         # command's own output carries it whole
-        s.sendall((cmd + f'; echo __DLISA_""DONE_{n}_$?\n').encode())
+        # (a multi-line command, such as a quoted heredoc, gets the marker on a line of its own after it)
+        sep = '\n' if '\n' in cmd else '; '
+        s.sendall((cmd + f'{sep}echo __DLISA_""DONE_{n}_$?\n').encode())
         out = readUntil(s, marker.encode(), timeout).decode(errors='replace')
         head, found, tail = out.partition(marker)
         status = tail.strip().split('\n')[0] if tail else '?'

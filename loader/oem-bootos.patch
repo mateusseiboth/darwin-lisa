@@ -33,7 +33,7 @@
 +static uint32_t
 +bootos_code(const char *target)
 +{
-+	static const char *const names[] = { "pmos", "ums", "uboot", "menu" };
++	static const char *const names[] = { "pmos", "ums", "uboot", "menu", "pmos-shell" };
 +
 +	for (uint32_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
 +		if (str_eq(target, names[i])) {

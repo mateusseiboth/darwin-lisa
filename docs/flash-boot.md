@@ -299,10 +299,12 @@ file.
 
 | Partition | Rollback | How |
 |---|---|---|
-| boot_a | `out/u-boot-lisa-multiboot-current.img` | pmOS `dd` or ABL `fastboot flash boot_a` |
-| vendor_boot_a | `research/hackios-xnu-kernel/out/vendor_boot-multiboot-lisa.img` | the same |
-| super | `backups/lisa-super-<date>.img` (C1) or the stock `super.img` | ums `dd`, or ABL `fastboot flash super` |
-| userdata (branch 3) | `out/pmos-lisa-r17-20261110/xiaomi-lisa.img` + the e2image; the sgdisk `--backup` file | `sgdisk --load-backup` |
+| boot_a | `out/u-boot-lisa-ossel.img` (796474c9: before the recovery-shell entry of 2026-11-12), `out/u-boot-lisa-multiboot-current.img` (the original multiboot) | pmOS `dd` or ABL `fastboot flash boot_a` |
+| vendor_boot_a | `backups/vendor_boot_a-before-*.img` (the latest: ff659ae5, final13, before plan B), `research/hackios-xnu-kernel/out/vendor_boot-multiboot-lisa.img` | the same |
+| super | `userland-26/out/system-26.apfs.full-<sha>` roots (`tools/flash-root.sh`), or the stock `super.img` | pmOS `dd`, or ABL `fastboot flash super` |
+| darwin_var (plan B) | `backups/lisa-planb-20261112/var-super-tail.hfsx.zst` (the data volume as it was before the move, 4 GiB) | `tools/var-write.sh` |
+| the GPT (plan B) | `backups/lisa-planb-20261112/sda-head-64x4k.bin` + `sda-tail-64x4k.bin` (before), `sda33-head/tail` (the inner table before) | `dd` of the head and tail blocks; docs/data-volume.md section 7 |
+| userdata | `out/pmos-lisa-r17-20261110/xiaomi-lisa.img` (a fresh pmOS) | ABL `fastboot flash userdata` (erases pmOS's state) |
 
 ## 5. Open questions
 

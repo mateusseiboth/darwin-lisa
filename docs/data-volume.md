@@ -446,19 +446,27 @@ How it was done, no keys, the phone reached only over USB:
    BEFORE `mount_subpartitions`, so the loop device is set up by hand there (`losetup --show -Pf --direct-io=on
    --sector-size 4096 /dev/sda33`) and detached before continuing. It has `e2fsck`, `resize2fs`, `parted`, `losetup`,
    `blkid`, `fdisk`; no `sgdisk`.
-3. **The ext4 shrink** in that shell: `e2fsck -f -y`, `resize2fs /dev/loop0p2 19136251`, `e2fsck -f -y` (section
-   "Shrink log" below has the numbers).
-4. **The inner GPT** from normal pmOS (`apk add sgdisk`), through a second loop device: `losetup --sector-size 4096
-   --sizelimit $((19261184*4096)) /dev/sda33`, then `sgdisk -e -d 2 -n 2:124928:0 -t 2:<type> -u 2:<unique> -c 2:<name>`,
-   `sgdisk -v`, and the new table read back with `iflag=direct` and parsed on the PC. The mounted p1/p2 are untouched
-   (the table lives in blocks the filesystems never use).
-5. **The outer GPT**: the same `sgdisk -d 33 -n 33:2967552:22228735 … -n 34:22228736:30617343 …` command first on a
-   sparse image file carrying the live head and tail (`sgdisk -v`, the kernel's own parse through `losetup -P`), then on
-   `/dev/sda`; the head and tail read back must equal the simulation's byte for byte. The kernel keeps the old table
-   until the reboot, which `bootos.sh hakios` + `bootos.sh pmos` does.
-6. `pmos.debug-shell` removed again; pmOS boots from the smaller userdata (U-Boot's `pmos_boot` takes `part start/size`
-   of userdata from the new GPT; the initramfs's `resize_root_partition` and `resize_root_filesystem` find nothing to
-   grow).
+3. **Everything else in that ONE shell session** (`tools/planb-session.sh`, staged on pmOS by SSH, fetched from the
+   read-only mounted root, run only when its sha256 matches). The first attempt did the ext4 shrink alone and
+   continued the boot: the initramfs's `resize_root_partition` + `resize_root_filesystem` promptly grew p2 and the
+   filesystem back to fill userdata. So the shrink, the inner table and the outer table all happen before the boot
+   goes on, 18 s in all:
+   - `e2fsck -f -y`, `resize2fs /dev/loop0p2 19136251`, `e2fsck -f -y` (2,398,167 blocks used; minimum 2,247,314);
+   - `sgdisk` and its libraries copied out of the pmOS root into the initramfs (`/tmp/sg`, run through
+     `ld-musl-aarch64.so.1 --library-path`): the initramfs has none;
+   - the inner GPT through a second loop device limited to the new size (`losetup --sector-size 4096 --sizelimit
+     $((19261184*4096)) /dev/sda33`): `sgdisk -e -d 2 -n 2:124928:0 -t 2:B921B045-… -u 2:467BD7D3-… -c 2:primary`,
+     verified by the kernel's own parse of a `-P` loop at that size (p2 = 153090008 sectors of 512) and `e2fsck -fn`;
+   - the outer GPT: `sgdisk -d 33 -n 33:2967552:22228735 -t 33:1b81e7e6-… -u 33:76152dc1-… -c 33:userdata -n
+     34:22228736:30617343 -t 34:48465300-… -u 34:7b9f2109-… -c 34:darwin_var /dev/sda`, then the ORIGINAL block 0
+     put back (sgdisk rewrites the protective MBR's CHS and size fields; Qualcomm's has size 0xFFFFFFFF), then the
+     head and tail read back (`iflag=direct`) and compared with the rehearsal's hashes (`d24813db…`, `554b6ad3…`),
+     `blockdev --rereadpt` (sda33 +154089472, sda34 +67108864, `PARTNAME=darwin_var`).
+   The rehearsal: the same sgdisk command on a sparse file carrying the live head and tail, from normal pmOS
+   (`sgdisk -v` clean, the kernel parses it through `losetup -P`), compared field by field on the PC: only entries 33
+   and 34 and the two CRCs change; the header's other fields, the disk GUID and the unused blocks stay.
+4. `pmos_continue_boot`: pmOS boots from the smaller userdata (U-Boot's `pmos_boot` takes `part start/size` of
+   userdata from the new GPT; the initramfs finds nothing to grow). `pmos.debug-shell` removed again.
 
 Then the wiring of section "Migrating A to B": `loader/data-regions.h` names only `darwin_var` now (A's super line is
 retired: `ufs_data=super` answers "no such region"), `build-standalone.sh` takes `DATAVOL_PART` (default `darwin_var`),

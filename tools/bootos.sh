@@ -7,6 +7,8 @@
 #   tools/bootos.sh ums                   the phone's UFS LUN 0 as a USB disk on this PC; prints /dev/sdX
 #   tools/bootos.sh uboot                 U-Boot's own fastboot (for "fastboot oem run:...")
 #   tools/bootos.sh menu                  U-Boot's boot menu, without the countdown
+#   tools/bootos.sh pmos-shell            postmarketOS's initramfs recovery shell (telnet 172.16.42.1:23); needs the
+#                                         U-Boot with the recovery entry (osel_5) and a loader that knows the target
 #
 # How: the loader takes "fastboot oem bootos:TARGET" (darwin-lisa/loader/oem-bootos.patch), stops its USB function
 # and watchdog and exits back to U-Boot, which runs TARGET (u-boot-lisa/board/qualcomm/hakios-lisa.env, osel_check).
@@ -193,5 +195,17 @@ uboot)
 	say "U-Boot fastboot is up (fastboot oem run:CMD, fastboot reboot)"
 	;;
 menu) ask_loader menu ;;
+pmos-shell)
+	# postmarketOS's initramfs recovery shell (U-Boot's pmos_shell entry: pmos.debug-shell): telnet on port 23,
+	# darwin-lisa/tools/pmos-debug-shell.py runs commands there; pmos_continue_boot goes on to pmOS
+	ask_loader pmos-shell
+	t=0
+	until timeout 3 bash -c "exec 3<>/dev/tcp/$PMOS_HOST/23" 2>/dev/null; do
+		((t < WAIT_PMOS)) || die "no telnet on $PMOS_HOST:23 within ${WAIT_PMOS}s"
+		sleep 3
+		t=$((t + 3))
+	done
+	say "the recovery shell is up: telnet $PMOS_HOST 23 (tools/pmos-debug-shell.py CMD...)"
+	;;
 *) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 2 ;;
 esac

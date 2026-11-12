@@ -93,12 +93,14 @@ fi
 WLAN="wlan_stub=1"
 [[ -n $FW_RAMDISK ]] && WLAN="wifi=1 wifi_mac=02:6c:69:73:61:01"
 [[ $WIFI = 1 ]] && WLAN="wifi=1 wifi_irq=0 wifi_mac=02:6c:69:73:61:01"
-HW="touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1 cpus=7 cpufreq=1 cpufreq_max=2400"
-# lisa=1: the kernel's built-in hardware arguments (the same values); cpus=7 stays, the loader reads it
+CPUS=${CPUS:-7}
+HW="touchscreen=1 touch_avdd_ldo=ldoc7 touch_chip=goodix touch_goodix_a=1 cpus=$CPUS cpufreq=1 cpufreq_max=2400"
+# lisa=1: the kernel's built-in hardware arguments (the same values); cpus= stays, the loader reads it
+# (CPUS=4: only the four A78 run, the UI never lands on an A55; 36 fps against ~30 in the GPU session 7)
 if [[ $LISA_DEFAULTS = 1 ]]; then
 	grep -aq 'touch_avdd_ldo=ldoc7 touch_chip=goodix' "$KERNEL" ||
 		{ echo "build-standalone: LISA_DEFAULTS=1, but $KERNEL has no lisa=1 defaults (lisa-defaults-wire.py)" >&2; exit 1; }
-	HW="lisa=1 cpus=7"
+	HW="lisa=1 cpus=$CPUS"
 	WLAN=${WLAN/ wifi_irq=0/}
 	WLAN=${WLAN/ wifi_mac=02:6c:69:73:61:01/}
 fi

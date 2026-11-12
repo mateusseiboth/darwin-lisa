@@ -5,8 +5,8 @@
  #include <kern/task.h>
  #include <kern/thread.h>
 +
-+/* darwin-lisa: the cores an idle core is looked for first (see pset_init) */
-+static TUNABLE(uint64_t, lisa_sched_prefer, "sched_prefer", 0);
++/* darwin-lisa: the cores an idle core is looked for first (see pset_init); 0xf = cpu0-3, the A78s; 0 = off */
++static TUNABLE(uint64_t, lisa_sched_prefer, "sched_prefer", 0xf);
  #include <kern/timer.h>
  #if KPERF
  #include <kperf/kperf.h>

@@ -127,8 +127,10 @@ tests `init/test/run-tests.sh`). What goes in:
   at startup (`-[SBTelephonyManager isInEmergencyCallbackMode]`, a synchronous XPC). That is why the full image never
   drew a frame. `ld_default=0` keeps them on;
 - boot-arg `ld_disable=TOKEN,TOKEN,...`: a group (`lean` = all of `scripts/lean-daemons.txt`, `lean1`..`lean8` in
-  chunks of 10, `ui` = ClarityBoard / checkerboard / devicerecoveryassistant / AutomationModeUI), a full label
-  (`com.apple.locationd`) or a short one (`locationd`).
+  chunks of 10, `ui` = ClarityBoard / checkerboard / devicerecoveryassistant / AutomationModeUI, `loops` = wifip2pd /
+  syncdefaultsd / security.cryptexd, the services that die at every start here: gpu-c2 counted 28, 10 and 15 of
+  those deaths, `CRASH_LOOPING` in `plist-tweaks.py`), a full label (`com.apple.locationd`) or a short one
+  (`locationd`). A short label has no dot: `com.apple.security.cryptexd` has to be written in full.
 
 A list never outlives the boot that asked for it, so a host run can bisect the full image with boot-args alone, with no
 new root. The groups file is made by `plist-tweaks.py` (`ALWAYS_DISABLED` is the `default` group).

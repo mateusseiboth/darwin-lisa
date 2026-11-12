@@ -498,10 +498,13 @@ static void
 load_who(const ml_topology_info_t *topology, unsigned i, char *line, size_t size, int *at)
 {
 	extern thread_t dlisa_cpu_active_thread(unsigned cpu);   /* osfmk/arm64/pac_trap.c */
+	extern int dlisa_thread_sched_pri(thread_t thread, bool *rt);  /* osfmk/kern/sched_prim.c (sched-prefer-select.patch) */
 	thread_t thread = dlisa_cpu_active_thread(topology->cpus[i].cpu_id);
 	task_t task;
 	char name[2 * MAXCOMLEN + 1] = "?", tname[64] = "";
 	void *uth;
+	bool rt = false;
+	int pri;
 
 	if (thread == THREAD_NULL || *at >= (int)size - 48) {
 		return;
@@ -513,8 +516,9 @@ load_who(const ml_topology_info_t *topology, unsigned i, char *line, size_t size
 	if ((uth = get_bsdthread_info(thread)) != NULL) {
 		bsd_getthreadname(uth, tname);
 	}
-	*at += snprintf(line + *at, size - (size_t)*at, " %u:%s/%llu(%s)", (topology->cpus[i].phys_id >> 8) & 0xff, name,
-	    (unsigned long long)thread_tid(thread), tname);
+	pri = dlisa_thread_sched_pri(thread, &rt);
+	*at += snprintf(line + *at, size - (size_t)*at, " %u:%s/%llu(%s)p%d%s", (topology->cpus[i].phys_id >> 8) & 0xff, name,
+	    (unsigned long long)thread_tid(thread), tname, pri, rt ? "rt" : "");
 }
 
 static void
@@ -543,6 +547,9 @@ load_pac(char *line, size_t size)
 		at += snprintf(line + at, size - (size_t)at, " %s:%llu", name, (unsigned long long)delta);
 	}
 }
+
+/* osfmk/kern/sched_prim.c (sched-prefer-select.patch): "tl: sp held N late N hand N move N pull N" since the last line */
+extern void dlisa_sched_prefer_line(char *line, size_t size);
 
 static void
 load_thread(void *arg __unused, wait_result_t wr __unused)
@@ -580,6 +587,10 @@ load_thread(void *arg __unused, wait_result_t wr __unused)
 		hakios_tl("%s\n", line);
 		if (who_at > (int)strlen("tl: busy")) {
 			hakios_tl("%s\n", who);
+		}
+		dlisa_sched_prefer_line(pac, sizeof(pac));
+		if (pac[0] != 0) {
+			hakios_tl("%s\n", pac);
 		}
 		load_pac(pac, sizeof(pac));
 		if (pac[0] != 0) {

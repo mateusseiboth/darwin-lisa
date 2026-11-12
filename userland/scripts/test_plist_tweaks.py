@@ -80,6 +80,23 @@ class LdGroupsTest(unittest.TestCase):
             groups = {line.split()[0]: line.split()[1:] for line in f if line.strip() and not line.startswith("#")}
         self.assertEqual(groups["default"], ["com.apple.c"])
 
+    def testLoopsGroupHasTheCrashLoopingLabelsPresent(self):
+        path = tweaks.saveLdGroups(self.root, self.listing, 3, crashLooping=("com.apple.a", "com.apple.missing"))
+        with open(path) as f:
+            groups = {line.split()[0]: line.split()[1:] for line in f if line.strip() and not line.startswith("#")}
+        self.assertEqual(groups["loops"], ["com.apple.a"])
+
+    def testLoopsGroupIsNotDisabledByDefault(self):
+        path = tweaks.saveLdGroups(self.root, self.listing, 3, alwaysDisabled=("com.apple.c",),
+                                   crashLooping=("com.apple.a",))
+        with open(path) as f:
+            groups = {line.split()[0]: line.split()[1:] for line in f if line.strip() and not line.startswith("#")}
+        self.assertNotIn("com.apple.a", groups["default"])
+
+    def testCrashLoopingDefaultsAreTheThreeSeenInEveryRun(self):
+        self.assertEqual(tweaks.CRASH_LOOPING,
+                         ("com.apple.wifip2pd", "com.apple.syncdefaultsd", "com.apple.security.cryptexd"))
+
     def testFileGoesToPrivateEtc(self):
         path = tweaks.saveLdGroups(self.root, self.listing, 3)
         self.assertEqual(path, os.path.join(self.root, "private/etc/dlisa-ld-groups.conf"))

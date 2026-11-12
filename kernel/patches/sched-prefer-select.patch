@@ -1,0 +1,378 @@
+--- a/osfmk/kern/sched_clutch.c
++++ b/osfmk/kern/sched_clutch.c
+@@ -3477,6 +3477,20 @@
+ 	return TRUE;
+ }
+ 
++/*
++ * darwin-lisa (sched-prefer-select.patch): the highest priority waiting in the pset's clutch hierarchy, NOPRI when it
++ * is empty. Read without the pset lock from the idle loop: a stale value only delays or hastens one look.
++ */
++int sched_clutch_lisa_root_priority(processor_set_t pset);
++
++int
++sched_clutch_lisa_root_priority(processor_set_t pset)
++{
++	sched_clutch_root_t root_clutch = &pset->pset_clutch_root;
++
++	return root_clutch->scr_thr_count == 0 ? NOPRI : root_clutch->scr_priority;
++}
++
+ static int
+ sched_clutch_runq_count(processor_t processor)
+ {
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -161,6 +161,214 @@
+ #define         DEFAULT_BG_PREEMPTION_RATE      400             /* (1/s) */
+ TUNABLE(int, default_bg_preemption_rate, "bg_preempt", DEFAULT_BG_PREEMPTION_RATE);
+ 
++/*
++ * darwin-lisa (sched-prefer-select.patch): the slow cores keep their hands off the band's threads.
++ *
++ * This kernel's idle loop polls (no WFI: cpu-idle-no-wfi.patch), so an idle A55 sees a thread land on the pset's one
++ * shared run queue within nanoseconds and takes it in thread_select, before the A78 that choose_processor signalled
++ * gets there; RT threads the same way through the RT queue (processor_idle breaks on rt_runq_count); and a handoff
++ * runs the woken thread on the sender's core. choose_processor never sees those paths: with sched_prefer=0xf and
++ * sched_prefer_pri, 21-35 % of the window server's draws still ran on the A55s (docs/gpu-device-test.md, Session 7).
++ *
++ * With sched_prefer=MASK and sched_prefer_wait=US (default 2000; 0 turns all of this off):
++ *  - a core outside the mask leaves a thread of the band (sched_prefer_pri, default 37) at the head of the run queue
++ *    (or an RT thread, while an A78 is free of RT work) for up to US microseconds: an A78 takes it in that time, or
++ *    the A55 takes it after (the wait cpus=4 imposed without a bound, and that measured best);
++ *  - a thread of the band running on an A55 while an A78 is idle moves (thread_select's rebalance, csw_check), and a
++ *    handoff to one goes through thread_setrun instead;
++ *  - below the band an idle A55 is chosen before an idle A78 (the rest of the system on the small cores);
++ *  - sched_prefer_pull=US (default 200; 0 = off): an idle A78 makes an A55 that has run a thread of the band for US
++ *    microseconds reschedule, and the thread moves over.
++ * cpuload=N prints what it did ("tl: sp", hakios.cpufreq.c) and the priority of each busy core's thread.
++ */
++TUNABLE(uint32_t, lisa_sched_prefer_wait_us, "sched_prefer_wait", 2000);
++TUNABLE(uint32_t, lisa_sched_prefer_pull_us, "sched_prefer_pull", 200);
++
++extern int sched_clutch_lisa_root_priority(processor_set_t pset);       /* sched_clutch.c */
++
++static uint64_t dlisa_sp_held, dlisa_sp_late, dlisa_sp_hand, dlisa_sp_move, dlisa_sp_pull;
++static uint64_t lisa_hold_since[MAX_CPUS][2], lisa_hold_seen[MAX_CPUS][2], lisa_pull_looked[MAX_CPUS];   /* [cpu][rt] */
++static bool lisa_hold_late[MAX_CPUS][2];
++static uint64_t lisa_wait_abs, lisa_pull_abs;
++
++static uint64_t
++lisa_us_abs(uint32_t us, uint64_t *cache)
++{
++	if (*cache == 0 && us != 0) {
++		clock_interval_to_absolutetime_interval(us, NSEC_PER_USEC, cache);
++	}
++	return *cache;
++}
++
++static inline uint64_t
++lisa_fast_cores(processor_set_t pset)
++{
++	return pset_available_cpumap(pset) & pset->perfcontrol_cpu_preferred_bitmask;
++}
++
++/* a core outside the mask, with the filter on and an A78 online */
++static inline bool
++lisa_is_slow_core(processor_set_t pset, processor_t processor)
++{
++	uint64_t preferred = pset->perfcontrol_cpu_preferred_bitmask;
++
++	return preferred != 0 && lisa_sched_prefer_wait_us != 0 && !bit_test(preferred, processor->cpu_id) &&
++	       lisa_fast_cores(pset) != 0;
++}
++
++/*
++ * Whether this slow core leaves the head of the queue (priority pri, RT when rt) to the A78s for now. The wait counts
++ * from the first time this core saw a head of the band and starts again when the core last looked more than a wait
++ * ago or took a thread (lisa_took).
++ */
++static bool
++lisa_hold(processor_set_t pset, processor_t processor, int pri, bool rt)
++{
++	int cpu = processor->cpu_id, kind = rt;
++
++	if (pri < lisa_sched_prefer_pri || !lisa_is_slow_core(pset, processor) ||
++	    (rt && bit_count(lisa_fast_cores(pset) & ~pset->realtime_map) < rt_runq_count(pset))) {
++		lisa_hold_since[cpu][kind] = 0;
++		return false;
++	}
++
++	uint64_t now = mach_absolute_time(), wait = lisa_us_abs(lisa_sched_prefer_wait_us, &lisa_wait_abs);
++
++	if (lisa_hold_since[cpu][kind] == 0 || now - lisa_hold_seen[cpu][kind] > wait) {
++		lisa_hold_since[cpu][kind] = now;
++		lisa_hold_late[cpu][kind] = false;
++		os_atomic_inc(&dlisa_sp_held, relaxed);
++	}
++	lisa_hold_seen[cpu][kind] = now;
++	if (now - lisa_hold_since[cpu][kind] < wait) {
++		return true;
++	}
++	if (!lisa_hold_late[cpu][kind]) {
++		lisa_hold_late[cpu][kind] = true;
++		os_atomic_inc(&dlisa_sp_late, relaxed);
++	}
++	return false;
++}
++
++/* the head of the timeshare queue (the clutch hierarchy; never this core's bound threads) */
++static bool
++lisa_hold_timeshare(processor_set_t pset, processor_t processor)
++{
++	return SCHED(processor_bound_count)(processor) == 0 && lisa_hold(pset, processor, sched_clutch_lisa_root_priority(pset), false);
++}
++
++static bool
++lisa_hold_realtime(processor_set_t pset, processor_t processor)
++{
++	return rt_runq_count(pset) != 0 && lisa_hold(pset, processor, BASEPRI_RTQUEUES, true);
++}
++
++static inline void
++lisa_took(processor_t processor)
++{
++	lisa_hold_since[processor->cpu_id][0] = 0;
++	lisa_hold_since[processor->cpu_id][1] = 0;
++}
++
++/* a thread of the band on a slow core while an A78 is idle: it should run there */
++static inline bool
++lisa_should_move(processor_set_t pset, processor_t processor, thread_t thread)
++{
++	return thread->bound_processor == PROCESSOR_NULL && !(thread->state & TH_IDLE) &&
++	       thread->sched_pri >= lisa_sched_prefer_pri && lisa_is_slow_core(pset, processor) &&
++	       (pset->cpu_state_map[PROCESSOR_IDLE] & lisa_fast_cores(pset)) != 0;
++}
++
++/* a handoff to a thread of the band from a slow core goes through thread_setrun when an A78 is idle */
++static inline bool
++lisa_handoff_away(processor_t processor, thread_t thread)
++{
++	if (!lisa_should_move(processor->processor_set, processor, thread)) {
++		return false;
++	}
++	os_atomic_inc(&dlisa_sp_hand, relaxed);
++	return true;
++}
++
++/*
++ * From an idle A78's loop: an A55 that has run a thread of the band for sched_prefer_pull microseconds is told to
++ * reschedule (csw_check then sees lisa_should_move). Looks a few times a pull period, not on every turn of the loop.
++ */
++static void
++lisa_pull(processor_set_t pset, processor_t processor)
++{
++	uint64_t preferred = pset->perfcontrol_cpu_preferred_bitmask;
++	int cpu = processor->cpu_id;
++
++	if (lisa_sched_prefer_pull_us == 0 || lisa_sched_prefer_wait_us == 0 || !bit_test(preferred, cpu)) {
++		return;
++	}
++
++	uint64_t now = mach_absolute_time(), age = lisa_us_abs(lisa_sched_prefer_pull_us, &lisa_pull_abs);
++
++	if (now - lisa_pull_looked[cpu] < age / 4) {
++		return;
++	}
++	lisa_pull_looked[cpu] = now;
++
++	uint64_t slow = pset->cpu_state_map[PROCESSOR_RUNNING] & pset_available_cpumap(pset) & ~preferred &
++	    ~pset->pending_AST_URGENT_cpu_mask & ~os_atomic_load(&pset->pending_AST_PREEMPT_cpu_mask, relaxed);
++
++	for (int id = lsb_first(slow); id >= 0; id = lsb_next(slow, id)) {
++		processor_t victim = processor_array[id];
++		sched_ipi_type_t ipi = SCHED_IPI_NONE;
++
++		if (victim->current_pri < lisa_sched_prefer_pri || victim->current_is_bound || now - victim->last_dispatch < age) {
++			continue;
++		}
++		pset_lock(pset);
++		if (processor->state == PROCESSOR_IDLE && victim->state == PROCESSOR_RUNNING &&
++		    victim->current_pri >= lisa_sched_prefer_pri && !bit_test(pset->pending_AST_URGENT_cpu_mask, id)) {
++			ipi = sched_ipi_action(victim, NULL, SCHED_IPI_EVENT_REBALANCE);
++		}
++		pset_unlock(pset);
++		if (ipi != SCHED_IPI_NONE) {
++			sched_ipi_perform(victim, ipi);
++			os_atomic_inc(&dlisa_sp_pull, relaxed);
++		}
++		return;
++	}
++}
++
++/* for hakios.cpufreq.c (BSD sees thread_t opaque): the thread's priority, RT marked */
++int dlisa_thread_sched_pri(thread_t thread, bool *rt);
++
++int
++dlisa_thread_sched_pri(thread_t thread, bool *rt)
++{
++	*rt = thread->sched_mode == TH_MODE_REALTIME;
++	return thread->sched_pri;
++}
++
++/* "tl: sp held N late N hand N move N pull N", the counts since the last call; empty when nothing changed */
++void dlisa_sched_prefer_line(char *line, size_t size);
++
++void
++dlisa_sched_prefer_line(char *line, size_t size)
++{
++	static uint64_t before[5];
++	uint64_t now[5] = { dlisa_sp_held, dlisa_sp_late, dlisa_sp_hand, dlisa_sp_move, dlisa_sp_pull };
++	uint64_t delta[5];
++	bool changed = false;
++
++	for (int i = 0; i < 5; i++) {
++		delta[i] = now[i] - before[i];
++		changed |= delta[i] != 0;
++		before[i] = now[i];
++	}
++	line[0] = 0;
++	if (changed) {
++		snprintf(line, size, "tl: sp held %llu late %llu hand %llu move %llu pull %llu", (unsigned long long)delta[0],
++		    (unsigned long long)delta[1], (unsigned long long)delta[2], (unsigned long long)delta[3],
++		    (unsigned long long)delta[4]);
++	}
++}
++
+ #if XNU_TARGET_OS_XR
+ #define         MAX_UNSAFE_RT_QUANTA               1
+ #define         SAFE_RT_MULTIPLIER                 5
+@@ -2600,7 +2808,16 @@
+ 
+ 		bool avoid_processor     = !is_yielding && SCHED(avoid_processor_enabled) && SCHED(thread_avoid_processor)(processor, thread, *reason);
+ 
+-		bool ok_to_run_realtime_thread = sched_ok_to_run_realtime_thread(pset, processor, true);
++		/* darwin-lisa: a thread of the band leaves a slow core for an idle A78 (rebalanced by thread_dispatch) */
++		if (still_running && !avoid_processor && lisa_should_move(pset, processor, thread)) {
++			avoid_processor = true;
++			os_atomic_inc(&dlisa_sp_move, relaxed);
++		}
++
++		/* darwin-lisa: an RT thread waits for an A78 that is free of RT work (lisa_hold) */
++		bool lisa_rt_held = lisa_hold_realtime(pset, processor);
++
++		bool ok_to_run_realtime_thread = sched_ok_to_run_realtime_thread(pset, processor, true) && !lisa_rt_held;
+ 
+ 		current_thread_can_keep_running = (
+ 			still_running
+@@ -2734,6 +2951,7 @@
+ 			pset_assert_locked(pset);
+ 			if (new_thread != THREAD_NULL) {
+ 				select_outcome = SELECT_NEW_RT;
++				lisa_took(processor);
+ 
+ 				processor->deadline = new_thread->realtime.deadline;
+ 				pset_commit_processor_to_new_thread(pset, processor, new_thread);
+@@ -2808,7 +3026,7 @@
+ 
+ 		if (processor->is_recommended) {
+ 			bool spill_pending = bit_test(pset->rt_pending_spill_cpu_mask, cpu_id);
+-			if (sched_ok_to_run_realtime_thread(pset, processor, true) && (spill_pending || rt_runq_count(pset))) {
++			if (sched_ok_to_run_realtime_thread(pset, processor, true) && (spill_pending || (rt_runq_count(pset) && !lisa_rt_held))) {
+ 				/* Things changed while we dropped the lock */
+ 				continue;
+ 			}
+@@ -2832,11 +3050,18 @@
+ 
+ 		processor->deadline = RT_DEADLINE_NONE;
+ 
++		/*
++		 * darwin-lisa: a slow core leaves a head of the band to the A78s (lisa_hold): it keeps its current thread or
++		 * goes idle, and its idle loop looks at the queue again.
++		 */
++		bool lisa_ts_held = lisa_hold_timeshare(pset, processor);
++
+ 		/* No RT threads, so let's look at the regular threads. */
+-		if ((new_thread = SCHED(choose_thread)(processor, MINPRI, current_thread_can_keep_running ? thread : THREAD_NULL, *reason)) != THREAD_NULL) {
++		if (!lisa_ts_held && (new_thread = SCHED(choose_thread)(processor, MINPRI, current_thread_can_keep_running ? thread : THREAD_NULL, *reason)) != THREAD_NULL) {
+ 			if (new_thread != thread) {
+ 				/* Going to context-switch */
+ 				select_outcome = SELECT_NEW;
++				lisa_took(processor);
+ 				pset_commit_processor_to_new_thread(pset, processor, new_thread);
+ 
+ 				clear_pending_AST_bits(pset, processor, select_outcome);
+@@ -2876,6 +3101,10 @@
+ 			return new_thread;
+ 		}
+ 
++		if (lisa_ts_held) {
++			break;
++		}
++
+ 		if (processor->must_idle) {
+ 			processor->must_idle = false;
+ 			*reason |= AST_REBALANCE;
+@@ -5237,6 +5466,15 @@
+ 		assert((idle_map & pset->pending_AST_URGENT_cpu_mask) == 0);
+ 
+ 		/*
++		 * darwin-lisa: below the band an idle slow core first, so the A78s stay free for the band
++		 * (sched-prefer-select.patch)
++		 */
++		if (lisa_sched_prefer_wait_us != 0 && pset->perfcontrol_cpu_preferred_bitmask != 0 &&
++		    thread->sched_pri < lisa_sched_prefer_pri && (idle_map & ~pset->perfcontrol_cpu_preferred_bitmask) != 0) {
++			return processor_array[lsb_first(idle_map & ~pset->perfcontrol_cpu_preferred_bitmask)];
++		}
++
++		/*
+ 		 * Look at the preferred cores first.
+ 		 */
+ 		int cpuid = lsb_next(preferred_idle_map, pset->cpu_preferred_last_chosen);
+@@ -5844,6 +6082,11 @@
+ 		return check_reason | AST_PREEMPT;
+ 	}
+ 
++	/* darwin-lisa: a thread of the band on a slow core while an A78 is idle (thread_select moves it) */
++	if (lisa_should_move(pset, processor, thread)) {
++		return check_reason | AST_PREEMPT;
++	}
++
+ #if CONFIG_SCHED_SMT
+ 	/*
+ 	 * Even though we could continue executing on this processor, a
+@@ -6175,6 +6418,7 @@
+ #endif /* CONFIG_SCHED_SMT */
+ 	    && (processor->current_pri < BASEPRI_RTQUEUES)
+ 	    && (thread->sched_pri < BASEPRI_RTQUEUES)
++	    && !lisa_handoff_away(processor, thread)
+ #if __AMP__
+ 	    && ((thread->th_bound_pset_id == THREAD_BOUND_PSET_NONE) ||
+ 	    processor->processor_set->pset_id == thread->th_bound_pset_id)
+@@ -6229,6 +6473,7 @@
+ 		    && ((thread->th_bound_pset_id == THREAD_BOUND_PSET_NONE) ||
+ 		    processor->processor_set->pset_id == thread->th_bound_pset_id)
+ #endif /* __AMP__ */
++		    && !lisa_handoff_away(processor, thread)
+ 		    ) {
+ 			pulled_thread = thread;
+ 		} else {
+@@ -6527,7 +6772,7 @@
+ 			&& (processor->processor_primary == processor)
+ #endif /* CONFIG_SCHED_SMT */
+ 			) {
+-			if (rt_runq_count(pset)) {
++			if (rt_runq_count(pset) && !lisa_hold_realtime(pset, processor)) {
+ 				break_reason = IDLE_BREAK_RT_RUNQ;
+ 				break;
+ 			}
+@@ -6541,6 +6786,8 @@
+ 		IDLE_KERNEL_DEBUG_CONSTANT(
+ 			MACHDBG_CODE(DBG_MACH_SCHED, MACH_IDLE) | DBG_FUNC_NONE, (uintptr_t)thread_tid(thread), rt_runq_count(pset), SCHED(processor_runq_count)(processor), -1, 0);
+ 
++		lisa_pull(pset, processor);     /* darwin-lisa: an idle A78 takes the band back from an A55 */
++
+ 		machine_track_platform_idle(TRUE);
+ 
+ 		machine_idle();
+@@ -6585,7 +6832,8 @@
+ 			break;
+ 		}
+ 
+-		if (!SCHED(processor_queue_empty)(processor)) {
++		/* darwin-lisa: a slow core leaves a head of the band to the A78s for a while (lisa_hold) */
++		if (!SCHED(processor_queue_empty)(processor) && !lisa_hold_timeshare(pset, processor)) {
+ #if CONFIG_SCHED_SMT
+ 			/* Secondary SMT processors respond to directed wakeups
+ 			 * exclusively. Some platforms induce 'spurious' SMT wakeups.

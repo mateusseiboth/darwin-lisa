@@ -1,0 +1,11 @@
+build-standalone: identity SoC and board: t8110 0x8110 0x08 A2481 
+/home/mateusseiboth/Dev/mobile/out/final18-sel7-payload.bin: 45545512 bytes (43.4 MiB of 63), autoboot=10
+/home/mateusseiboth/Dev/mobile/out/loader-usb-lisa-final18-sel7.hkub: 45633536 bytes (payload, loader)
+/home/mateusseiboth/Dev/mobile/out/vendor_boot-lisa-final18-sel7.img: 45842432 bytes: vendor ramdisk 151552 -> 45633536, DTB 203383 bytes (same) at 0x2b86000
+boot-args: rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=darwin_var var_ufs=1 dlisa_unlock=1 dlisa_noidle=1 dlisa_watchdog=4 display=1 keystore=1 console_open=1 lisa=1 cpus=7 battery=1 wifi=1 init_run=/usr/libexec/usermanagerd:--init init_run_secs=60 bootcpu=7 loader_return_after=86400 epoch=1794503088 rtc=1 adsp=1 battmgr=2 noidle=1 tz=America/Campo_Grande gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1
+0270ca71301685e4a2cfa52cd2bdf9ea678797fde217d8bbb80080938509ee2a  research/hackios-xnu-kernel/kernel-16k-s8-select.bak
+e97fff95ada42225bdc1b330e9e4c9231d6f763cf5da1a94df7a9fc980e30769  /home/mateusseiboth/Dev/mobile/out/final18-sel7-payload.bin
+12c5400ddd25dc8cf982ad7757f4d8f2fb198bd1218dac810db291d7f0c8323c  /home/mateusseiboth/Dev/mobile/out/loader-usb-lisa-final18-sel7.hkub
+c5f535ebad3b036e7d58e8534f2673acd41a5c1f99284629e51e474038c0a795  /home/mateusseiboth/Dev/mobile/out/vendor_boot-lisa-final18-sel7.img
+2f31ada4ccd3f4312b7a3ecd972d99ea740c1ef1128800ec7c19e53b60b9f863  /home/mateusseiboth/Dev/mobile/out/loader-final18-sel7.efi
+build-combined: the boot-arg line is 450 characters of at most 460 (room for 10 more)

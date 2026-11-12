@@ -1,5 +1,101 @@
 # GPU on the phone: the run book (one session)
 
+## Session 8 (2026-11-12 afternoon, host only, phone away): the A55s took the UI through the idle loop
+
+Nothing was run on the phone. Two questions from the owner: why Settings is slow, and how to keep the 7 cores with the
+UI on the A78s (the 60 fps goal comes first).
+
+**Why the earlier scheduler patches did nothing.** This kernel's idle loop does not sleep (`cpu-idle-no-wfi.patch`:
+WFI never wakes under the hypervisor), it polls. `processor_idle` leaves the loop as soon as the pset's run queue is
+not empty (`IDLE_BREAK_PSET_RUNQ`) or the RT queue has a thread (`IDLE_BREAK_RT_RUNQ`), and the next `thread_select`
+takes the head of the one shared clutch hierarchy. So whenever choose_processor picks an A78 that has to be preempted
+first (an IPI, an AST, a context switch), an idle A55 that is polling gets the thread first. RT threads go the same
+way: `sched_rt_choose_processor` already picks the lowest-numbered core (an A78), but the A55 that polls
+`rt_runq_count` wins the race. The window server's render thread is `com.apple.coreanimation.display.primary`
+(the `tl: busy` lines of the Session 4 runs); if it is a time-constraint thread, sched_prefer/sched_prefer_pri never
+touched it at all. Handoffs (`thread_handoff`, mach_msg) run the woken thread on the sender's core and skip
+choose_processor too.
+
+**`kernel/patches/sched-prefer-select.patch`** (after sched-prefer-cores/ui in `apply.sh`), all of it a no-op with
+`sched_prefer=0` or `sched_prefer_wait=0`:
+- the band: `sched_prefer_pri` (default now 37, user-initiated and up, and every RT thread); `sched_prefer` defaults
+  to 0xf (cpu0-3 = the A78s; with `cpus=4` no core is outside the mask, so a cpus=4 boot is unchanged);
+- `lisa_hold`: a core outside the mask leaves a head of the band on the run queue, in the idle loop and in
+  thread_select, for up to `sched_prefer_wait` microseconds (default 2000), and takes it after. For the RT queue only
+  while an A78 is free of RT work. The A55 keeps its current thread or goes back to polling; below the band it takes
+  work as before. This is the bounded form of what `cpus=4` did unbounded;
+- `lisa_should_move`: a thread of the band running on an A55 while an A78 is idle is preempted and rebalanced
+  (csw_check, thread_select), and a handoff to one goes through thread_setrun;
+- `lisa_pull`: an idle A78 makes an A55 that has run a thread of the band for `sched_prefer_pull` microseconds (default
+  200) reschedule, so the thread moves over;
+- choose_processor: below the band an idle A55 before an idle A78;
+- `cpuload=N` prints `tl: sp held N late N hand N move N pull N` (what the filter did since the last line) and the
+  priority of each busy core's thread (`tl: busy 1:backboardd/646(com.apple.coreanimation.display.primary)p97rt`).
+
+Tests: `kernel/patches/test/run.sh` builds the patch's helper block on the host against stand-ins and checks the
+hold, the late take, the restart after a gap, RT only with a free A78, bound threads, the move, the pull and the stats
+line (PASS). The series cores + ui + select applied to the pristine feed gives the built tree byte for byte. Kernel
+`research/hackios-xnu-kernel/kernel-16k-s8-select.bak` (`0270ca71`; `kernel26.nopac` is this build now; the build with
+the old defaults, mask 0 and band 0, is `-s8-select-nodefault.bak` `d51179e8`). Not run anywhere yet.
+
+**Settings (subagent analysis of every gpu-p/c/d/e run and planb-standalone).**
+- Opening: tap to exec 45-100 ms; exec to the app's first surface (dyld + UIKit, CPU-bound) 1.4-1.8 s with cpus=4,
+  2.1-3.0 s with cpus=7; the open animation 1.9-2.7 s, 53-56 swaps at 25-33 ms. Shader links 14-30 ms with the cache
+  warm (6.4 s on the first boot after a plug-in change). No XPC timeout: the lookups that fail (coretelephony,
+  wifi.manager, corewifi.internal) come back at once with error 3. No crash, jetsam or respawn of Preferences.
+- Scrolling with a finger (`logs/planb-standalone.log`, cpus=7): 26-27 fps, the GPU 12.5-12.9 ms a command buffer, the
+  driver waiting 8.7-10.5 ms a frame for it: GPU and memory bound (the full-screen passes). The opening competes for the
+  CPU with chronod launching 8 widget extensions and 4 more processes in the same 9 s.
+- In the host runs the synthetic `scr`/`scrd` inside Settings produce no frame at all (c2: none between 240 and 291 s;
+  e1-e3: `tl: p` shows the touches arrive, 0 swaps from 212 to 239 s), while SpringBoard's gestures work. Not explained
+  by any log; Preferences' os_log was never captured (run S8-C below).
+- **The 36 fps of Session 7 (c2 185 frames in 5 s, d3 184, p6 158) is the lock-screen-to-home animation at kernel
+  41-58 s, not Settings.** The comparison holds (same window in every run), but it is not a Settings number.
+- `userland/scripts/plist-tweaks.py`: group `loops` in `/etc/dlisa-ld-groups.conf` (wifip2pd, syncdefaultsd,
+  security.cryptexd, which die on every start: c2 has 28 exit(1), 10 SIGABRT, 15 SIGTRAP) for `ld_disable=loops`; not in
+  `default`; needs a new root (not built: the PosterBoard worker owns the sysroot today). 11 tests pass.
+
+`out/vendor_boot-lisa-final18-sel7.img` (`c5f535eb`), a real `build-combined.sh` build: `GEOMETRY= CPUS=7
+NAME=final18-sel7 KERNEL=research/hackios-xnu-kernel/kernel-16k-s8-select.bak EXTRA_ARGS="noidle=1
+tz=America/Campo_Grande gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"`.
+Its line against final17's (`out/*-cmdline.txt`, word by word): only `cpus=4` -> `cpus=7` and the epoch; 450
+characters. NOT flashed.
+
+### The evening run book (one trip; phone in pmOS, vendor_boot_a final17 `2e7f0b85`, root e07b4390)
+
+Host runs first (RAM only, nothing written). Each ends in pmOS. Read every run like Session 7: `MiniIOMobileFramebuffer:
+from one frame to the next` for the 5 s window at kernel 41-58 s (the home animation) and for the Settings window,
+`gaps between commits`, `draw calls by processor` of backboardd, and `tl: sp` / `tl: busy` where cpuload is on.
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
+G="touch_seq=tap:56800:5600@190,scr@215,scrd@230,up@262,cc@280"
+T="150 200 225 240 255 275 290 305"
+# S8-A: the filter, 7 cores, c2's line otherwise (451 chars)
+KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s8a "$B metal_fps=1 cpus=7 $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S8-B: the same kernel with cpus=4 (the control on this kernel)
+KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s8b "$B metal_fps=1 cpus=4 $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S8-C: diagnostics: the filter's counts, each busy thread's priority (is display.primary RT?), Preferences' os_log,
+# a late scroll (does the app answer after ~60 s?) (453 chars)
+KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s8c "$B cpus=7 dlisa_oslog=Preferences cpuload=5000 touch_seq=tap:56800:5600@190,scr@265" "150 200 225 250 275 290 305 320"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+If S8-A misbehaves (a hang, the UI not coming up): `sched_prefer_pull=0`, then `sched_prefer_wait=0` (the patch off,
+Session 7's kernel otherwise) isolate it; each adds 20 characters, so drop `metal_fps=1` for them.
+
+Flash only if S8-A is at least S8-B/c2 in the home window (185 frames in 5 s, 139 intervals under 18 ms, commits 96
+on time) with backboardd's draws on cpu4-6 under 5 %:
+
+```sh
+bash darwin-lisa/tools/flash-vendorboot.sh out/vendor_boot-lisa-final18-sel7.img   # reads back c5f535eb
+```
+
+then a cold boot with no host command in the autoboot window and a screenshot at +4/+5 min (as every standalone
+check). Rollback: `tools/flash-vendorboot.sh out/vendor_boot-lisa-final17-cpus4.img` (`2e7f0b85`), or final14-var
+`out/vendor_boot-lisa-final14-var.img` (`d2b8e825`; also `backups/vendor_boot_a-before-20261112-1213-3fe6a1ed.img`).
+Never edit a vendor_boot or a payload by hand (final16: "payload is damaged").
+
 ## Session 7 (2026-11-12, 10:20-11:40): the draw's processor time is the slow cores', and the clip's NaN
 
 Host runs gpu-c1, c2, d1, d2, d3 (`research/hackios-xnu-kernel/logs/gpu-{c,d}*`), kernel rc3, the same gestures as far

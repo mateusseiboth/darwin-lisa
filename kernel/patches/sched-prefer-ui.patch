@@ -5,12 +5,12 @@
  TUNABLE(int, default_preemption_rate, "preempt", DEFAULT_PREEMPTION_RATE);
  
 +/*
-+ * darwin-lisa: boot-arg sched_prefer_pri=N (default 0: every thread): a thread at or above it is kept on the
++ * darwin-lisa: boot-arg sched_prefer_pri=N (default 37, user-initiated and up; 0: every thread): a thread at or above it is kept on the
 + * preferred cores (sched_prefer=MASK, processor.c) when it can be: its last core is not taken back if that is not a
 + * preferred one and a preferred core is idle, and a preferred core running something of lower priority is preempted
 + * before an idle core outside the mask is woken. Below the band, and with no mask, choose_processor is unchanged.
 + */
-+TUNABLE(int, lisa_sched_prefer_pri, "sched_prefer_pri", 0);
++TUNABLE(int, lisa_sched_prefer_pri, "sched_prefer_pri", 37);
 +
 +static inline bool
 +lisa_prefers(processor_set_t pset, thread_t thread)

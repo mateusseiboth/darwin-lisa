@@ -95,6 +95,13 @@ UI_SHELLS = ("com.apple.ClarityBoard", "com.apple.checkerboard", "com.apple.devi
 #   reports its events to it, followed the finger at a crawl: Notification Center 25-90 s late, the app switcher's
 #   transition still under way a minute later. Nothing here needs its metrics (2026-11-11, gpu-nc6 and gpu-nc7).
 ALWAYS_DISABLED = ("com.apple.CommCenter", "com.apple.PerfPowerServices", "com.apple.PerfPowerServicesExtended")
+# The "loops" group (opt-in: ld_disable=loops): the services that die every time they start on this port, so they only
+# cost a spawn each time and leave a client waiting while launchd throttles them. Seen in every host run of
+# 2026-11-12 (gpu-c2: wifip2pd 28 exits with exit(1) after 56 ms, one every 10 s, without wifid; cryptexd 15 SIGTRAPs
+# at the same pc, its KeepAlive PathState never met, launchd's throttle up to 160 s; syncdefaultsd 10 SIGABRTs).
+# Disabled, a lookup of theirs fails at once, as CommCenter's does. Not in "default" until a host run with
+# ld_disable=loops shows nothing waits on them.
+CRASH_LOOPING = ("com.apple.wifip2pd", "com.apple.syncdefaultsd", "com.apple.security.cryptexd")
 
 
 def readLabels(sysroot, listing):
@@ -122,7 +129,7 @@ def readPresentLabels(sysroot, wanted):
     return [label for label in wanted if label in present]
 
 
-def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DISABLED):
+def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DISABLED, crashLooping=CRASH_LOOPING):
     labels = readLabels(sysroot, listing)
     chunks = [labels[i:i + size] for i in range(0, len(labels), size)]
     lines = ["# made by plist-tweaks.py from lean-daemons.txt: NAME label label ... (init26 ld_disable=NAME,...)",
@@ -132,6 +139,9 @@ def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DIS
     always = readPresentLabels(sysroot, alwaysDisabled)
     if always:
         lines.append("default " + " ".join(always))
+    looping = readPresentLabels(sysroot, crashLooping)
+    if looping:
+        lines.append("loops " + " ".join(looping))
     path = os.path.join(sysroot, LD_GROUPS)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:

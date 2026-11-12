@@ -1,0 +1,68 @@
+### 1. reset pe_fiq.c to pristine so the updated patch applies clean
+### 2. re-apply darwin-lisa patches (copies gic_vtimer.c + applies pe_fiq patch)
+already applied: sleh-pac-emulate
+already applied: conf-files-pac
+already applied: machdep-grade-arm64e
+already applied: mach_loader-pac-pager
+already applied: pe_kprintf-loader-console
+already applied: pe_gen-loader-console
+already applied: debug-loader-return
+already applied: prng-seed-bringup
+already applied: pe_init-skip-console
+already applied: machine-routines-virtual-timer
+already applied: machine-routines-decrementer-floor
+already applied: serial-console-tee
+already applied: vcputc-tee
+already applied: bcm2837-gic-v3
+patching file pexpert/arm/pe_fiq.c
+already applied: trustcache-skip
+already applied: cpu-idle-no-wfi
+already applied: boot-args-loader-layout
+already applied: cpu-subtype-arm64e
+already applied: hfs-rename-swap
+already applied: sched-prefer-cores
+already applied: sched-prefer-ui
+already applied: sched-prefer-select
+already applied: fb-wcomb
+darwin-lisa kernel emulation patches applied to /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/.cache/xnu-work
+### 3. build kernel
+  ath11k.o linked in: /home/mateusseiboth/Dev/mobile/research/hackios-xnu-kernel/xnu-deps/build/ath11k/out/ath11k.o
+unixnu: on Linux the kernel step uses the toolchain of scripts/linux/setup-toolchain.py; --skip-setup and seed-data-grow need macOS hdiutil
+== submodules /home/mateusseiboth/Dev/mobile/research/UniXNU
+== submodules: kits/XnuPrelink has local changes, not updated
+== tree /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree
+== kernel: XNU
+== kernel: prepare storage headers
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/prepare-storage-headers.py
+== kernel: archive-01-build-corecrypto-14
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-corecrypto-14.py
+== kernel: archive-02-build-corecrypto-14
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-corecrypto-14.py --namespace
+== kernel: component-ArmDTPlatform
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-arm-driver.py ArmDTPlatform
+== kernel: component-ArmCpu
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-arm-driver.py ArmCpu
+== kernel: archive-05-build-libpthread-kernel
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-libpthread-kernel.py
++ bash /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/scripts/build-xnu-4k-baseline.sh
+== kernel: prelink
+== ipsw: remote https://updates.cdn-apple.com/2026SpringFCS/fullrestores/140-25976/000BB0A6-045B-47FF-AE4E-D8BF722E24FD/iPad17,1,iPad17,2,iPad17,3,iPad17,4_26.5.2_23F84_Restore.ipsw
++ python3 /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/kits/XnuPrelink/emit_prelink.py --kernel /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/build/xnu/ios-obj/DEVELOPMENT_ARM64_BCM2837/mach.development.bcm2837.unstripped.noctf --prelinked /home/mateusseiboth/Dev/mobile/research/UniXNU/out/ipsw/23F84/kernelcache.decompressed --slide=-0x1000000 --root com.apple.AppleFSCompression.AppleFSCompressionTypeZlib --root com.apple.driver.AppleARMPlatform --root com.apple.driver.AppleARMWatchdogTimer --root com.apple.driver.AppleAudioClockLibs --root com.apple.driver.AppleEffaceableStorage --root com.apple.driver.AppleIISController --root com.apple.driver.AppleM2ScalerCSCDriver --root com.apple.driver.AppleMobileFileIntegrity --root com.apple.driver.ApplePMGR --root com.apple.driver.IODARTFamily --root com.apple.filesystems.apfs --root com.apple.iokit.CoreAnalyticsFamily --root com.apple.iokit.IOAVFamily --root com.apple.iokit.IOAudio2Family --root com.apple.iokit.IOCECFamily --root com.apple.iokit.IOCryptoAcceleratorFamily --root com.apple.iokit.IOGPUFamily --root com.apple.iokit.IOHDCPFamily --root com.apple.iokit.IOMobileGraphicsFamily --root com.apple.iokit.IOReportFamily --root com.apple.iokit.IOSlowAdaptiveClockingFamily --root com.apple.iokit.IOStorageFamily --root com.apple.iokit.IOSurface --root com.apple.kec.Libm --root com.apple.kec.corecrypto --root com.apple.kext.AppleMatch --root com.apple.kext.CoreTrust --root com.apple.security.AppleImage4 --root com.apple.security.sandbox --root com.apple.iokit.IOHIDFamily --root com.apple.iokit.IOHIDEventDriver --early-security-init com.apple.driver.AppleMobileFileIntegrity=0xfffffe0008f13c80 --output /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/kernel/.prelink-2g0iwjuk/kernel.macho
+python3: can't open file '/home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree/kits/XnuPrelink/emit_prelink.py': [Errno 2] No such file or directory
+unixnu: python3 failed (2); full log: /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/logs/prelink.log
+### 4. stage native (--skip-prelink) -> kernel.macho
+unixnu: on Linux the kernel step uses the toolchain of scripts/linux/setup-toolchain.py; --skip-setup and seed-data-grow need macOS hdiutil
+== submodules /home/mateusseiboth/Dev/mobile/research/UniXNU
+== submodules: kits/XnuPrelink has local changes, not updated
+== tree /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/tree
+== kernel: native only /home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/kernel/kernel.macho sha256 90fb758e665ceefbebf372e00e1da4b1e5b5a073180d381c06482e49821a197c
+### 5. verify my marker compiled in (before stripping)
+  WARNING: marker NOT found in kernel.macho (patch may not have compiled)
+### 6. pacstrip + reseal
+/home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/kernel/kernel.macho: 176 to patch, 0 to emulate
+Source kernel POST integrity field populated; runtime selftests are still required
+  pacstrip scan (should be 0 PAC):
+/home/mateusseiboth/Dev/mobile/research/UniXNU/out/lisa26/ipados-26.5.2-23F84/lisa26/kernel/kernel.macho.nopac: 0 to patch, 0 to emulate
+### 7. copy to loader
+-rw-r--r--. 1 ubuntu ubuntu 45544848 Nov 12 17:04 /home/mateusseiboth/Dev/mobile/research/hackios-xnu-kernel/kernel26.nopac
+### REBUILD DONE

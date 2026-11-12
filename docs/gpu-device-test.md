@@ -465,3 +465,13 @@ rollback is `system-26.apfs.full-199a4181` (the same flash command). The kernel 
 `darwin-lisa/kernel/drivers/gpu/`: `README.md` (the iOS 26 analysis), `gpu-wire.py` (kernel), `gpu-run.sh` (these
 boots), `userland/` (the build scripts, `gputest.c`, the plug-in and compiler patches, `ca-metallib-stage.sh`),
 `mesa/` (the Darwin Mesa build), `fw-gpu-stage.py`, `tools/metal-initlimits.py`.
+
+## GMEM result (2026-11-12, gpu-v6)
+
+Run with `metal_gmem=1 metal_gmem_off=8` (every pass that can be tiled is), root 3745ace7, Settings opened at 190 s and
+scrolled at 220 s: the framebuffer's window with the scroll reports 153 frames in 5042 ms (30 a second), 108 of them
+waiting for the next refresh, 66 swaps a refresh late; the sysmem baseline over the same kind of window is 22-28 fps
+(planb-standalone.log, gpu-v5). The picture is not right under GMEM: the Control Center's glass loses its blur and
+translucency and the brightness/volume glyphs come out garbled (`logs/gpu-v6-q5.png`). So GMEM stays off by default
+(`hm_gmem_on` unchanged); the tiled path's resolve of the blur/backdrop passes is what to look at before an A/B with
+`metal_gmem_draws=1` (the tuned choice) is worth the run.

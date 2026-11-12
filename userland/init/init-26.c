@@ -688,6 +688,9 @@ mountVar(void)
 				"/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/61/GalleryCache" };
 			int madeDirs = 0;
 
+			/* the 59 an earlier boot left (PosterBoard would take it as the current store and fail to step it again) */
+			emptyTree("/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/59", 0);
+			rmdir("/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/59");
 			for (unsigned i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
 				if (mkdir(dirs[i], 0755) == 0) {
 					madeDirs++;

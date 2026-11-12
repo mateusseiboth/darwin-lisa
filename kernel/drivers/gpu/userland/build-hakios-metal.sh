@@ -60,6 +60,8 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-refusal-detail.patch"
        # metal_all=1: the device for the processes that draw (apps, SpringBoard, app extensions), not the daemons; =2 all
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-metal-all-ui.patch"
+       # NOT HakiosMetalCA-metal-all-daemons.patch (iconservicesagent + chronod shown the device): with it
+       # iconservicesagent respawned 14 times in one boot and no app icon was ever rendered (gpu-v6, 2026-11-12)
        # function constants of up to 32 bytes (RenderBox's uint4 _shader_state) handed whole to the compiler
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-wide-constants.patch"
        # the first callers of -newBufferWithBytesNoCopy: and -enqueue, by image and symbol (a ring written after the

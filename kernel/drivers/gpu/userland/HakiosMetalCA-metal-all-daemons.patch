@@ -1,0 +1,13 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -2272,6 +2272,10 @@
+ 	if (mode >= 2) return true;
+ 	if (mode < 1) return false;
+ 	if (name != NULL && strcmp(name, "metal_test") == 0) return true;
++	/* darwin-lisa: two daemons that do draw: iconservicesagent renders the apps' icons for every process that shows
++	 * one (IconRendering; without a device they stay grey squares in Settings' rows), chronod the controls' glyphs and
++	 * previews for Control Center and the widgets' timelines */
++	if (name != NULL && (strcmp(name, "iconservicesagent") == 0 || strcmp(name, "chronod") == 0)) return true;
+ 	if (_NSGetExecutablePath(path, &length) != 0) return false;
+ 	if (strncmp(path, "/Applications/", 14) == 0) return true;
+ 	if (strncmp(path, "/private/var/containers/Bundle/", 31) == 0 || strncmp(path, "/var/containers/Bundle/", 23) == 0) return true;

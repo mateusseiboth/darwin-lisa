@@ -1,0 +1,46 @@
+--- a/HakiosMetalCA.m	2026-11-12 07:13:11.097752028 -0400
++++ b/HakiosMetalCA.m	2026-11-12 07:13:11.109424358 -0400
+@@ -2620,8 +2620,20 @@
+ {
+ 	HakiosMetalBuffer *buffer = [self newBufferWithBytes:bytes length:length options:options];
+ 
+-	HM_ONCE("a no-copy buffer was asked for; its bytes are copied into GPU memory, so neither side sees the other's later "
+-		"writes\n");
++	/* darwin-lisa: the first callers, by name: whoever writes its pages after this call, or reads what the GPU wrote,
++	 * sees nothing of the other side, and the name says whether that is a one-shot blit or a ring */
++	{
++		static int hm_nocopySaid;
++
++		if (hm_nocopySaid < 6) {
++			char caller[256];
++
++			hm_nocopySaid++;
++			hm_caller(caller, sizeof(caller));
++			hm_print("a no-copy buffer of %lu bytes was asked for by %s; its bytes are copied into GPU memory, so neither "
++				 "side sees the other's later writes\n", (unsigned long)length, caller);
++		}
++	}
+ 	if (buffer != nil && deallocator != nil) {
+ 		[buffer hakiosSetDeallocator:deallocator bytes:bytes length:length];
+ 	}
+@@ -5597,8 +5609,18 @@
+  * that is the one case where the order an application asked for is not the order it gets. */
+ - (void)enqueue
+ {
+-	HM_ONCE("a command buffer was enqueued; this plug-in runs command buffers in the order they are COMMITTED, so a "
+-		"place reserved by enqueue is not kept\n");
++	{
++		static int hm_enqueueSaid;
++
++		if (hm_enqueueSaid < 3) {
++			char caller[256];
++
++			hm_enqueueSaid++;
++			hm_caller(caller, sizeof(caller));
++			hm_print("a command buffer was enqueued by %s; this plug-in runs command buffers in the order they are COMMITTED, "
++				 "so a place reserved by enqueue is not kept\n", caller);
++		}
++	}
+ }
+ 
+ /*

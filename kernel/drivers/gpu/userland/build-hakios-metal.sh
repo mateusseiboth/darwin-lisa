@@ -62,6 +62,9 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-metal-all-ui.patch"
        # function constants of up to 32 bytes (RenderBox's uint4 _shader_state) handed whole to the compiler
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-wide-constants.patch"
+       # the first callers of -newBufferWithBytesNoCopy: and -enqueue, by image and symbol (a ring written after the
+       # call, or a reservation of order, is what this plug-in cannot honour; the name says who relies on it)
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-nocopy-caller.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

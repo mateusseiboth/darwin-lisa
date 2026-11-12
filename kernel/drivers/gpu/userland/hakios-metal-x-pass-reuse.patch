@@ -1,0 +1,290 @@
+The processor's cost of a pass and of a draw's table, the command words unchanged (2026-11-12, darwin-lisa session 8).
+
+CoreAnimation's app-close animation records 49 passes and some 220 draws a command buffer (gpu-c2/d3, the "up" gesture
+from Settings: 47-49 passes a buffer, 216-226 draws, 26-28 ms from a buffer made to committed). A pass costs the core
+about four draws' worth of processor time: drawbench (tools/drawbench.cpp, now with PASSES, its fourth argument) puts
+220 draws in 49 passes at 2036 us a frame on the host against 1110 in one pass, some 19 us a pass, and the phone's draws
+run at 6 to 10 times the host's time (33-57 us against 5).
+
+1. CommandBuffer keeps the register shadows (RegShadow) of the pass it closed last and gives them, forgotten, to the
+   next pass it opens. A shadow made new for each pass resized its 1024 page slots (8 KB zeroed) and allocated some
+   twenty 1 KB pages as the pass's first draw wrote its registers, then freed them all at the pass's end. A reused
+   shadow is cleared by its generation, which is what a new one is: each pass still deduplicates from nothing, and
+   the words are the same (drawbench's digest of every buffer's words is equal before and after, 1, 10 and 49
+   passes). tests/render_test.cpp each_pass_of_a_buffer_deduplicates_from_nothing pins it: a shadow left uncleared
+   fails it (the batch start's registers left out of the second pass's head).
+2. encodeDraw writes each stage's texture descriptors and samplers only as far as CP_LOAD_STATE6 loads them (numTex,
+   numSamp), where it zeroed all sixteen of each and then copied all sixteen over them: 3.8 KB a draw into the table,
+   which on the phone is write-combined memory (HakiosGPU's default), for a CoreAnimation draw that loads some 0.8 KB.
+   The rest of the table is never read. a_draw_writes_only_the_descriptors_the_command_processor_loads checks that
+   what is past the loaded ones is left as it was, and that the fake GPU takes the draw.
+
+Host (x86, this tree's 261 tests + these 2): 263 tests, the same 3 tests and 12 checks failing as before the patch
+(they predate it: the unbound-buffer refusals hakios-metal-unbound-push.patch replaced). drawbench, the same words:
+220 draws in 49 passes 2036 -> 1801 us a frame (-12 %), in 10 passes 1268 -> 1239, in one pass unchanged.
+CommandBuffer::streamDigest (FNV-1a of the words recorded so far) is new, for drawbench and such comparisons.
+
+diff -ruN a/include/hakios-metal/command.hpp b/include/hakios-metal/command.hpp
+--- a/include/hakios-metal/command.hpp	2026-11-12 13:07:29.862921065 -0400
++++ b/include/hakios-metal/command.hpp	2026-11-12 13:07:29.872641689 -0400
+@@ -173,6 +173,8 @@
+     const std::string& gmemRefusal() const { return gmemWhy_; }
+     // the words recorded so far (what the command processor will read)
+     size_t streamWords() const { return stream_.words().size(); }
++    // ...and hashed (FNV-1a over the words): what a change to how they are made, not to what they are, leaves alone
++    uint64_t streamDigest() const;
+     std::vector<PassTime> passTimes() const;
+     // why profiled pass I of a draw was drawn in sysmem ("" for a GMEM pass, or one not profiled); valid while the buffer lives
+     const char* passSysmemWhy(size_t i) const { return i < profiled_.size() ? profiled_[i].sysmemWhy.c_str() : ""; }
+@@ -286,6 +288,11 @@
+     void closePass();
+     void useAttachments(const RenderPass& pass);
+     std::unique_ptr<OpenPass> open_;
++    // The register shadows of the pass closed last, for the next pass to open with: forgotten (RegShadow::clear), their
++    // pages kept. A shadow made new for each pass zeroed its 8 KB of page slots and allocated some twenty pages, then
++    // freed them all at the pass's end -- with the pass's full first draw, what a pass costs the processor beyond its
++    // draws (drawbench: 220 draws in 49 passes, CoreAnimation's app-close frame, 19 us a pass on the host).
++    RegShadow spareRegs_, spareBodyRegs_;
+     // A piece of a larger buffer, for a draw's or a dispatch's table and a program's words. A buffer of its own for each
+     // was three requests to the kernel for every draw, which on the phone cost about 200 us a draw (probe 9r) while the
+     // GPU spent 3 us on it. A piece is the command buffer's: written once, used for writing, kept until completion.
+diff -ruN a/src/render.cpp b/src/render.cpp
+--- a/src/render.cpp	2026-11-12 13:07:29.867691948 -0400
++++ b/src/render.cpp	2026-11-12 13:07:29.871034285 -0400
+@@ -1559,12 +1559,14 @@
+     }
+     memset(tableCpu + kTableFbReadFlushAt, 0, 4);   // (the draw's own table: zero before the flush below writes it)
+     memcpy(tableCpu + kGfxIboAt, ibos.words, size_t(ibos.count) * 64);
+-    memset(tableCpu + kFsTexConstAt, 0, kMaxTextureSlots * 64);
+-    memset(tableCpu + kFsTexSampAt, 0, kMaxTextureSlots * 16);
+-    memcpy(tableCpu + kFsTexConstAt, fsTex.texWords, sizeof fsTex.texWords);
+-    memcpy(tableCpu + kFsTexSampAt, fsTex.sampWords, sizeof fsTex.sampWords);
+-    memcpy(tableCpu + kVsTexConstAt, vsTex.texWords, sizeof vsTex.texWords);
+-    memcpy(tableCpu + kVsTexSampAt, vsTex.sampWords, sizeof vsTex.sampWords);
++    // Each stage's descriptors as far as the command processor loads them (10b and 10c: NUM_UNIT is numTex textures
++    // and numSamp samplers; a slot below them the stage does not sample is a zero in the words), the rest of the table
++    // never read. All sixteen of each, after zeroing them first, were 3.8 KB a draw through the processor's
++    // write-combined mapping (the kernel's default for GPU memory), where a CoreAnimation draw loads some 0.8.
++    memcpy(tableCpu + kFsTexConstAt, fsTex.texWords, size_t(std::min(fsTex.numTex, kMaxTextureSlots)) * 64);
++    memcpy(tableCpu + kFsTexSampAt, fsTex.sampWords, size_t(std::min(fsTex.numSamp, kMaxTextureSlots)) * 16);
++    memcpy(tableCpu + kVsTexConstAt, vsTex.texWords, size_t(std::min(vsTex.numTex, kMaxTextureSlots)) * 64);
++    memcpy(tableCpu + kVsTexSampAt, vsTex.sampWords, size_t(std::min(vsTex.numSamp, kMaxTextureSlots)) * 16);
+     MrtWords mrts[kMaxColorOutputs] = {};
+     uint32_t srgbMask = 0;
+     for (uint32_t i = 0; i < numRt; i++) {
+@@ -3004,6 +3006,10 @@
+             }
+         }
+         open_ = std::make_unique<OpenPass>();
++        open_->regs = std::move(spareRegs_);   // (the last pass's shadows, forgotten: a pass deduplicates from nothing)
++        open_->regs.clear();
++        open_->bodyRegs = std::move(spareBodyRegs_);
++        open_->bodyRegs.clear();
+         open_->pass = pass;
+         open_->options = options;
+         open_->table = passTable.gpuAddress();
+@@ -3348,9 +3354,19 @@
+     render::encodeEnd(tail, open_->pass, open_->table, open_->options);
+     appendStream(stream_, tail);
+     stampEnd();
++    spareRegs_ = std::move(open_->regs);
++    spareBodyRegs_ = std::move(open_->bodyRegs);
+     open_.reset();
+ }
+ 
++uint64_t CommandBuffer::streamDigest() const {
++    uint64_t k = 0xcbf29ce484222325ull;
++    for (uint32_t w : stream_.words()) {
++        for (int i = 0; i < 4; i++) k = (k ^ ((w >> (8 * i)) & 0xff)) * 0x100000001b3ull;
++    }
++    return k;
++}
++
+ bool CommandBuffer::clear(const RenderPass& pass, const render::Options& options) {
+     if (status_ > kEnqueued) {
+         return fail("clear after commit");
+diff -ruN a/tests/render_test.cpp b/tests/render_test.cpp
+--- a/tests/render_test.cpp	2026-11-12 13:07:29.844123365 -0400
++++ b/tests/render_test.cpp	2026-11-12 13:07:29.876889451 -0400
+@@ -3014,6 +3014,39 @@
+     if (r.fake->stats().faults) std::printf("       %s\n", r.fake->stats().lastFault.c_str());
+ }
+ 
++// The table's texture and sampler parts are written as far as the command processor loads them (SP_FS_TEX_COUNT
++// descriptors, NSAMP samplers) and no further: on the phone the table is write-combined memory, and the sixteen slots of
++// each stage written in full, zeroed before that, were 3.8 KB a draw for a draw that loads one descriptor. What Encoded
++// filled the table with (0xee) is still there past what is loaded, and the draw still completes on the fake GPU.
++TEST(a_draw_writes_only_the_descriptors_the_command_processor_loads) {
++    Rig r;
++    auto t = target(r);
++    auto tex = target(r, 4, 4, kTextureUsageRead);
++    Sampler smp = nearestClamp();
++    RenderPass pass;
++    pass.color0 = t.get();
++    Bindings fsb;
++    fsb.textures = {tex.get()};
++    fsb.samplers = {&smp};
++    Encoded e(r, texProgram(), pass, wholeDraw(6), render::Options{}, Bindings{}, fsb);
++    CHECK(e.ok);
++    const uint8_t* table = static_cast<const uint8_t*>(e.table->contents());
++    auto untouched = [&](uint32_t from, uint32_t to) {
++        for (uint32_t i = from; i < to; i++) {
++            if (table[i] != 0xee) return false;
++        }
++        return true;
++    };
++    CHECK(untouched(render::kTableFsAt + 64, render::kTableFsAt + 16 * 64));                       // FS descriptors 1 to 15
++    CHECK(untouched(render::kTableFsAt + 16 * 64 + 16, render::kTableFsAt + 16 * 64 + 16 * 16));   // FS samplers 1 to 15
++    CHECK(untouched(render::kTableFsAt + 16 * 80, render::kTableFsAt + 16 * 160));                 // the VS's, none loaded
++    CHECK(!untouched(render::kTableFsAt, render::kTableFsAt + 64));                                // descriptor 0 written
++    Raw raw(r);
++    CHECK_EQ(raw.submit(e.stream.words()), 0);   // (the fake checks every descriptor and sampler the stream loads)
++    CHECK_EQ(r.fake->stats().faults, 0u);
++    if (r.fake->stats().faults) std::printf("       %s\n", r.fake->stats().lastFault.c_str());
++}
++
+ TEST(a_draw_samples_a_texture_through_the_fs_prefetch) {
+     using namespace a6xx;
+     Rig r;
+@@ -4060,6 +4093,52 @@
+     CHECK_EQ(r.fake->stats().faults, 0u);
+ }
+ 
++// Each pass deduplicates its registers from nothing (its batch start forgets what the GPU holds), however many passes the
++// buffer opened before it: a pass that comes back to a target after another pass writes as many words as the other did,
++// and its second draw as few as the first pass's second draw. CoreAnimation's app-close animation opens 49 passes a
++// buffer (gpu-c2, 2026-11-12), so the pass's bookkeeping is reused from one pass to the next; this is what must hold.
++TEST(each_pass_of_a_buffer_deduplicates_from_nothing) {
++    Rig r;
++    auto t = target(r);
++    auto other = target(r);
++    RenderPass a, b;
++    a.color0 = t.get();
++    b.color0 = other.get();
++    render::Options o;
++    o.gmem = false;
++    auto cb = r.queue->commandBuffer();
++    size_t at[6] = {cb->streamWords()};
++    CHECK(cb->draw(flatProgram(), a, wholeDraw(), Bindings{}, Bindings{}, o));   // pass 1: its head and a whole draw
++    at[1] = cb->streamWords();
++    CHECK(cb->draw(flatProgram(), a, wholeDraw(), Bindings{}, Bindings{}, o));   // the same draw again: deduplicated
++    at[2] = cb->streamWords();
++    CHECK(cb->draw(flatProgram(), b, wholeDraw(), Bindings{}, Bindings{}, o));   // pass 2: pass 1's tail, its head, a whole draw
++    at[3] = cb->streamWords();
++    CHECK(cb->draw(flatProgram(), a, wholeDraw(), Bindings{}, Bindings{}, o));   // pass 3, back to a: pass 2's tail, the same
++    at[4] = cb->streamWords();
++    CHECK(cb->draw(flatProgram(), a, wholeDraw(), Bindings{}, Bindings{}, o));
++    at[5] = cb->streamWords();
++    // the tail a pass closes with (appendStream's marker and encodeEnd's words), and pass 2's draw as a buffer's first
++    pm4::Stream tail;
++    render::encodeEnd(tail, a, 0, o);
++    const size_t tailWords = 1 + tail.words().size();
++    auto alone = r.queue->commandBuffer();
++    const size_t aloneAt = alone->streamWords();
++    CHECK(alone->draw(flatProgram(), b, wholeDraw(), Bindings{}, Bindings{}, o));
++    const size_t bAlone = alone->streamWords() - aloneAt;
++    // (a shadow kept from an earlier pass would leave the batch start's registers out of pass 2's and pass 3's heads)
++    CHECK_EQ(at[3] - at[2], tailWords + bAlone);
++    CHECK_EQ(at[4] - at[3], tailWords + (at[1] - at[0]));
++    CHECK_EQ(at[5] - at[4], at[2] - at[1]);
++    CHECK((at[2] - at[1]) * 3 < at[1] - at[0]);
++    alone->commit();
++    alone->waitUntilCompleted();
++    cb->commit();
++    cb->waitUntilCompleted();
++    CHECK(cb->status() == CommandBuffer::kCompleted);
++    CHECK_EQ(r.fake->stats().faults, 0u);
++}
++
+ // A command buffer let go of right after its commit is destroyed by the queue's own thread, the queue holding the last
+ // reference: its buffers go back to the pool then without the queue's lock (taking that lock there hung the window
+ // server at boot). Fifty such, then one waited for: they all ran, and the pool gave their slabs to the later ones.
+diff -ruN a/tools/drawbench.cpp b/tools/drawbench.cpp
+--- a/tools/drawbench.cpp	2026-11-12 13:07:29.863428025 -0400
++++ b/tools/drawbench.cpp	2026-11-12 13:07:29.879962610 -0400
+@@ -7,6 +7,7 @@
+ //   perf record -g out/host/drawbench 400 && perf report
+ //
+ // SPDX-License-Identifier: MIT
++#include <algorithm>
+ #include <chrono>
+ #include <cstdio>
+ #include <cstdlib>
+@@ -45,7 +46,11 @@
+ int main(int argc, char** argv) {
+     const int frames = argc > 1 ? std::atoi(argv[1]) : 200;
+     const int draws = argc > 2 ? std::atoi(argv[2]) : 85;
+-    const char* pattern = argc > 3 ? argv[3] : nullptr;   // which program each draw takes in turn (0 tex, 1 cflat, 2 color)
++    const char* pattern = argc > 3 && argv[3][0] != '-' ? argv[3] : nullptr;   // which program each draw takes in turn (0 tex, 1 cflat, 2 color)
++    // passes a frame (CoreAnimation's app-close animation: 49 passes and 220 draws a buffer, gpu-c2 2026-11-12): the
++    // draws spread over them, the passes taking turns between the window and an offscreen target, each offscreen one
++    // asking for a Clear as CoreAnimation's blur and backdrop passes do
++    const int passes = argc > 4 ? std::max(1, std::atoi(argv[4])) : 1;
+     auto f = std::make_unique<FakeGpu>();
+     FakeGpu* fake = f.get();
+     Gpu gpu(std::move(f));
+@@ -56,6 +61,8 @@
+         return 1;
+     }
+     auto target = makeTexture(gpu, 1080, 2400, kTextureUsageRenderTarget | kTextureUsageRead);
++    std::vector<std::shared_ptr<Texture>> offscreen;
++    for (int i = 0; i < 4; i++) offscreen.push_back(makeTexture(gpu, 576, 1216, kTextureUsageRenderTarget | kTextureUsageRead));
+     std::vector<std::shared_ptr<Texture>> images;
+     for (int i = 0; i < 8; i++) images.push_back(makeTexture(gpu, 128, 128, kTextureUsageRead));
+     Sampler smp;
+@@ -65,19 +72,28 @@
+     const Program programs[3] = {Program{kernels::tri_color_vs_air, kernels::tri_tex_fs_air, Linkage{}, "tri_tex"},
+                                  Program{kernels::tri_flat_vs_air, kernels::tri_cflat_fs_air, Linkage{}, "tri_cflat"},
+                                  Program{kernels::tri_color_vs_air, kernels::tri_color_fs_air, Linkage{}, "tri_color"}};
+-    RenderPass pass;
+-    pass.color0 = target.get();
++    RenderPass window;
++    window.color0 = target.get();
+     double drawNs = 0;
++    uint64_t digest = 0xcbf29ce484222325ull;
+     uint64_t drawn = 0;
+     for (int frame = 0; frame < frames; frame++) {
+         auto cb = queue->commandBuffer();
+         for (int i = 0; i < draws; i++) {
++            // (pass k of the frame: its draws are i * passes / draws == k; odd passes offscreen, cleared)
++            const int k = int(int64_t(i) * passes / draws);
++            RenderPass pass = window;
++            if (k % 2 == 1) {
++                pass.color0 = offscreen[size_t(k / 2) % offscreen.size()].get();
++                const bool first = int(int64_t(i - 1) * passes / draws) != k || i == 0;
++                pass.load = first ? LoadAction::kClear : LoadAction::kLoad;
++            }
+             const int which = pattern != nullptr ? pattern[i % std::strlen(pattern)] - '0' : (i / 3) % 3;   // runs of three draws of one program, as CA's layers come
+             const Program& p = programs[which];
+             Draw d;
+             d.vertexCount = 6;
+-            d.viewport = Viewport{0, 0, 1080, 2400, 0, 1};
+-            d.scissor = Scissor{uint32_t(i % 10) * 40, uint32_t(i % 7) * 60, 400, 300};
++            d.viewport = k % 2 == 1 ? Viewport{0, 0, 576, 1216, 0, 1} : Viewport{0, 0, 1080, 2400, 0, 1};
++            d.scissor = k % 2 == 1 ? Scissor{uint32_t(i % 4) * 40, uint32_t(i % 7) * 60, 400, 300} : Scissor{uint32_t(i % 10) * 40, uint32_t(i % 7) * 60, 400, 300};
+             Bindings vsb, fsb;
+             vsb.buffers = {Binding{constants[i % 4].get(), uint64_t(i % 16) * 256}};
+             if (which == 0) {
+@@ -96,10 +112,12 @@
+             if (which == 1) cb->keep(constants[(i + 1) % 4]);
+             cb->keep(target->buffer());
+             cb->keepAlive(target);
++            if (k % 2 == 1) cb->keepAlive(offscreen[size_t(k / 2) % offscreen.size()]);
+             if (which == 0) cb->keepAlive(images[i % 8]);
+             drawNs += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
+             drawn++;
+         }
++        digest = (digest ^ cb->streamDigest()) * 0x100000001b3ull;   // (the words themselves: a change to the encoder's speed leaves them)
+         if (std::getenv("DRAWBENCH_NOCOMMIT") != nullptr) continue;   // (perf: the draws alone, not the fake running them)
+         cb->commit();
+         cb->waitUntilCompleted();
+@@ -108,6 +126,8 @@
+             return 1;
+         }
+     }
+-    std::printf("drawbench: %llu draws in %d frames of %d: %.2f us a draw\n", (unsigned long long)drawn, frames, draws, drawNs / 1e3 / double(drawn));
++    std::printf("drawbench: %llu draws in %d frames of %d in %d passes: %.2f us a draw, %.1f us a frame\n", (unsigned long long)drawn, frames, draws, passes,
++                drawNs / 1e3 / double(drawn), drawNs / 1e3 / double(frames));
++    std::printf("drawbench: the words' digest %016llx\n", (unsigned long long)digest);
+     return 0;
+ }

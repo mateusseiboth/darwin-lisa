@@ -1,6 +1,69 @@
 # GPU on the phone: the run book (one session)
 
-## Session 8 (2026-11-12 afternoon, host only, phone away): the A55s took the UI through the idle loop
+## Session 8 (2026-11-12 afternoon, host only): the frame's account, by the window that actually moves
+
+**Correction first.** No host run (p1, p3, p5, c1, c2, d3, e1) drew the Settings scroll: between `scr`/`scrd` and the next
+gesture backboardd committed one command buffer (gpu-c2-end.log L6068: "1 command buffers" over 51.9 s; gpu-e1: one swap
+in 230-240 s). Settings ends scrolled in one frame (`gpu-c2-q4.png`). The 36 fps window of Session 7 (c2 185 frames,
+d3 184) is the boot's lock-to-home animation at kernel 41-58 s, before any gesture. A real finger scroll is only in
+`logs/planb-standalone.log` (cpus=7, glass2, no metal_fps): 26-27 frames/s, the GPU 10.6-18.2 ms a command buffer
+(HakiosGPU L5633-7205). Script: per 2 s window of `metal_fps=1` (commit counts, passes and draws a buffer, made-to-commit,
+draw cost, the slowest passes), in order with the `touch_synth ... posted` lines.
+
+| window (run, line) | cpus | buffers/s | passes, draws a buffer | CPU: made->commit, draws x us | GPU a buffer (heaviest pass) | commits on time/late/stall |
+|---|---|---|---|---|---|---|
+| boot lock->home, heavy (c2 L3655) | 4 | 54 | 3.8, 77 | 5.3 ms, 77 x 33 us = 2.5 ms | 9.4 ms avg (8 draws 1080x2400 14.4-16.9 ms) | 96/13/1 |
+| same (d3 L3766) | 4 | 55 | 3.5, 77 | 4.8 ms, 29 us | 8.7 (8 draws 14.5-16.4) | 99/10/1 |
+| same (e1 L4677 / p6 L3979) | 7 | 57 / 18 | 2.1, 43 / 7.0, 79 | 12.5 / 31 ms, 63 / 80 us (A55s 80-95) | 4.3 / 13.8 (8 draws 15.9-20.0) | 89/24/1 / 12/18/4 |
+| boot, home light (c2 L3713) | 4 | 32 | 1.0, 32 | 1.1 ms, 24 us | 2.1 (73 draws 5.5-5.7) | 42/12/11 |
+| Settings launch, tap (c2 L5841) | 4 | 28 | 9.7, 82 | 9.2 ms, 82 x 53 us = 4.3 ms | 15.4 (85 draws 8.2-8.3) | 25/23/10 |
+| same (e1 L6158) | 7 | 23 | 9.0, 78 | 10.1 ms, 44 us | 13.4 (9 draws 6.9-7.1) | 15/19/12 |
+| app close, `up` from Settings (c2 L6158) | 4 | 2.6 | 49, 226 | 27.9 ms, 226 x 57 us = 12.9 ms | 11.4 (9-12 draws 6.3-6.6) | 2/13/5 |
+| same (d3 L6143 / c1 L5801) | 4 / 7 | 2.5 / 1.5 | 47, 216 / 46, 207 | 25.6 ms, 51 us / -, 44 us | 11.9 / 11.3 | 3/14/4 / 7/11/8 |
+| Settings scroll, synthetic (all runs) | | 0 | | | | |
+| Settings scroll, finger (planb-standalone) | 7 | 26-27 | | | 10.6-18.2 | |
+| Notification Center / cover sheet (nc1 L4911, older root) | 7 | 50 | 4.7, 22 | | 8.1 (8-9 draws 14.6-16.3) | 71/28/2 |
+
+The display side per frame (c2 L3770; e1 `tl:` lines, scratch tl.py): GPU wait 2.5 ms (e1 median 2.1, p90 15.2: the
+heavy frames), processor copy 1.9-2.2 ms, wait for the beat 7.4-10.4 ms; the kernel also cleans the 10.4 MB surface out
+of the cache on every submission, 377-479 us on the committing thread (HakiosGPU lines). The Control Center over
+Settings has no metal_fps window in c1/c2/d3 (the runs end before it prints).
+
+**What is heavy.** The 8-9-draw full-screen pass (14-20 ms) is the cover sheet's composition: it is in the boot's unlock
+and in Notification Center (nc1), not in Settings; 8 draws at ~1.9 ms each is the sysmem floor of a full-screen draw that
+reads its target through framebuffer fetch and writes it (2 x 10.4 MB at the 12 GB/s measured, plus its source). Which
+draws, formats and areas they are is not in any log: `metal_fps=timeline` (every pass of buffers over 15 ms) and
+`metal_fps=draws` (each draw of a heavy few-draw pass, program, textures, area, us) were never run. After the scheduler
+the biggest blocks are: the GPU in heavy frames (that pass; 13-15 ms a buffer in the app launch; 10.6-18 ms in the finger
+scroll) and, in the app close, the processor (28 ms a buffer: 13 ms of the plug-in's draws, ~5 ms of its 49 pass opens).
+
+**Ideas weighed (ms a frame).** GMEM for passes of <=8 full-screen draws: gpu-p2 timed the 8-draw pass at 15.0 ms in
+(binned) GMEM against 14.4-16.9 in sysmem, since the fetches read GMEM through the texture unit at a quarter rate: ~0,
+not done. The fetch barrier before each fetching draw: a pass of 10 small fetching draws takes the GPU 0.03-0.05 ms in
+all (c2 idle windows), so <=0.3 ms in a 73-draw pass: not worth the risk. A pass's fixed GPU cost is under ~40 us (the
+same idle passes): <=2 ms in the app close, where the GPU is not the limit. A Clear of CoreAnimation's 1088x2432
+RGBA16Float backdrops is 21 MB (~1.8 ms) and an 8-byte target where 4 would do doubles each write and read of it; both
+need the timeline run to know how often they come in heavy frames (and RGBA16F->8 bit risks range and banding):
+not done. The core's per-pass processor cost (drawbench: 19 us a pass on the host, ~110-170 us on the phone by the
+app-close windows' 57 us a draw against 33) and its per-draw table writes: `userland/hakios-metal-x-pass-reuse.patch`
+(reused register shadows, descriptors written only as far as loaded; the command words byte-identical), estimated
+1.5-2.5 ms in an app-close frame, 0.3-0.5 in a launch frame. Plug-in glass8 `558d47cb` (`userland-26/out/plugin-glass8/`,
+NOTE.md); not in a root.
+
+**Tonight (any root, kernel rc3):** the per-pass and per-draw composition of the heavy frames, 457 characters:
+
+```sh
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-tl1 \
+ "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 metal_fps=timeline metal_fps=draws cpus=4 touch_seq=tap:56800:5600@190,up@230,cc@250" \
+ "150 200 215 240 260 275 290"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read `timeline: a buffer of N ms on the GPU: [kind WxH draws ms]...`, `a heavy pass, N ms ...; its draws:` (program,
+`fs:Nw`, textures WxH/format, `us over WxH at (x,y)`), `full-screen passes by load action ... by format` and
+`textures bound to draws (MB...)`. metal_fps=draws puts a wait for idle around each draw: compare draws with each other,
+not with the metal_fps=1 totals.
+
+## Session 8, part 2 (2026-11-12 afternoon, host only): the A55s took the UI through the idle loop
 
 Nothing was run on the phone. Two questions from the owner: why Settings is slow, and how to keep the 7 cores with the
 UI on the A78s (the 60 fps goal comes first).
@@ -61,7 +124,7 @@ tz=America/Campo_Grande gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-
 Its line against final17's (`out/*-cmdline.txt`, word by word): only `cpus=4` -> `cpus=7` and the epoch; 450
 characters. NOT flashed.
 
-### The evening run book (one trip; phone in pmOS, vendor_boot_a final17 `2e7f0b85`, root e07b4390)
+### The evening run book, both parts of Session 8 (one trip; phone in pmOS, vendor_boot_a final17 `2e7f0b85`, root e07b4390)
 
 Host runs first (RAM only, nothing written). Each ends in pmOS. Read every run like Session 7: `MiniIOMobileFramebuffer:
 from one frame to the next` for the 5 s window at kernel 41-58 s (the home animation) and for the Settings window,
@@ -79,7 +142,13 @@ KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun
 # S8-C: diagnostics: the filter's counts, each busy thread's priority (is display.primary RT?), Preferences' os_log,
 # a late scroll (does the app answer after ~60 s?) (453 chars)
 KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s8c "$B cpus=7 dlisa_oslog=Preferences cpuload=5000 touch_seq=tap:56800:5600@190,scr@265" "150 200 225 250 275 290 305 320"; bash darwin-lisa/tools/bootos.sh pmos
+# S8-D: what the heavy GPU frames are made of (part 1, gpu-tl1), on the kernel that wins S8-A/B (cpus=4 and rc3 otherwise)
+KERNEL=kernel-16k-s8-select.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-tl1 "$B metal_fps=timeline metal_fps=draws cpus=7 touch_seq=tap:56800:5600@190,up@230,cc@250" "150 200 215 240 260 275 290"; bash darwin-lisa/tools/bootos.sh pmos
 ```
+
+Order: S8-A, S8-B, then S8-C and S8-D (diagnostics; skip S8-C first if time is short). The plug-in glass8 of part 1
+(`hakios-metal-x-pass-reuse.patch`, 1.5-2.5 ms of processor in an app-close frame) needs a new root and is not in this
+trip.
 
 If S8-A misbehaves (a hang, the UI not coming up): `sched_prefer_pull=0`, then `sched_prefer_wait=0` (the patch off,
 Session 7's kernel otherwise) isolate it; each adds 20 characters, so drop `metal_fps=1` for them.

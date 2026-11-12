@@ -124,6 +124,14 @@ seq_gesture(const char *g)
 		seq_swipe("sw", 32768, 64880, 32768, 32768, 25, 1500);
 	} else if (strncmp(g, "up", 2) == 0) {
 		seq_swipe("up", 32768, 64880, 32768, 22937, 20, 0);
+	} else if (strncmp(g, "scr", 3) == 0) {
+		/* a scroll: a swipe up through the middle of the screen (a list scrolls by about half a screen), and
+		 * scrd the same down */
+		if (g[3] == 'd') {
+			seq_swipe("scrd", 32768, 20000, 32768, 45000, 20, 0);
+		} else {
+			seq_swipe("scr", 32768, 45000, 32768, 20000, 20, 0);
+		}
 	} else if (strncmp(g, "tap", 3) == 0) {
 		/* tap: the middle; tap:X:Y (0..65535): an icon, a row (the home screen's Settings icon on the classic layout
 		 * is about tap:56800:5600) */

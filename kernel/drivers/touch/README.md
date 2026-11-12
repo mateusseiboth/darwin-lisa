@@ -38,7 +38,8 @@ function used is still exported by iOS 26's IOKit). See `userland/inject/dlisa-i
   Center on the split status bar; on today's classic layout it opens Notification Center too), `sw` swipe up from the
   home bar held 1.5 s before lifting (the app switcher; on the classic layout the bottom edge is Control Center), `up`
   swipe up from the home bar (home, or dismiss what is open), `tap` a tap at the middle, `tap:X:Y` a tap at X, Y
-  (0..65535; the classic home screen's Settings icon is about `tap:56800:5600`). Kernel log:
+  (0..65535; the classic home screen's Settings icon is about `tap:56800:5600`), `scr` a scroll (a swipe up through
+  the middle of the screen), `scrd` the same down. Kernel log:
   `touch_synth: seq nc posted (x, y) -> (x, y), 25 moves, held 0 ms`, then `touch_synth: seq done`.
   Example (GPU runs): `touch_seq=nc@200,up@235,cc@270,up@305,sw@340`.
 - `touch_lat=1` latency lines; `touch_poll_us=N` how often the INT line is looked at.

@@ -45,11 +45,19 @@ The whole root is 7.9 GB and the kernel on the phone has about 4 GB of RAM for e
     for all languages: they are how CoreFoundation knows which languages a bundle has, and
     without them every string comes out as its key.
 """
+import os
 import re
 import stat
 import sys
 
-WHOLE = ('usr/libexec/', 'usr/sbin/', 'usr/bin/', 'usr/lib/', 'usr/share/', 'sbin/', 'bin/', 'private/etc/',
+# APPLE_ONLY=keep in the environment: nothing is left out for being Apple-hardware-only (the Neural Engine models, the
+# ISP and display tables, the Apple GPU driver bundle, the camera effects, the camera pipeline's shader libraries): the
+# fully complete image, about 370 MB more, for a root region grown by docs/data-volume.md's plan B. Without it those go,
+# to make room for the shader libraries in today's 4,831,838,208-byte region (2026-11-11). prune-sysroot.py applies the
+# same choice to an existing sysroot, and restores it.
+KEEP_APPLE_ONLY = os.environ.get('APPLE_ONLY') == 'keep'
+
+WHOLE =('usr/libexec/', 'usr/sbin/', 'usr/bin/', 'usr/lib/', 'usr/share/', 'sbin/', 'bin/', 'private/etc/',
          'System/Library/', 'Applications/', 'Library/')
 # ... except these parts of /System/Library: big, and not needed to get a picture on the screen
 # (not OnBoardingBundles, the privacy notices: an application's first screen links to its notice, and
@@ -61,20 +69,50 @@ SKIP_SYSTEM_LIBRARY = ('LinguisticData', 'PreinstalledAssetsV2', 'NanoTimeKit', 
                        'VideoProcessors', 'ScreenReader', 'Photos', 'Carrier Bundles', 'NanoPreferenceBundles',
                        'ImagingNetworks', 'ProductDocuments', 'AppPlaceholders', 'UserNotifications',
                        'Caches')
+# Apple-hardware-only payload (KEEP_APPLE_ONLY): the iPad's hardware tables, the Apple ISP's neural data
+# (System/Library/Isp, 52 MB) and the J817/J820 panels' overdrive and colour tables (System/Library/Display, 35 MB);
+# the Apple GPU driver bundle (its ds.g17g, 29 MB, and its own shader libraries) and the camera effects' 2,200 template
+# pictures (50 MB; no camera on this port). Dropped with the Neural Engine models (.hwx, SKIP_EXT) to make room for the
+# shader libraries (2026-11-11).
+APPLE_ONLY_SYSTEM_LIBRARY = () if KEEP_APPLE_ONLY else ('Isp', 'Display')
+SKIP_APPLE_ONLY = () if KEEP_APPLE_ONLY else ('System/Library/Extensions/AGXMetalG17G.bundle/',
+                                             'System/Library/PrivateFrameworks/CameraEffectsKit.framework/')
+SKIP_SYSTEM_LIBRARY += APPLE_ONLY_SYSTEM_LIBRARY
 FRAMEWORKS = ('System/Library/Frameworks/', 'System/Library/PrivateFrameworks/')
 SMALL = 4 << 20
-# never from frameworks: machine-learning models, shader libraries, sound and video, big tables.
+# never from frameworks: machine-learning models, sound and video, big tables.
 # (Not the data models, .mom: an application that keeps its data with Core Data dies without its
 # model -- Notes did; nor the animations and vector pictures the interface is drawn with.)
-SKIP_EXT = ('.weights', '.weights_nonane', '.metallib', '.mov', '.pcm', '.scnz', '.espresso.net',
+SKIP_EXT = ('.weights', '.weights_nonane', '.mov', '.pcm', '.scnz', '.espresso.net',
             '.espresso.shape', '.caf', '.m4a', '.aiff', '.mp4', '.heic', '.wav', '.art', '.scube',
             '.ds', '.dat', '.bin')
+# Neural Engine programs (Vision, FRC, TextRecognition, AppleCVA...: 150 MB in all), each under 4 MB, so they slipped
+# past SMALL; there is no Neural Engine here to run one (KEEP_APPLE_ONLY keeps them)
+SKIP_EXT += () if KEEP_APPLE_ONLY else ('.hwx',)
+# shader libraries: every one, whatever its size (MetalPerformanceShaders' are 3-72 MB). They were left out while only
+# backboardd had a Metal device; with the plug-in in every process (metal_all=1) a framework loads its own library as
+# soon as it has a device, and MPS aborts the process when its sub-framework's default.metallib is missing
+# (2026-11-11: SpringBoard crash-looped through SiriUICore's blur). add-metallibs.sh puts them into an existing sysroot.
+METALLIB = '.metallib'
+# ... but not the camera capture pipeline's (portrait, noise reduction, HDR, deghosting, photogrammetry, 3D
+# reconstruction, video processing) nor the Xcode GPU-capture replayer's, about 40 MB packed: loaded by the capture
+# daemons and the Camera pipeline, which have no camera on this port, not by an app's or SpringBoard's drawing
+SKIP_METALLIB_OF = tuple(f'System/Library/PrivateFrameworks/{name}.framework/' for name in (
+    'GPUToolsReplay', 'CMCapture', 'CMImaging', 'Portrait', 'HDRProcessing', 'Morpheus', 'Recon3D',
+    'CorePhotogrammetry', 'Vista', 'GESS', 'MXI', 'DeepVideoProcessingCore', 'AppleCVAPhoto'))
+SKIP_METALLIB_IN = ('/CCPortrait.bundle/', '/NRFV4.bundle/', '/NRFV2.bundle/', '/VideoDeghostingV3.bundle/')
+
+
+def wanted_metallib(path):
+    if KEEP_APPLE_ONLY:
+        return True
+    return not path.startswith(SKIP_METALLIB_OF) and not any(name in '/' + path for name in SKIP_METALLIB_IN)
 # ... but '.dat' and '.bin' are also what these keep the tables in that the user interface is made with:
 # the layouts of the on-screen keyboard, the emoji, the list of public domain suffixes
 DATA_FRAMEWORKS = tuple(f'System/Library/{name}.framework/' for name in (
     'PrivateFrameworks/TextInputUI', 'PrivateFrameworks/CoreEmoji', 'Frameworks/CFNetwork'))
 # never from applications: their sound, video and 3D content
-SKIP_APP_EXT = ('.mov', '.mp4', '.m4a', '.caf', '.wav', '.heic', '.aiff', '.metallib', '.scnz', '.usdz')
+SKIP_APP_EXT = ('.mov', '.mp4', '.m4a', '.caf', '.wav', '.heic', '.aiff', '.scnz', '.usdz')
 # pictures the user interface is drawn with: small images, and asset catalogs up to this size
 # (the one with all the SF Symbols alone is 170 MB and is left out)
 MAX_ASSET_CATALOG = 4 << 20
@@ -99,7 +137,7 @@ BIG_CATALOGS = ('System/Library/PrivateFrameworks/SFSymbols.framework/',)
 HEALTH = 'System/Library/Health/'
 SKIP_PREFIX = ('usr/share/tokenizer/', 'usr/share/firmware/', 'usr/share/mecabra/',
                'usr/standalone/', 'Library/Audio/', 'Library/Ringtones/',
-               HEALTH + 'Assets/FitnessUIAssets.bundle/') + \
+               HEALTH + 'Assets/FitnessUIAssets.bundle/') + SKIP_APPLE_ONLY + \
     tuple(f'System/Library/{name}/' for name in SKIP_SYSTEM_LIBRARY)
 BIG_PROGRAM = 10 << 20           # daemons bigger than this (locationd, lskdd, ...) are not on the way to the screen
 # sound, outside the directories above: the virtual audio device, a plug-in that all of mediaserverd's
@@ -158,6 +196,8 @@ def wanted_file(path, size):
         return not path.startswith(SKIP_AUDIO) and '.espresso.' not in path
     if path.startswith(SKIP_PREFIX):
         return False
+    if path.endswith(METALLIB):
+        return wanted_metallib(path)
     if path.startswith('System/Library/Fonts/'):
         return size <= MAX_FONT or path in TRIMMED_FONTS
     if path.startswith(ALL_PICTURES) and path.lower().endswith('.png'):

@@ -1,0 +1,58 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -2261,22 +2261,49 @@
+ 	return sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, what) != NULL;
+ }
+ 
++/* darwin-lisa: whether this process is shown the device under metal_all=MODE: 0 the window server alone, 1 the
++ * processes that draw (apps, SpringBoard, app extensions, metal_test), 2 every process */
++static bool
++hm_shown_the_device(int mode, const char *name)
++{
++	char path[1024];
++	uint32_t length = sizeof(path);
++
++	if (name != NULL && strcmp(name, "backboardd") == 0) return true;
++	if (mode >= 2) return true;
++	if (mode < 1) return false;
++	if (name != NULL && strcmp(name, "metal_test") == 0) return true;
++	if (_NSGetExecutablePath(path, &length) != 0) return false;
++	if (strncmp(path, "/Applications/", 14) == 0) return true;
++	if (strncmp(path, "/private/var/containers/Bundle/", 31) == 0 || strncmp(path, "/var/containers/Bundle/", 23) == 0) return true;
++	if (strncmp(path, "/System/Library/CoreServices/", 29) == 0 && strstr(path, ".app/") != NULL) return true;
++	return strstr(path, ".appex/") != NULL;
++}
++
+ - (instancetype)initWithAcceleratorPort:(io_service_t)port
+ {
+-	/* (hakios) the window server alone is shown the device: every other client of this image's Metal (SpringBoard
+-	 * through SiriUICore, mediaserverd, ...) finds pipeline libraries made for Apple's GPUs with no default.metallib
+-	 * beside them and aborts, while without a device it takes the road it takes today. Boot-arg metal_all=1: all. */
++	/* (hakios) without a boot-arg the window server alone is shown the device: every other client of this image's Metal
++	 * (SpringBoard through SiriUICore, mediaserverd, ...) would find pipeline libraries made for Apple's GPUs.
++	 * darwin-lisa, boot-arg metal_all=1: the device for every process that DRAWS as well (hm_shown_the_device): the
++	 * applications (/Applications, the user's /private/var/containers/Bundle), SpringBoard and the other CoreServices
++	 * apps, the app extensions (.appex: widgets, posters, the Control Center's controls) and metal_test. Not the
++	 * daemons (usr/libexec, usr/sbin, the XPC services): they have no screen to draw on, each device costs memory and a
++	 * compiler, and the capture and analysis daemons would load the camera pipeline's shader libraries, which the image
++	 * leaves out (userland-26/scripts/select-system-26.py). metal_all=2: every process. */
+ 	{
+ 		static int all = -1;
+ 		char args[1024] = "";
+ 		size_t size = sizeof(args) - 1;
+ 		const char *name = getprogname();
++		const char *at;
+ 
+ 		if (all < 0) {
+-			all = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_all=1") != NULL;
++			all = 0;
++			if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (at = strstr(args, "metal_all=")) != NULL) all = atoi(at + 10);
+ 		}
+-		if (!all && (name == NULL || strcmp(name, "backboardd") != 0)) {
+-			HM_ONCE("%s is not shown the device: the window server alone is (metal_all=1: every process)\n", name ? name : "?");
++		if (!hm_shown_the_device(all, name)) {
++			HM_ONCE("%s is not shown the device: %s (metal_all=1: the processes that draw; metal_all=2: every process)\n",
++				name ? name : "?", all ? "it does not draw" : "the window server alone is");
+ 			/* darwin-lisa, boot-arg ca_prof_all=1: the sampler in this process too (SpringBoard's main thread: where it
+ 			 * waits between a swipe and the frame that answers it), although it is not shown the device */
+ 			if (strstr(args, "ca_prof_all=1") != NULL) ca_prof_start();

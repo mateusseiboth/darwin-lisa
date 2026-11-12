@@ -1,0 +1,216 @@
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_private.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_private.h
+--- a/air_private.h	2026-11-11 19:53:08.294437525 -0400
++++ b/air_private.h	2026-11-11 19:55:59.221627308 -0400
+@@ -247,6 +247,21 @@
+    unsigned num_params;
+    struct air_val **params;
+ 
++   /* darwin-lisa: a `[[color(n)]]` input whose n is not a number in the metadata but a
++    * module global (`__metal_implicit_attr_int_expr_N`) that the air.static_init
++    * constructor computes from the function constants -- RenderBox's filter_distance
++    * (`dest`), the Liquid Glass renderer. translate_input records it here with an undef
++    * in its place; resolve_deferred_fetches builds the fetch once the initialiser has
++    * run and plan_global_folding knows the value. `pred` is the global of its
++    * air.function_constant presence predicate, when it has one. */
++   struct air_deferred_fetch {
++      unsigned param;
++      const struct air_type *type;
++      const struct air_value *index;
++      const struct air_value *pred;
++   } *deferred_fetch;
++   unsigned num_deferred_fetch;
++
+    /* the argument buffers the entry point declares, in the order its input
+     * metadata lists them, which is the order their members are numbered in */
+    unsigned num_argbufs;
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_to_nir.c /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_to_nir.c
+--- a/air_to_nir.c	2026-11-11 19:53:08.296449194 -0400
++++ b/air_to_nir.c	2026-11-11 19:56:38.524308027 -0400
+@@ -1016,15 +1016,17 @@
+        * first thing that would tell a wrong packing from a right one is a
+        * pipeline that sets one of these two constants.
+        */
+-      if (comps * bits > 64)
++      /* darwin-lisa: up to 256 bits (bits, more[0..2]): RenderBox's `uint4 _shader_state` is 128 */
++      if (comps * bits > 64 + 64 * ARRAY_SIZE(v->more))
+          return air_error(c, "interface: a function constant of %u components of %u bits, "
+-                             "which does not fit the one word air_constant_value carries",
++                             "which does not fit the four words air_constant_value carries",
+                           comps, bits), NULL;
+       nir_def *fields[NIR_MAX_VEC_COMPONENTS];
+       for (unsigned i = 0; i < comps; i++) {
+          uint64_t mask = bits >= 64 ? ~0ull : (1ull << bits) - 1;
+-         fields[i] = nir_imm_intN_t(&c->b, (v->bits >> (i * bits)) & mask,
+-                                    as_bool ? 8 : bits);
++         unsigned at = i * bits, word = at / 64;
++         uint64_t w = word == 0 ? v->bits : v->more[word - 1];
++         fields[i] = nir_imm_intN_t(&c->b, (w >> (at % 64)) & mask, as_bool ? 8 : bits);
+       }
+       res = nir_vec(&c->b, fields, comps);
+       break;
+@@ -2160,6 +2162,10 @@
+    return air_val_ptr(c, p);
+ }
+ 
++static nir_def *build_fb_fetch(struct air_ctx *c, const struct air_type *t, unsigned n);
++static bool translate_input_rest(struct air_ctx *c, const struct air_md *node, unsigned param,
++                                 const struct air_type *t, nir_variable *var, const char *name, unsigned slot);
++
+ static bool
+ translate_input(struct air_ctx *c, const struct air_md *node, unsigned *next_varying)
+ {
+@@ -2429,11 +2435,6 @@
+                                                      air_nir_bit_size(c, t)));
+          return true;
+       }
+-      uint64_t n = 0;
+-      if (!md_int(node, rt_in + 1, &n))
+-         return air_error(c, "interface: an air.render_target input without a target");
+-      if (n >= MAX_DRAW_BUFFERS)
+-         return air_error(c, "interface: air.render_target input %u", (unsigned)n);
+       /* Only a float target. The lowering hands back floats converted from the
+        * attachment's format, so an int4 or uint4 `[[color(n)]]` would arrive as the
+        * wrong value rather than the wrong type -- and nothing would say so. The corpus
+@@ -2446,7 +2447,57 @@
+          return air_error(c, "interface: an air.render_target input of type %s",
+                           tn ? tn : "?");
+       }
++      uint64_t n = 0;
++      if (!md_int(node, rt_in + 1, &n)) {
++         /* darwin-lisa: `[[color(fc_expr)]]`: the target is a module global the
++          * air.static_init constructor computes from the function constants
++          * (RenderBox's filter_distance_fragment: `dest`, with a presence
++          * predicate of the same kind). The initialiser has not run yet -- the
++          * inputs come first -- so the parameter gets an undef now and the fetch
++          * when the value is known (resolve_deferred_fetches). */
++         const struct air_md *op = rt_in + 1 < (int)node->num_ops ? node->ops[rt_in + 1] : NULL;
++         const struct air_md *fc = md_key_node(node, "air.function_constant");
++         if (!op || op->kind != AIR_MD_VALUE || !op->value || op->value->kind != AIR_VALUE_GLOBAL)
++            return air_error(c, "interface: an air.render_target input without a target");
++         c->deferred_fetch = reralloc(c->mem_ctx, c->deferred_fetch, struct air_deferred_fetch,
++                                      c->num_deferred_fetch + 1);
++         c->deferred_fetch[c->num_deferred_fetch++] = (struct air_deferred_fetch) {
++            .param = param, .type = t, .index = op->value,
++            .pred = fc && fc->num_ops && fc->ops[0] && fc->ops[0]->kind == AIR_MD_VALUE ? fc->ops[0]->value : NULL,
++         };
++         c->params[param] = air_val_ssa(c, nir_undef(&c->b, air_nir_components(t), bits));
++         return true;
++      }
++      if (n >= MAX_DRAW_BUFFERS)
++         return air_error(c, "interface: air.render_target input %u", (unsigned)n);
++      c->params[param] = air_val_ssa(c, build_fb_fetch(c, t, (unsigned)n));
++      return true;
++   }
+ 
++   if (md_key(node, "air.fragment_input") >= 0 || md_key(node, "air.vertex_input") >= 0 ||
++       md_key(node, "air.stage_in") >= 0) {
++      /* A vertex attribute and an interpolated varying are two different things
++       * that AIR spells with keys in the same family, and only the one below is
++       * a varying: it is linked to the stage before it, interpolated, and takes
++       * its slot from the order it appears in. An attribute is fetched from a
++       * vertex buffer at Metal's own index and has nothing to interpolate.
++       */
++      if (c->nir->info.stage == MESA_SHADER_VERTEX)
++         return translate_vertex_attribute(c, node, param, t);
++      unsigned slot = VARYING_SLOT_VAR0 + (*next_varying)++;
++      const char *name = md_key_str(node, "air.arg_name");
++      nir_variable *var = make_io_var(c, nir_var_shader_in, t, slot, name);
++      return translate_input_rest(c, node, param, t, var, name, slot);
++   }
++   return translate_input_rest(c, node, param, t, NULL, NULL, 0);
++}
++
++/* the framebuffer fetch of render target n, as a `[[color(n)]]` argument of type t reads it
++ * (the body of translate_input's render-target case, shared with resolve_deferred_fetches) */
++static nir_def *
++build_fb_fetch(struct air_ctx *c, const struct air_type *t, unsigned n)
++{
++      unsigned bits = air_nir_bit_size(c, t);
+       nir_io_semantics sem = {
+          .location = FRAG_RESULT_DATA0 + n,
+          .num_slots = 1,
+@@ -2496,24 +2547,46 @@
+                   "air.render_target_array_index, or the fetch reads an undefined layer. "
+                   "A single-layer target is unaffected -- there is no second layer in the "
+                   "descriptor to reach");
++      return fetched;
++}
+ 
+-      c->params[param] = air_val_ssa(c, fetched);
+-      return true;
++/* darwin-lisa: the `[[color(n)]]` inputs translate_input deferred, now that the static
++ * initialiser has run and plan_global_folding knows what it stored: the fetch replaces the
++ * undef the parameter was given. A predicate the constants make false leaves the undef: the
++ * argument is not there to read. */
++static void
++resolve_deferred_fetches(struct air_ctx *c)
++{
++   for (unsigned i = 0; i < c->num_deferred_fetch && !c->error[0]; i++) {
++      const struct air_deferred_fetch *d = &c->deferred_fetch[i];
++      struct air_global_plan *pred = foldable_global_plan(c, d->pred);
++      struct air_global_plan *index = foldable_global_plan(c, d->index);
++
++      if (pred && pred->known && pred->bits == 0) {
++         air_note(c, "parameter %u is a [[color(n)]] input its function-constant predicate leaves "
++                     "out: not fetched", d->param);
++         continue;
++      }
++      if (!index || !index->known) {
++         air_error(c, "interface: parameter %u is a [[color(n)]] input whose n the static "
++                      "initialiser did not decide from the function constants", d->param);
++         return;
++      }
++      if (index->bits >= MAX_DRAW_BUFFERS) {
++         air_error(c, "interface: air.render_target input %u", (unsigned)index->bits);
++         return;
++      }
++      air_set(c, &c->fn->args[d->param], air_val_ssa(c, build_fb_fetch(c, d->type, (unsigned)index->bits)));
+    }
++}
+ 
+-   if (md_key(node, "air.fragment_input") >= 0 || md_key(node, "air.vertex_input") >= 0 ||
+-       md_key(node, "air.stage_in") >= 0) {
+-      /* A vertex attribute and an interpolated varying are two different things
+-       * that AIR spells with keys in the same family, and only the one below is
+-       * a varying: it is linked to the stage before it, interpolated, and takes
+-       * its slot from the order it appears in. An attribute is fetched from a
+-       * vertex buffer at Metal's own index and has nothing to interpolate.
+-       */
+-      if (c->nir->info.stage == MESA_SHADER_VERTEX)
+-         return translate_vertex_attribute(c, node, param, t);
+-      unsigned slot = VARYING_SLOT_VAR0 + (*next_varying)++;
+-      const char *name = md_key_str(node, "air.arg_name");
+-      nir_variable *var = make_io_var(c, nir_var_shader_in, t, slot, name);
++/* the rest of translate_input: the varyings and everything that is not a resource, a
++ * builtin or a render target (split out of translate_input by darwin-lisa, unchanged) */
++static bool
++translate_input_rest(struct air_ctx *c, const struct air_md *node, unsigned param,
++                     const struct air_type *t, nir_variable *var, const char *name, unsigned slot)
++{
++   if (var) {
+       var->data.driver_location = c->nir->num_inputs++;
+       if (md_key(node, "air.flat") >= 0)
+          var->data.interpolation = INTERP_MODE_FLAT;
+@@ -6635,6 +6708,8 @@
+       materialise_globals(&c);
+    if (!c.error[0])
+       run_static_initializers(&c);
++   if (!c.error[0])
++      resolve_deferred_fetches(&c);   /* darwin-lisa: the [[color(n)]] inputs whose n the initialiser decided */
+ 
+    if (!c.error[0]) {
+       if (stitch) {
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/nir_air.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/nir_air.h
+--- a/nir_air.h	2026-11-11 19:53:08.296973757 -0400
++++ b/nir_air.h	2026-11-11 19:53:35.338135258 -0400
+@@ -418,6 +418,10 @@
+ struct air_constant_value {
+    unsigned index;     /* the function constant's index */
+    uint64_t bits;      /* its value, as the bits of its type */
++   /* darwin-lisa: the value's words past the first, for a constant wider than 64 bits (RenderBox's
++    * `uint4 _shader_state`, 128 bits: SwiftUI's and the Liquid Glass renderer's one constant): component i of a
++    * vector sits at bit i * width of the 256-bit value bits, more[0], more[1], more[2] make up */
++   uint64_t more[3];
+ 
+    /*
+     * Whether the PIPELINE actually supplied that value, which is not the same question

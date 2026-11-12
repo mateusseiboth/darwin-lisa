@@ -378,8 +378,13 @@ static void
 resetLaunchServices(void)
 {
 	static const char containers[] = "/private/var/mobile/Containers/Data/InternalDaemon";
+	/* ... and MobileGestalt's answer cache: it keeps CPUArchitecture ("arm64" from the kernels before the arm64e
+	 * subtype, kernel/patches/cpu-subtype-arm64e.patch), and MobileInstallation refuses every app extension whose
+	 * UIRequiredDeviceCapabilities names arm64e while the cached answer stands. The first privileged process to need it
+	 * writes it again. */
 	static const char *const markers[] = { "/private/var/installd/Library/MobileInstallation/LastBuildInfo.plist",
-		"/private/var/installd/Library/MobileInstallation/MigrationInfo.plist" };
+		"/private/var/installd/Library/MobileInstallation/MigrationInfo.plist",
+		"/private/var/containers/Shared/SystemGroup/systemgroup.com.apple.mobilegestaltcache/Library/Caches/com.apple.MobileGestalt.plist" };
 	char buf[4096], dir[1100];
 	off_t position = 0;
 	ssize_t n;
@@ -413,7 +418,7 @@ resetLaunchServices(void)
 	for (unsigned i = 0; i < sizeof(markers) / sizeof(markers[0]); i++) {
 		gone += unlink(markers[i]) == 0;
 	}
-	printf("init26: VAR ls_reset: %d LaunchServices store(s) and %d installd marker(s) removed; lsd seeds again this boot\n", (int)stores, (int)gone);
+	printf("init26: VAR ls_reset: %d LaunchServices store(s) and %d installd marker(s) / MobileGestalt cache removed; lsd seeds again this boot\n", (int)stores, (int)gone);
 }
 
 /*

@@ -1,0 +1,18 @@
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -740,7 +740,14 @@
+ 		/* switch based on CPU's reported architecture */
+ 		switch (cpu_info_p->arm_info.arm_arch) {
+ 		case CPU_ARCH_ARMv8:
+-			cdp->cpu_subtype = CPU_SUBTYPE_ARM64_V8;
++			/*
++			 * darwin-lisa: arm64e, as the user land is (the dyld cache, every app and daemon are arm64e, run with
++			 * their pointer authentication stripped or emulated). host_info() hands this to NXGetLocalArchInfo(),
++			 * from which MobileGestalt answers CPUArchitecture and the "arm64e" capability; with "arm64",
++			 * MobileInstallation rejected every app extension (widgets, posters, the Control Center's controls:
++			 * "Device capabilities do not match requirements: arm64e = 0") and nothing of them was drawn.
++			 */
++			cdp->cpu_subtype = CPU_SUBTYPE_ARM64E;
+ 			break;
+ 		case CPU_ARCH_ARMv8E:
+ 			cdp->cpu_subtype = CPU_SUBTYPE_ARM64E;

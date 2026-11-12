@@ -13,6 +13,8 @@ UFS="rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=super var_ufs=1
 ARGS="loader_return_after=3000 epoch=$(date +%s) sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v $UFS $EXTRA"
 echo "### ${#ARGS} chars: $ARGS"
 [ ${#ARGS} -le 460 ] || { echo "too long"; exit 1; }
+# from pmOS (or anywhere bootos.sh can reach) to the loader first: "fastboot reboot" with no fastboot device waits for ever
+bash "$HERE/../../../tools/bootos.sh" hakios || { echo "no loader"; exit 1; }
 fastboot reboot >/dev/null 2>&1 || true
 for i in $(seq 1 30); do lsusb 2>/dev/null | grep -q 18d1:d00d || break; sleep 1; done
 for i in $(seq 1 60); do timeout 5 fastboot getvar product 2>&1 | grep -qi xnuloader && break; sleep 1; done

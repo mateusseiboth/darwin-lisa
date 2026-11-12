@@ -72,6 +72,42 @@ loop; the kernel never execs it. LaunchServices does not know it: installd's log
 and scanned 0 bundle containers, then every boot says "System App Migration is complete" and skips. That is the
 queue's item 4 (apps missing on the home screen); fixing it brings the controls and the widget.
 
+## Session 5 (evening of 2026-11-11): Metal in every process that draws
+
+**The crash behind `metal_all=1` was not mesh shading.** SpringBoard aborted in MetalPerformanceShaders
+(`MPSDeviceComputePipelineState.mm:156: metallib not found: default.metallib for ... MPSImage.framework`), reached
+from SiriUICore's blur as soon as SpringBoard had a device: the image had never carried a `.metallib`
+(`select-system-26.py` skipped all 245 of them, 452 MB plain, 168 MB packed). Nothing ever asked for a mesh pipeline;
+the 96 "no vertex function" refusals of nc9 do not recur once MPS finds its libraries.
+
+**Fixes (root `50f94ed9`, plug-in 371a928b; the next root adds the wide-constant fix below):**
+- `userland-26/scripts/add-metallibs.sh`: 185 shader libraries from the decrypted rootfs into the sysroot, by the
+  selector's rules (`METALLIB`, `wanted_metallib`: MPS whole, not the camera pipeline's). Room for them: the
+  Neural Engine models (`.hwx`), `System/Library/{Isp,Display}`, `AGXMetalG17G.bundle` and `CameraEffectsKit` are left
+  out (326 MB; `prune-sysroot.py`, reversible with `APPLE_ONLY=keep` and `--restore`; the user accepted the prune
+  until plan B grows the root).
+- `HakiosMetalCA-metal-all-ui.patch`: `metal_all=1` shows the device to the processes that DRAW (`/Applications`,
+  the user's containers, CoreServices `*.app`, `*.appex`, `metal_test`); the daemons keep the software road
+  (`metal_all=2`: every process).
+- `HakiosMetalCA-refusal-detail.patch`: a refused pipeline names its label, functions and the caller's images.
+
+**Result (host run gpu-ma1, kernel `kernel-16k-apfs-readdir3-tap.bak` bfc27923, `touch_seq=tap:56800:5600@220`):**
+SpringBoard runs on the GPU and does not crash; Settings opened and was fully drawn within 7 s of the tap
+(`logs/gpu-ma1-q2.png`). Settings itself creates no Metal device: a UIKit app draws through CoreAnimation in the
+render server, which is on the GPU already; only SwiftUI/RenderBox, CoreImage and MPS users create one in-process.
+What RenderBox (SpringBoard's Liquid Glass) still had refused: its `uint4 _shader_state` function constant (128 bits,
+the front end carried 64) and `filter_distance_fragment`'s `[[color(fc_expr)]]` input whose target is a static-init
+global. After the bottom swipe the Control Center came up a flat grey with those 20 pipelines refused.
+`air-wide-constants-deferred-fetch.patch` + `hakios-metal-wide-constants.patch` + `HakiosMetalCA-wide-constants.patch`
+close both (next root).
+
+**Item 2 root cause found on the way:** MobileGestalt answered `CPUArchitecture = arm64` (the kernel's cpu subtype
+was `ARM64_V8`), so the `arm64e` capability was false and MobileInstallation refused every app EXTENSION
+(356 x "Device capabilities do not match requirements: arm64e = 0": widgets, posters, the Control Center's controls).
+`kernel/patches/cpu-subtype-arm64e.patch` reports `CPU_SUBTYPE_ARM64E`; init26's `ls_reset=1` also deletes
+MobileGestalt's answer cache, which had `arm64` cached. The kernel's readdir hands lsd all 254 entries of
+/Applications (apfs_rdlog); why its scanner keeps 25 is a separate userland filter, still open.
+
 ## Session 3 (night of 2026-11-10): CoreAnimation draws the UI on the GPU
 
 **Result.** Host run `gpu-q1` (logs `research/hackios-xnu-kernel/logs/gpu-q1-*`):

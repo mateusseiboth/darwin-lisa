@@ -101,6 +101,17 @@ seq_swipe(const char *name, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, 
 	printf("touch_synth: seq %s posted (%u, %u) -> (%u, %u), %u moves, held %u ms\n", name, x0, y0, x1, y1, steps, hold_ms);
 }
 
+static uint32_t
+seq_number(const char *s)
+{
+	uint32_t n = 0;
+
+	while (*s >= '0' && *s <= '9') {
+		n = n * 10 + (uint32_t)(*s++ - '0');
+	}
+	return n > 65535 ? 65535 : n;
+}
+
 static void
 seq_gesture(const char *g)
 {
@@ -114,10 +125,18 @@ seq_gesture(const char *g)
 	} else if (strncmp(g, "up", 2) == 0) {
 		seq_swipe("up", 32768, 64880, 32768, 22937, 20, 0);
 	} else if (strncmp(g, "tap", 3) == 0) {
-		hakios_touch_post(HAKIOS_TOUCH_DOWN, SYNTH_FINGER, 32768, 32768);
+		/* tap: the middle; tap:X:Y (0..65535): an icon, a row (the home screen's Settings icon on the classic layout
+		 * is about tap:56800:5600) */
+		uint32_t x = 32768, y = 32768;
+
+		if (g[3] == ':') {
+			x = seq_number(g + 4);
+			y = seq_number(strchr(g + 4, ':') != NULL ? strchr(g + 4, ':') + 1 : "32768");
+		}
+		hakios_touch_post(HAKIOS_TOUCH_DOWN, SYNTH_FINGER, x, y);
 		synth_sleep_ms(80);
-		hakios_touch_post(HAKIOS_TOUCH_UP, SYNTH_FINGER, 32768, 32768);
-		printf("touch_synth: seq tap posted at the middle\n");
+		hakios_touch_post(HAKIOS_TOUCH_UP, SYNTH_FINGER, x, y);
+		printf("touch_synth: seq tap posted at (%u, %u)\n", x, y);
 	} else {
 		printf("touch_synth: seq: unknown gesture \"%s\"\n", g);
 	}

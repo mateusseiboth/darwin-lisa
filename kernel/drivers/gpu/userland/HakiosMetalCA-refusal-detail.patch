@@ -1,0 +1,36 @@
+--- a/HakiosMetalCA.m	2026-11-11 18:49:56.195378133 -0400
++++ b/HakiosMetalCA.m	2026-11-11 18:49:56.218362427 -0400
+@@ -3380,6 +3380,33 @@
+ 
+ 	hm_describe_function([descriptor fragmentFunction]);
+ 	if (why != nil) {
++		/* darwin-lisa: which pipeline, from where (metal_all=1: SpringBoard built 96 pipelines with no vertex function
++		 * and aborted; the label, the functions, the descriptor's class and the caller's image say whose they are) */
++		static unsigned told;
++
++		if (told < 12) {
++			void *frames[12];
++			int count = backtrace(frames, 12);
++			char callers[400] = "";
++			size_t used = 0;
++
++			told++;
++			for (int i = 1; i < count && used < sizeof(callers) - 60; i++) {
++				Dl_info info = { 0 };
++				const char *image = "?", *slash;
++
++				if (dladdr(frames[i], &info) != 0 && info.dli_fname != NULL) {
++					image = (slash = strrchr(info.dli_fname, '/')) != NULL ? slash + 1 : info.dli_fname;
++				}
++				used += (size_t)snprintf(callers + used, sizeof(callers) - used, " %s+%#lx", image,
++							 (unsigned long)((uintptr_t)frames[i] - (uintptr_t)info.dli_fbase));
++			}
++			hm_print("refused pipeline detail: class %s, label \"%s\", vertex %s (%s), fragment %s (%s), callers:%s\n",
++				 class_getName(object_getClass(descriptor)), [[descriptor label] UTF8String] ?: "",
++				 [[[descriptor vertexFunction] name] UTF8String] ?: "-", [descriptor vertexFunction] ? class_getName(object_getClass([descriptor vertexFunction])) : "-",
++				 [[[descriptor fragmentFunction] name] UTF8String] ?: "-", [descriptor fragmentFunction] ? class_getName(object_getClass([descriptor fragmentFunction])) : "-",
++				 callers);
++		}
+ 		return [self hakiosRefuse:error what:"a render pipeline" why:why];
+ 	}
+ 	if (!hakios_metal_has_compiler()) {

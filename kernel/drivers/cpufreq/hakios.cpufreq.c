@@ -93,9 +93,24 @@ domain_of(uint32_t phys_id)
 
 static uint32_t cpufreq_max_mhz;
 
+/*
+ * darwin-lisa: what each group's frequency table says, kept for the governor below: the rows this kernel may ask for
+ * (up to cpufreq_max), the one it asks for now, and the floor it never goes under.
+ */
+static struct cpufreq_group {
+	vm_offset_t base;
+	uint32_t rows;                          /* rows 0 .. rows - 1 are usable, ascending */
+	uint32_t khz[EPSS_TABLE_ROWS];
+	uint32_t row;                           /* the row asked for now */
+	uint32_t floor;                         /* the governor's lowest row */
+	uint32_t quiet;                         /* periods in a row below the step-down share */
+	bool ours;                              /* a core of ours is in this group */
+} cpufreq_groups[EPSS_DOMAINS];
+
 static void
 raise_domain(uint32_t domain, uint32_t cores)
 {
+	struct cpufreq_group *g = &cpufreq_groups[domain];
 	uint32_t top = 0, top_khz = 0, was;
 	vm_offset_t base;
 
@@ -113,12 +128,173 @@ raise_domain(uint32_t domain, uint32_t cores)
 		}
 		top = row;
 		top_khz = khz;
+		g->khz[row] = khz;
 	}
+	g->base = base;
+	g->rows = top + 1;
+	g->row = top;
+	g->ours = true;
 	was = *(volatile uint32_t *)(base + EPSS_PERF_STATE);
 	*(volatile uint32_t *)(base + EPSS_PERF_STATE) = top;
 	delay_for_interval(20, NSEC_PER_MSEC);
 	tell("cpufreq: group %u (%u of our cores): row %u -> %u of the frequency table, %u MHz\n", domain, cores, was, top,
 	    top_khz / 1000);
+}
+
+/*
+ * darwin-lisa: the governor. The top row of every group all the time is what made the phone hot: the cores that do
+ * nothing (most of them, most of the time) still run at 1.8-2.4 GHz, and the EPSS raises the supply voltage with the
+ * clock. Here, once the boot is done, each group's row follows the busiest of its cores (as the display's own clock
+ * would, cpuload=MS: tl: u) -- up at once, down only after a few quiet periods -- and never under a floor, so that the
+ * first touch after an idle minute is still answered by a core that is not at its slowest.
+ *
+ *   cpugov=0           off: the top row for ever (what every kernel before this did)
+ *   cpugov_after=S     seconds after this starts before the first step down (default 90: the boot at full speed)
+ *   cpugov_ms=MS       the period (default 100)
+ *   cpugov_floor=MHz   the lowest clock any group is left at (default: a third of the group's top, so about
+ *                      600 MHz small, 800 big, 830 prime)
+ *   cpugov_log=1       every change of row to the loader's log ("cpugov: group 1 row 7 -> 4, 1248 MHz, busy 23 %")
+ *
+ * The rule, per group and period: the share is the busiest core's. 95 % or more: the top row. 80 % or more: up to the
+ * first row that would bring the share to 70 % (one row at least). Under 50 % for three periods: down to the row that
+ * would bring it to 70 %, never under the floor. Between: as it is.
+ */
+static uint32_t gov_after_s = 90, gov_period_ms = 100, gov_floor_mhz, gov_log;
+
+static void
+gov_set_row(struct cpufreq_group *g, unsigned domain, uint32_t row, uint32_t busy)
+{
+	static uint64_t last_line;
+	uint64_t now, since;
+
+	if (row == g->row) {
+		return;
+	}
+	*(volatile uint32_t *)(g->base + EPSS_PERF_STATE) = row;
+	now = mach_absolute_time();
+	absolutetime_to_nanoseconds(now - last_line, &since);
+	if (gov_log != 0 && (last_line == 0 || since > 2 * NSEC_PER_SEC)) {
+		last_line = now;
+		tell("cpugov: group %u row %u -> %u, %u MHz, busy %u %%\n", domain, g->row, row, g->khz[row] / 1000, busy);
+	}
+	g->row = row;
+}
+
+/* the lowest row at or above KHZ, within floor .. top */
+static uint32_t
+gov_row_for(const struct cpufreq_group *g, uint64_t khz)
+{
+	uint32_t row = g->floor;
+
+	while (row + 1 < g->rows && g->khz[row] < khz) {
+		row++;
+	}
+	return row;
+}
+
+static void
+gov_decide(unsigned domain, uint32_t busy)
+{
+	struct cpufreq_group *g = &cpufreq_groups[domain];
+	uint64_t want = (uint64_t)g->khz[g->row] * busy / 70;   /* the clock at which this share would be 70 % */
+	uint32_t top = g->rows - 1, row;
+
+	if (busy >= 95) {
+		g->quiet = 0;
+		gov_set_row(g, domain, top, busy);
+		return;
+	}
+	if (busy >= 80) {
+		g->quiet = 0;
+		row = gov_row_for(g, want);
+		gov_set_row(g, domain, MAX(row, MIN(g->row + 1, top)), busy);
+		return;
+	}
+	if (busy >= 50) {
+		g->quiet = 0;
+		return;
+	}
+	if (++g->quiet < 3) {
+		return;
+	}
+	g->quiet = 0;
+	row = gov_row_for(g, want);
+	gov_set_row(g, domain, MIN(row, g->row), busy);
+}
+
+static void
+gov_thread(void *arg __unused, wait_result_t wr __unused)
+{
+	const ml_topology_info_t *topology = ml_get_topology_info();
+	uint64_t idle_before[MAX_CPUS] = { 0 }, then;
+
+	delay_for_interval(gov_after_s * 1000, NSEC_PER_MSEC);
+	then = mach_absolute_time();
+	for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+		(void)ml_cpu_idle_time((int)i, &idle_before[i]);
+	}
+	tell("cpugov: governing from now on: every %u ms, floors %u/%u/%u MHz\n", gov_period_ms,
+	    cpufreq_groups[0].khz[cpufreq_groups[0].floor] / 1000, cpufreq_groups[1].khz[cpufreq_groups[1].floor] / 1000,
+	    cpufreq_groups[2].khz[cpufreq_groups[2].floor] / 1000);
+	for (;;) {
+		uint32_t busy[EPSS_DOMAINS] = { 0, 0, 0 };
+		uint64_t now;
+
+		delay_for_interval(gov_period_ms, NSEC_PER_MSEC);
+		now = mach_absolute_time();
+		for (unsigned int i = 0; i < topology->num_cpus && i < MAX_CPUS; i++) {
+			uint64_t idle = 0, elapsed = now - then, slept, share;
+			unsigned domain = domain_of(topology->cpus[i].phys_id);
+
+			if (!ml_cpu_idle_time((int)i, &idle) || elapsed == 0) {
+				continue;
+			}
+			slept = idle >= idle_before[i] ? idle - idle_before[i] : 0;
+			idle_before[i] = idle;
+			share = slept >= elapsed ? 0 : 100 * (elapsed - slept) / elapsed;
+			busy[domain] = MAX(busy[domain], (uint32_t)share);
+		}
+		then = now;
+		for (unsigned domain = 0; domain < EPSS_DOMAINS; domain++) {
+			if (cpufreq_groups[domain].ours && cpufreq_groups[domain].rows > 1) {
+				gov_decide(domain, busy[domain]);
+			}
+		}
+	}
+}
+
+static void
+gov_start(void)
+{
+	uint32_t on = 1;
+	thread_t thread;
+
+	PE_parse_boot_argn("cpugov", &on, sizeof(on));
+	if (on == 0) {
+		tell("cpugov: off (cpugov=0): every group stays at its top row\n");
+		return;
+	}
+	PE_parse_boot_argn("cpugov_after", &gov_after_s, sizeof(gov_after_s));
+	PE_parse_boot_argn("cpugov_ms", &gov_period_ms, sizeof(gov_period_ms));
+	PE_parse_boot_argn("cpugov_floor", &gov_floor_mhz, sizeof(gov_floor_mhz));
+	PE_parse_boot_argn("cpugov_log", &gov_log, sizeof(gov_log));
+	gov_period_ms = MAX(gov_period_ms, 20);
+	for (unsigned domain = 0; domain < EPSS_DOMAINS; domain++) {
+		struct cpufreq_group *g = &cpufreq_groups[domain];
+		uint32_t floor_khz;
+
+		if (!g->ours || g->rows == 0) {
+			continue;
+		}
+		floor_khz = gov_floor_mhz != 0 ? gov_floor_mhz * 1000 : g->khz[g->rows - 1] / 3;
+		g->floor = 0;
+		while (g->floor + 1 < g->rows && g->khz[g->floor] < floor_khz) {
+			g->floor++;
+		}
+	}
+	if (kernel_thread_start(gov_thread, NULL, &thread) == KERN_SUCCESS) {
+		thread_deallocate(thread);
+	}
 }
 
 /*
@@ -716,6 +892,7 @@ hakios_cpufreq_init(void)
 		}
 	}
 	printf("cpufreq: on core %u a loop ran at %u, now at %u\n", here, before, loop_speed());
+	gov_start();            /* darwin-lisa: the governor (cpugov=0: not) */
 	/*
 	 * darwin-lisa: a fast core runs out of work. Under this hypervisor a vCPU in WFI is not woken by its virtual timer
 	 * (the only interrupt this port has), so the first idle moment is the end of the kernel: a few minutes into every

@@ -12,7 +12,14 @@ Reproducible flow to build the in-RAM APFS root our kernel's built-in APFS drive
   /private/preboot/Cryptexes/{OS,App} (iOS 26 ships /System/Cryptexes/* as symlinks into an empty
   /private/preboot), keep Apple's arm64e binaries unmodified (pac-pager + miniamfi handle them at runtime),
   mkapfs -> system-26.apfs. Needs ~35 GB transient disk.
-- `scripts/select-system-26.py` — the iOS-26-adapted file selector (what of the 8 GB root goes in RAM).
+- `scripts/select-system-26.py` — the iOS-26-adapted file selector (what of the 8 GB root goes in RAM). Since
+  2026-11-11 it takes every shader library (`.metallib`, except the camera pipeline's: with the Metal plug-in in every
+  process, MetalPerformanceShaders aborts without its `default.metallib`) and leaves out the Neural Engine models
+  (`.hwx`), `System/Library/{Isp,Display}`, `AGXMetalG17G.bundle` and `CameraEffectsKit.framework`.
+- `scripts/add-metallibs.sh` — the shader libraries from the decrypted FileSystem dmg into an existing sysroot
+  (`REUSE=1` keeps the 7z stage); `scripts/prune-sysroot.py [--apply]` — removes from an existing sysroot the Apple
+  files the selector no longer chooses (dry run first). Both read `extract/rootfs.slt`.
+- `scripts/mkimage-trim.sh FULL=1` — the on-flash root, bounded by and padded to the root region (4,831,838,208 bytes).
 - `init/` — the init variants (init-26.c freestanding, stage0.c, mini.c libmini) + build-init.sh.
 - `log/ios26-layout.txt` — the iOS-26 rootfs/cryptex/dyld layout map.
 

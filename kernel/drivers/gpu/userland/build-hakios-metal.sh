@@ -56,6 +56,12 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-link-timing.patch"
        # ca_prof_all=1: the ca_prof sampler in every process that loads the plug-in (SpringBoard's main thread)
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ca-prof-all.patch"
+       # a refused render pipeline names its label, functions, descriptor class and the caller's images (metal_all=1)
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-refusal-detail.patch"
+       # metal_all=1: the device for the processes that draw (apps, SpringBoard, app extensions), not the daemons; =2 all
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-metal-all-ui.patch"
+       # function constants of up to 32 bytes (RenderBox's uint4 _shader_state) handed whole to the compiler
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-wide-constants.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

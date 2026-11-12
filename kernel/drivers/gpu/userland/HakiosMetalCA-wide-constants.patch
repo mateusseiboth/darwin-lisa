@@ -1,0 +1,36 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -2945,7 +2945,14 @@
+ 	case MTLDataTypeShort3: case MTLDataTypeUShort3: case MTLDataTypeHalf3: return 6;
+ 	case MTLDataTypeShort4: case MTLDataTypeUShort4: case MTLDataTypeHalf4: case MTLDataTypeInt2: case MTLDataTypeUInt2: case MTLDataTypeFloat2:
+ 	case MTLDataTypeLong: case MTLDataTypeULong: return 8;
+-	default: return 0;   /* wider than the word the front end takes: left out, and the module refuses what it cannot fold */
++	/* darwin-lisa: up to the four words hakios_metal_constant carries (RenderBox's uint4 _shader_state, the one constant
++	 * of SwiftUI's and the Liquid Glass renderer's shaders, is 16 bytes) */
++	case MTLDataTypeHalf3x2: case MTLDataTypeInt3: case MTLDataTypeUInt3: case MTLDataTypeFloat3: return 12;
++	case MTLDataTypeInt4: case MTLDataTypeUInt4: case MTLDataTypeFloat4: case MTLDataTypeFloat2x2: case MTLDataTypeHalf4x2:
++	case MTLDataTypeHalf2x4: return 16;
++	case MTLDataTypeFloat2x3: case MTLDataTypeFloat3x2: return 24;
++	case MTLDataTypeFloat2x4: case MTLDataTypeFloat4x2: return 32;
++	default: return 0;   /* wider than the four words the front end takes: left out, and the module refuses what it cannot fold */
+ 	}
+ }
+ 
+@@ -3017,7 +3024,8 @@
+ 		if (bytes == 0 || !HM_FITS(fv, bytes)) continue;
+ 		out[count].index = index;
+ 		out[count].bits = 0;
+-		memcpy(&out[count].bits, b + fv, bytes);
++		memset(out[count].more, 0, sizeof(out[count].more));
++		memcpy(&out[count].bits, b + fv, bytes);   /* (more follows bits: the words past the first land there) */
+ 		count++;
+ 	}
+ 	return count;
+@@ -3078,6 +3086,7 @@
+ 		}
+ 		out[n].index = (unsigned)[c index];
+ 		out[n].bits = 0;
++		memset(out[n].more, 0, sizeof(out[n].more));
+ 		memcpy(&out[n].bits, v, bytes);
+ 		n++;
+ 	}

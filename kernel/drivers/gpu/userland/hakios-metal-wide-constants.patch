@@ -1,0 +1,53 @@
+diff --color -ruN hm-base/include/hakios-metal/compiler.hpp hm-new/include/hakios-metal/compiler.hpp
+--- a/include/hakios-metal/compiler.hpp	2026-11-11 19:55:59.369959063 -0400
++++ b/include/hakios-metal/compiler.hpp	2026-11-11 19:57:17.044916068 -0400
+@@ -110,6 +110,7 @@
+ struct FunctionConstant {
+     uint32_t index;
+     uint64_t bits;
++    uint64_t more[3] = {0, 0, 0};   // darwin-lisa: the words past the first (a value of up to 256 bits: RenderBox's uint4 _shader_state)
+ };
+ using FunctionConstants = std::vector<FunctionConstant>;
+ 
+diff --color -ruN hm-base/include/hakios-metal/hakios_metal.h hm-new/include/hakios-metal/hakios_metal.h
+--- a/include/hakios-metal/hakios_metal.h	2026-11-11 19:55:59.370128814 -0400
++++ b/include/hakios-metal/hakios_metal.h	2026-11-11 19:57:17.044805219 -0400
+@@ -100,6 +100,7 @@
+ typedef struct hakios_metal_constant {
+     unsigned index;
+     uint64_t bits;
++    uint64_t more[3];   /* darwin-lisa: the words past the first of a constant wider than 64 bits (RenderBox's uint4 _shader_state) */
+ } hakios_metal_constant;
+ hakios_metal_kernel *hakios_metal_kernel_compile_bitcode_constants(const void *bitcode, size_t size,
+     const hakios_metal_constant *constants, unsigned count);
+diff --color -ruN hm-base/src/c_api.cpp hm-new/src/c_api.cpp
+--- a/src/c_api.cpp	2026-11-11 19:55:59.368440218 -0400
++++ b/src/c_api.cpp	2026-11-11 19:57:17.045122309 -0400
+@@ -280,7 +280,7 @@
+ 
+ static FunctionConstants constantsOf(const hakios_metal_constant* c, unsigned count) {
+     FunctionConstants out;
+-    for (unsigned i = 0; c != nullptr && i < count; i++) out.push_back(FunctionConstant{c[i].index, c[i].bits});
++    for (unsigned i = 0; c != nullptr && i < count; i++) out.push_back(FunctionConstant{c[i].index, c[i].bits, {c[i].more[0], c[i].more[1], c[i].more[2]}});
+     return out;
+ }
+ 
+diff --color -ruN hm-base/src/compiler.cpp hm-new/src/compiler.cpp
+--- a/src/compiler.cpp	2026-11-11 19:55:59.376074109 -0400
++++ b/src/compiler.cpp	2026-11-11 19:57:17.045711965 -0400
+@@ -289,6 +289,7 @@
+         for (unsigned i = 0; i < numConstants; i++) {
+             if (constants[i].index == f.index) {
+                 constants[i].bits = f.bits;
++                memcpy(constants[i].more, f.more, sizeof(constants[i].more));   // darwin-lisa: the words past the first
+                 constants[i].supplied = true;
+             }
+         }
+@@ -1225,6 +1226,7 @@
+     for (const FunctionConstant& c : constants) {
+         mix(&c.index, sizeof(c.index));
+         mix(&c.bits, sizeof(c.bits));
++        mix(c.more, sizeof(c.more));
+     }
+     if (known != nullptr) {
+         mix(&known->binding, sizeof(known->binding));

@@ -1,5 +1,87 @@
 # GPU on the phone: the run book (one session)
 
+## Session 7 (2026-11-12, 10:20-11:40): the draw's processor time is the slow cores', and the clip's NaN
+
+Host runs gpu-c1, c2, d1, d2, d3 (`research/hackios-xnu-kernel/logs/gpu-{c,d}*`), kernel rc3, the same gestures as far
+as the line allowed (`touch_seq=tap:56800:5600@190,scr@215,scrd@230,up@262,cc@280`: Settings, a scroll each way, the
+Control Center over Settings). Read every run with the framebuffer's histogram, the plug-in's commit gaps and its
+`draw calls by processor` line (the per-core cost the earlier sessions had but did not read).
+
+**Where the 50-110 us a draw go: the small cores.** The kernel's processors 0-3 are the A78s (the loader starts the
+cores 7, 6, 5, 4 first: `kernel/soc/smp/README.md`) and 4-6 the A55s. In gpu-p6 (cpus=7, the governor on) the
+same draws cost 22-77 us on cpu0-3 and 75-220 us on cpu4-6, and 40-45 % of backboardd's draws ran on cpu4-6: the
+window server's render thread hops over all seven cores (this kernel's scheduler has no notion of big and small:
+BCM2837 platform, one processor set). The averages Session 6 quoted are that mix.
+
+| run | boot-args (root) | best motion window | intervals under 18 / 18-35 / longer | commits on time / late / stalls | us a draw (fast / slow cores) |
+|---|---|---|---|---|---|
+| gpu-p6 (Session 6) | cpus=7, governor (e07b4390) | 158 frames in 5 s (31 a second) | 105 / 32 / 13 | 69 / 35 / 1 | 22-77 / 75-220 |
+| gpu-c1 | cpus=7 `cpugov=0` (every group at its top) (e07b4390) | 145 in 5 s (28) | 111 / 21 / 11 | 49 / 40 / 4 | 22-51 / 72-125 |
+| gpu-c2 | **cpus=4** (the four A78s alone), governor (e07b4390) | **185 in 5 s (36)** | **139 / 18 / 11** | **96 / 13 / 1** | 23-62 / none |
+| gpu-d2 | cpus=4 (43cef6b7, first boot) | not comparable: 12.7 s of shader compiles (the new cache key) under the gestures | | | 23-34 |
+| gpu-d3 | cpus=4 (43cef6b7, second boot) | 184 in 5 s (36) | 141 / 16 / 10 | 99 / 10 / 1 | 20-54 / none |
+
+d3 equals c2: the plug-in's changes neither help nor hurt the cadence measurably (the core's share is some 2.5 ms of a
+frame now). So the clock is not the lever (c1: the governor off changes nothing), where the thread runs is: with the small cores
+off the frame cadence is the best of any run and the commits come on time 7 times in 8. The big cores still cost
+23-62 us a draw from window to window (the governor lowers them when the render thread's share of any one core stays
+under 50 %; `cpugov_floor=1804` was tried in gpu-d1, whose gestures missed, so it is not measured).
+
+**The core on the host.** `hakios-metal/tools/drawbench.cpp` (in `userland/hakios-metal-draw-cpu.patch`) draws CA's
+shape against the fake GPU (85 draws a pass into 1080x2400, three programs in turn, a constant buffer, a texture)
+and runs under `perf`: 3.03 us a draw. Of the draw's own time, half is the encode-then-deduplicate design
+(`appendDeduped` with `RegShadow::hold` 13 %, `Stream::registers`, `pm4::decode`, vector inserts), the rest malloc and
+copies. The patch makes RegShadow a table by register number (pages of 256, a generation for clear()) and keeps the
+draw's four streams and its static key in the command buffer: 2.59 us a draw (-15 %), the 261 host tests pass. The
+next step there is deduplicating at emission (encodeDraw writing through the shadow, no intermediate stream), about
+another third; not done: a refused draw would leave half its words in the pass.
+
+**The clipping: every colour output was written, gated or not.** CoreAnimation's uber fragment function returns
+three colours, each with an `air.function_constant` predicate (`frg_has_color0/1/2`, `__metal_implicit_fc_pred_16..18`).
+Metal leaves a target whose predicate is false unwritten; Apple's compiler fills such members with NaN. The front end
+(`air_to_nir.c`: `translate_output` never read the predicate, `emit_return` stored every field) wrote them all: a
+clip's SDF prepass (only color1 live) wrote NaN over the surface (black in BGRA8: the square behind the AirPlay glyph
+in `gpu-p6-q3.png` is black), and every content draw (only color0 live) wrote NaN over attachments 1 and 2, where the
+clip's SDF lives, so the next clipped draw read NaN for its coverage. `mesa/air-x-gated-render-targets.patch`
+records the predicate of each render-target output and leaves the store out when the static initialiser folds it to
+false (the plug-in already gives an unstored target no RENDER_COMPONENTS, `link.cpp`). Host: `air2nir --report` over
+645 modules of QuartzCore and four other libraries, identical but `fixed_frag_lph_cph`/`_cpf` (9 stores fewer);
+`tools/air/intrincheck.py` 71/71.
+
+On the phone it is NOT shown either way. gpu-d2 (`gpu-d2-q7.png` against `gpu-c1-q6.png`): the Control Center over
+Settings, flat grey squares in c1, had its rounded tiles, round buttons with their glass rim and pill-shaped sliders
+(the volume fill still with square corners behind its pill), the search bar a pill, but the Airplane Mode switch's
+knob square. gpu-d3, the same root and gestures a boot later (`gpu-d3-q3/q7.png`): the Control Center flat squares
+again and the knob round. The two runs differ in what the screenshot caught (the glass materialised or not, which
+Session 6 saw vary too: `gpu-p5-q3.png`), so single screenshots cannot carry the comparison. Next: the same
+specialisation drawn on the phone into a known surface (metal_dump of the knob's and the slider's draws), or several
+screenshots of one held state; and what the knob's draws read from attachments 1/2 where their own prepass did not
+write (a memoryless attachment's DontCare contents: NaN before the patch, an older SDF after).
+
+Plug-in glass7 `4306e543` (`userland-26/out/plugin-glass7/`, NOTE.md), root `system-26.apfs.full-43cef6b7` (complete,
+4,999,610,368 B), flashed and read back at 10:56; cold boot PASS (11:18-11:23,
+`logs/standalone-43cef6b7-1/-2.png`: the home screen with every icon, `hfs: mounted Data`, `0 entries made, 179 already
+there`, 77 plug-in lines from SpringBoard, no panic). Not clearly better than e07b4390 (cadence the same, the clipping
+not shown), so the phone went back to `system-26.apfs.full-e07b4390` (flashed and read back at 11:27, `e07b4390f391...`; cold boot PASS 11:28-11:33,
+`logs/standalone-e07b4390-s7-1/-2.png`: the home screen with every icon, `hfs: mounted Data`, 77 plug-in lines, no panic). The new root's first boot
+compiles every uber-shader variant again (12.7 s of links in gpu-d2: the stage cache's key follows the compiler's
+headers and patches); the cache it left on darwin_var stays valid for this plug-in only.
+
+**Where the rest of the frame goes (gpu-c2/d3, the 36 fps window).** The framebuffer driver shows each swap on its
+own thread: 2.5 ms waiting for the GPU to finish the surface, 2.2 ms copying it into the panel's memory by processor
+(10 MB a frame), and for 145 of 185 frames 10.4 ms waiting for its beat; 17 swaps waited for the one before, 29 came a
+refresh late. backboardd commits about 55 buffers a second in that window (110 gaps in 2 s) and 36 frames reach the
+panel: the loss is in the swap queue and the beat, not in the plug-in (2.5 ms of draws a frame). CA's own time in
+backboardd between commits has no meter yet: a run with `touch_lat=1` (`tl: v` per swap) and the plug-in's timeline
+is what separates it.
+
+**Next (owner's asks, 2026-11-12 11:15):** (a) keep the 7 cores but bias the UI threads to the A78s: this kernel has
+one processor set and no cluster types; a boot-arg-guarded bias in `choose_processor`/the clutch's thread selection
+(threads at or above the UI band, or realtime, not placed on cpu4-6 while a big core can take them) is testable in a
+host run with `KERNEL=` (no vendor_boot write); (b) a floor for the big cluster while CA commits (`cpugov_floor`
+exists, untested: gpu-d1's gestures missed); (c) the timeline above. Making `cpus=4` the default is a vendor_boot
+autoboot-line change: not done.
+
 ## Session 6 (2026-11-12 morning): where the frame time goes, and why GMEM is not the default yet
 
 Root 3d2017d2, kernel rc3, host runs gpu-p1..p3 (`logs/gpu-p1-*` ...). The kernel's clock runs about 19 s behind the

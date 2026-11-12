@@ -1,0 +1,256 @@
+hakios-metal: the processor's time in a draw (2026-11-12, session 7)
+
+CommandBuffer::draw made its four work streams and the static key new for every draw (a dozen allocations and as
+many copies as each grew) and RegShadow hashed and probed every register a draw writes. Now the streams and the key
+are the command buffer's, cleared and refilled, and RegShadow is a table by register number in pages of 256 with a
+generation for clear(). tools/drawbench.cpp measures it on the host against the fake GPU (an 85-draw pass into a
+1080x2400 target, three programs in turn): 3.03 us a draw before, 2.59 after (-15 %); the 261 host tests pass.
+
+diff --git a/include/hakios-metal/command.hpp b/include/hakios-metal/command.hpp
+index 6abbfcf..239d004 100644
+--- a/include/hakios-metal/command.hpp
++++ b/include/hakios-metal/command.hpp
+@@ -216,45 +216,41 @@ private:
+     void use(const Buffer& b, bool write) { uses_.push_back(BoUse{&b.bo(), write}); }
+ public:
+     // What each register written in a pass holds, for appendDeduped: a draw writes some 500 of them and almost all
+-    // hold their value already, so each is looked up once, in an open-addressed table of its own (std::unordered_map's
+-    // find and insert, two lookups and a node a register, were most of a draw's 20 us of deduplication on the phone)
++    // hold their value already, so each is looked up once. By its number, in pages of 256 registers made as they are
++    // first written (a draw's registers lie in some twenty such pages): two loads and a bit test a register, where the
++    // open-addressed table before it hashed and probed (13 % of a draw on the host, drawbench) and std::unordered_map
++    // before that was most of a draw's 20 us of deduplication on the phone. clear() forgets every page at once by
++    // their generation.
+     class RegShadow {
+     public:
+         // whether REG held VALUE; it holds VALUE from now on
+         bool hold(uint32_t reg, uint32_t value) {
+-            if (keys_.empty() || 2 * (used_ + 1) > keys_.size()) grow();
+-            const size_t mask = keys_.size() - 1;
+-            for (size_t i = (reg * 2654435761u) & mask;; i = (i + 1) & mask) {
+-                if (keys_[i] == reg) {
+-                    const bool same = values_[i] == value;
+-                    values_[i] = value;
+-                    return same;
+-                }
+-                if (keys_[i] == kEmpty) {
+-                    keys_[i] = reg;
+-                    values_[i] = value;
+-                    used_++;
+-                    return false;
+-                }
++            if (pages_.empty()) pages_.resize(kPages);
++            std::unique_ptr<Page>& slot = pages_[(reg >> 8) & (kPages - 1)];
++            if (slot == nullptr) slot = std::make_unique<Page>();
++            Page& p = *slot;
++            if (p.generation != generation_) {
++                p.generation = generation_;
++                p.valid[0] = p.valid[1] = p.valid[2] = p.valid[3] = 0;
+             }
++            const uint32_t at = reg & 0xff;
++            const uint64_t bit = 1ull << (at & 63);
++            uint64_t& valid = p.valid[at >> 6];
++            const bool same = (valid & bit) != 0 && p.values[at] == value;
++            valid |= bit;
++            p.values[at] = value;
++            return same;
+         }
+-        void clear() {
+-            std::fill(keys_.begin(), keys_.end(), kEmpty);
+-            used_ = 0;
+-        }
++        void clear() { generation_++; }
+     private:
+-        static constexpr uint32_t kEmpty = ~0u;
+-        void grow() {
+-            std::vector<uint32_t> keys = std::move(keys_), values = std::move(values_);
+-            keys_.assign(std::max<size_t>(1024, keys.size() * 2), kEmpty);
+-            values_.assign(keys_.size(), 0);
+-            used_ = 0;
+-            for (size_t i = 0; i < keys.size(); i++) {
+-                if (keys[i] != kEmpty) hold(keys[i], values[i]);
+-            }
+-        }
+-        std::vector<uint32_t> keys_, values_;
+-        size_t used_ = 0;
++        static constexpr size_t kPages = 1024;   // a type-4 header's register is 18 bits: 1024 pages of 256
++        struct Page {
++            uint32_t generation = 0;
++            uint64_t valid[4] = {};
++            uint32_t values[256];
++        };
++        std::vector<std::unique_ptr<Page>> pages_;
++        uint32_t generation_ = 0;
+     };
+ 
+ private:
+@@ -320,6 +316,10 @@ private:
+     std::atomic<Status> status_{kNotEnqueued};
+     std::string error_;
+     pm4::Stream stream_;
++    // draw's work streams and the key of its program-and-pass state, kept between draws for their capacity: made new
++    // for each draw they were a dozen allocations and as many copies as each one grew (render.cpp: draw)
++    pm4::Stream drawHead_, drawBody_, drawHeadSys_, drawBodySys_;
++    std::vector<uint8_t> staticKey_;
+     std::vector<BoUse> uses_;
+     std::vector<std::shared_ptr<const Buffer>> kept_;   // the buffers it uses stay alive until it completes
+     std::vector<std::shared_ptr<const void>> keptAny_;
+diff --git a/src/render.cpp b/src/render.cpp
+index d4fbfc1..523c9c9 100644
+--- a/src/render.cpp
++++ b/src/render.cpp
+@@ -2901,7 +2901,11 @@ bool CommandBuffer::draw(const Program& program, const RenderPass& pass, const D
+         }
+     }
+     Piece passTable;
+-    pm4::Stream head, body, headSys, bodySys;
++    pm4::Stream &head = drawHead_, &body = drawBody_, &headSys = drawHeadSys_, &bodySys = drawBodySys_;
++    head.clear();
++    body.clear();
++    headSys.clear();
++    bodySys.clear();
+     if (!joins) {
+         if (!piece(render::kTableBytes, &passTable, &why)) {
+             return fail(std::string("no memory for the pass's table: ") + why);
+@@ -2926,7 +2930,8 @@ bool CommandBuffer::draw(const Program& program, const RenderPass& pass, const D
+     // sample count and options are the last draw's in this pass: deduplication dropped every word of it anyway, and
+     // making the words was most of a draw's encoding (some 190 of its 350). Not after a packet that made the
+     // deduplication forget what the registers hold (staticKey emptied then).
+-    std::vector<uint8_t> staticKey;
++    std::vector<uint8_t>& staticKey = staticKey_;
++    staticKey.clear();
+     if (options.dedupRegs) {
+         const void* ptrs[2] = {program.vs.k.words, program.fs.k.words};
+         const uint32_t sizes[3] = {program.vs.k.numWords, program.fs.k.numWords, program.samples};
+@@ -3047,7 +3052,11 @@ bool CommandBuffer::draw(const Program& program, const RenderPass& pass, const D
+     if (options.dedupRegs && open_->options.dedupRegs) {
+         bool forgot = appendDeduped(into, body, open_->gmem ? open_->bodyRegs : open_->regs);
+         if (open_->dual) forgot = appendDeduped(open_->sysStream, bodySys, open_->regs) || forgot;
+-        open_->staticKey = forgot ? std::vector<uint8_t>() : std::move(staticKey);
++        if (forgot) {
++            open_->staticKey.clear();
++        } else {
++            open_->staticKey.swap(staticKey);   // (the pass's key becomes this one; the old one's capacity serves the next draw)
++        }
+     } else {
+         appendStream(into, body);
+         if (open_->dual) appendStream(open_->sysStream, bodySys);
+diff --git a/tools/drawbench.cpp b/tools/drawbench.cpp
+new file mode 100644
+index 0000000..fd04f1f
+--- /dev/null
++++ b/tools/drawbench.cpp
+@@ -0,0 +1,113 @@
++// drawbench: what CommandBuffer::draw costs the processor, draw by draw, in the shape of a CoreAnimation frame (one
++// window-sized target, some 85 draws in one pass, three programs taking turns, a constant buffer, a texture and its
++// sampler per textured draw, the buffers and textures kept as the C interface keeps them). Against the fake GPU, so
++// it runs on the host under perf:
++//
++//   make drawbench && out/host/drawbench [FRAMES] [DRAWS]
++//   perf record -g out/host/drawbench 400 && perf report
++//
++// SPDX-License-Identifier: MIT
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <memory>
++#include <string>
++#include <vector>
++
++#include "hakios-metal/command.hpp"
++#include "hakios-metal/fake_gpu.hpp"
++#include "hakios-metal/render.hpp"
++#include "hakios-metal/texture.hpp"
++#include "../tests/fixtures/tri_cflat_fs_air.hpp"
++#include "../tests/fixtures/tri_color_fs_air.hpp"
++#include "../tests/fixtures/tri_color_vs_air.hpp"
++#include "../tests/fixtures/tri_flat_vs_air.hpp"
++#include "../tests/fixtures/tri_tex_fs_air.hpp"
++
++using namespace hakios::metal;
++namespace kernels = hakios::metal::kernels;
++
++namespace {
++std::shared_ptr<Texture> makeTexture(Gpu& gpu, uint32_t w, uint32_t h, uint32_t usage) {
++    TextureDesc d;
++    d.format = PixelFormat::kBGRA8Unorm;
++    d.width = w;
++    d.height = h;
++    d.usage = usage;
++    std::string why;
++    auto t = Texture::make(gpu, d, &why);
++    if (t == nullptr) std::fprintf(stderr, "drawbench: no texture: %s\n", why.c_str());
++    return t;
++}
++}  // namespace
++
++int main(int argc, char** argv) {
++    const int frames = argc > 1 ? std::atoi(argv[1]) : 200;
++    const int draws = argc > 2 ? std::atoi(argv[2]) : 85;
++    const char* pattern = argc > 3 ? argv[3] : nullptr;   // which program each draw takes in turn (0 tex, 1 cflat, 2 color)
++    auto f = std::make_unique<FakeGpu>();
++    FakeGpu* fake = f.get();
++    Gpu gpu(std::move(f));
++    std::string why;
++    auto queue = CommandQueue::make(gpu, &why);
++    if (queue == nullptr) {
++        std::fprintf(stderr, "drawbench: no queue: %s\n", why.c_str());
++        return 1;
++    }
++    auto target = makeTexture(gpu, 1080, 2400, kTextureUsageRenderTarget | kTextureUsageRead);
++    std::vector<std::shared_ptr<Texture>> images;
++    for (int i = 0; i < 8; i++) images.push_back(makeTexture(gpu, 128, 128, kTextureUsageRead));
++    Sampler smp;
++    if (target == nullptr || !makeSampler(SamplerDesc{}, &smp, &why)) return 1;
++    std::vector<std::shared_ptr<Buffer>> constants;
++    for (int i = 0; i < 4; i++) constants.push_back(newBuffer(gpu, 4096, &why));
++    const Program programs[3] = {Program{kernels::tri_color_vs_air, kernels::tri_tex_fs_air, Linkage{}, "tri_tex"},
++                                 Program{kernels::tri_flat_vs_air, kernels::tri_cflat_fs_air, Linkage{}, "tri_cflat"},
++                                 Program{kernels::tri_color_vs_air, kernels::tri_color_fs_air, Linkage{}, "tri_color"}};
++    RenderPass pass;
++    pass.color0 = target.get();
++    double drawNs = 0;
++    uint64_t drawn = 0;
++    for (int frame = 0; frame < frames; frame++) {
++        auto cb = queue->commandBuffer();
++        for (int i = 0; i < draws; i++) {
++            const int which = pattern != nullptr ? pattern[i % std::strlen(pattern)] - '0' : (i / 3) % 3;   // runs of three draws of one program, as CA's layers come
++            const Program& p = programs[which];
++            Draw d;
++            d.vertexCount = 6;
++            d.viewport = Viewport{0, 0, 1080, 2400, 0, 1};
++            d.scissor = Scissor{uint32_t(i % 10) * 40, uint32_t(i % 7) * 60, 400, 300};
++            Bindings vsb, fsb;
++            vsb.buffers = {Binding{constants[i % 4].get(), uint64_t(i % 16) * 256}};
++            if (which == 0) {
++                fsb.textures = {images[i % 8].get()};
++                fsb.samplers = {&smp};
++            } else if (which == 1) {
++                fsb.buffers = {Binding{constants[(i + 1) % 4].get(), uint64_t(i % 16) * 256}};
++            }
++            const auto t0 = std::chrono::steady_clock::now();
++            if (!cb->draw(p, pass, d, vsb, fsb)) {
++                std::fprintf(stderr, "drawbench: draw %d of frame %d refused: %s\n", i, frame, cb->error().c_str());
++                return 1;
++            }
++            // what the C interface keeps for the GPU's time (c_api.cpp drawCommon)
++            cb->keep(constants[i % 4]);
++            if (which == 1) cb->keep(constants[(i + 1) % 4]);
++            cb->keep(target->buffer());
++            cb->keepAlive(target);
++            if (which == 0) cb->keepAlive(images[i % 8]);
++            drawNs += std::chrono::duration<double, std::nano>(std::chrono::steady_clock::now() - t0).count();
++            drawn++;
++        }
++        if (std::getenv("DRAWBENCH_NOCOMMIT") != nullptr) continue;   // (perf: the draws alone, not the fake running them)
++        cb->commit();
++        cb->waitUntilCompleted();
++        if (cb->status() != CommandBuffer::kCompleted) {
++            std::fprintf(stderr, "drawbench: frame %d did not complete: %s | %s\n", frame, cb->error().c_str(), fake->stats().lastFault.c_str());
++            return 1;
++        }
++    }
++    std::printf("drawbench: %llu draws in %d frames of %d: %.2f us a draw\n", (unsigned long long)drawn, frames, draws, drawNs / 1e3 / double(drawn));
++    return 0;
++}

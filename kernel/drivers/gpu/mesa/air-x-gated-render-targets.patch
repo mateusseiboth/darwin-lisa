@@ -1,0 +1,71 @@
+--- a/air_private.h	2026-11-12 10:37:07.302147575 -0400
++++ b/air_private.h	2026-11-12 10:40:54.309203866 -0400
+@@ -276,6 +276,9 @@
+       unsigned location;      /* gl_varying_slot or gl_frag_result */
+       unsigned index;         /* dual-source index */
+       nir_variable *var;
++      /* darwin-lisa: the `air.function_constant` predicate global of a gated
++       * output (`[[color(n), function_constant(p)]]`), or NULL */
++      const struct air_value *pred;
+    } *outputs;
+ 
+    unsigned scratch_size;
+--- a/air_to_nir.c	2026-11-12 10:37:07.302180998 -0400
++++ b/air_to_nir.c	2026-11-12 10:40:54.309411689 -0400
+@@ -2729,9 +2729,38 @@
+    c->outputs[field].location = location;
+    c->outputs[field].index = index;
+    c->outputs[field].var = var;
++   /* only a render target is gated (output_left_out): a vertex output a predicate
++    * leaves out is a varying nothing reads, and writing it costs nothing */
++   const struct air_md *fc = rt >= 0 ? md_key_node(node, "air.function_constant") : NULL;
++   c->outputs[field].pred =
++      fc && fc->num_ops && fc->ops[0] && fc->ops[0]->kind == AIR_MD_VALUE ? fc->ops[0]->value : NULL;
+    return true;
+ }
+ 
++/* darwin-lisa: is the entry point's render target `field` one its function-constant
++ * predicate leaves out? Metal's `[[function_constant(p)]]` on a member of the returned struct makes
++ * the member absent when p is false: the target is not written and keeps what it holds.
++ * Apple's compiler still fills the member (CoreAnimation's uber shader returns NaN in the
++ * colour targets a specialisation does not own), so storing it anyway overwrites the
++ * target -- the SDF prepass of a rounded clip wrote NaN over the surface (a black square)
++ * and the content draws wrote NaN over the clip's memoryless SDF (the clip lost).
++ * The predicate is a global the static initialiser computes from the constants; one it
++ * did not decide is stored, with a note, as before. */
++static bool
++output_left_out(struct air_ctx *c, unsigned field)
++{
++   const struct air_value *p = c->outputs[field].pred;
++   if (!p)
++      return false;
++   struct air_global_plan *plan = foldable_global_plan(c, p);
++   if (!plan || !plan->known) {
++      air_note(c, "output %u is gated by a function-constant predicate the static "
++                  "initialiser did not decide: written unconditionally", field);
++      return false;
++   }
++   return plan->bits == 0;
++}
++
+ /* -- instructions ------------------------------------------------------- */
+ 
+ /* A load through a pointer this frontend could not resolve: load through BOTH
+@@ -3791,6 +3820,8 @@
+             return air_error(c, "interface: field %u of the result has no output", i);
+          if (!v->elems[i] || v->elems[i]->kind != AIR_VAL_SSA)
+             continue; /* a field left undef is a target nothing writes */
++         if (output_left_out(c, i))
++            continue; /* so is one its function constant leaves out */
+          nir_def *d = v->elems[i]->def;
+          if (io_is_boolean(rt->members[i]) && d->bit_size == 1)
+             d = nir_b2iN(&c->b, d, 32);   /* see io_is_boolean */
+@@ -3803,6 +3834,8 @@
+       return air_error(c, "instruction: a returned value that is not a number");
+    if (!c->num_outputs || !c->outputs[0].var)
+       return air_error(c, "interface: a returned value with no output");
++   if (output_left_out(c, 0))
++      return true;
+    nir_store_var(&c->b, c->outputs[0].var, v->def, BITFIELD_MASK(v->def->num_components));
+    return true;
+ }

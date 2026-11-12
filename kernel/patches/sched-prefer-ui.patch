@@ -1,0 +1,65 @@
+--- a/osfmk/kern/sched_prim.c	2026-11-12 11:37:17.388516728 -0400
++++ b/osfmk/kern/sched_prim.c	2026-11-12 11:37:17.401028807 -0400
+@@ -144,6 +144,20 @@
+ #define         DEFAULT_PREEMPTION_RATE         100             /* (1/s) */
+ TUNABLE(int, default_preemption_rate, "preempt", DEFAULT_PREEMPTION_RATE);
+ 
++/*
++ * darwin-lisa: boot-arg sched_prefer_pri=N (default 0: every thread): a thread at or above it is kept on the
++ * preferred cores (sched_prefer=MASK, processor.c) when it can be: its last core is not taken back if that is not a
++ * preferred one and a preferred core is idle, and a preferred core running something of lower priority is preempted
++ * before an idle core outside the mask is woken. Below the band, and with no mask, choose_processor is unchanged.
++ */
++TUNABLE(int, lisa_sched_prefer_pri, "sched_prefer_pri", 0);
++
++static inline bool
++lisa_prefers(processor_set_t pset, thread_t thread)
++{
++	return pset->perfcontrol_cpu_preferred_bitmask != 0 && thread->sched_pri >= lisa_sched_prefer_pri;
++}
++
+ #define         DEFAULT_BG_PREEMPTION_RATE      400             /* (1/s) */
+ TUNABLE(int, default_bg_preemption_rate, "bg_preempt", DEFAULT_BG_PREEMPTION_RATE);
+ 
+@@ -5139,6 +5153,12 @@
+ 				if ((thread->sched_pri < BASEPRI_RTQUEUES) || processor_is_fast_track_candidate_for_realtime_thread(pset, processor)) {
+ 					uint64_t idle_map = (pset->cpu_state_map[PROCESSOR_IDLE] & pset->recommended_bitmask);
+ 					uint64_t non_avoided_idle_map = idle_map & ~pset->perfcontrol_cpu_migration_bitmask;
++					if (thread->sched_pri < BASEPRI_RTQUEUES && lisa_prefers(pset, thread) &&
++					    !bit_test(pset->perfcontrol_cpu_preferred_bitmask, processor->cpu_id) &&
++					    (idle_map & pset->perfcontrol_cpu_preferred_bitmask) != 0) {
++						processor = PROCESSOR_NULL;     /* darwin-lisa: a preferred core is idle */
++						break;
++					}
+ 					/*
+ 					 * If the rotation bitmask to force a migration is set for this core and there's an idle core that
+ 					 * that needn't be avoided, don't continue running on the same core.
+@@ -5245,6 +5265,28 @@
+ 			}
+ 		}
+ 
++		/*
++		 * darwin-lisa: a thread in the preferred band takes a preferred core from something of lower priority
++		 * before it wakes an idle core outside the mask (see lisa_sched_prefer_pri)
++		 */
++		if (lisa_prefers(pset, thread)) {
++			uint64_t busy_preferred = ((pset->cpu_state_map[PROCESSOR_RUNNING] | pset->cpu_state_map[PROCESSOR_DISPATCHING]) &
++			    pset->recommended_bitmask & pset->perfcontrol_cpu_preferred_bitmask & ~pset->pending_AST_URGENT_cpu_mask);
++			processor_t lowest = PROCESSOR_NULL;
++
++			for (int id = lsb_first(busy_preferred); id >= 0; id = lsb_next(busy_preferred, id)) {
++				processor_t candidate = processor_array[id];
++
++				if (candidate->current_pri < thread->sched_pri && (lowest == PROCESSOR_NULL || candidate->current_pri < lowest->current_pri)) {
++					lowest = candidate;
++				}
++			}
++			if (lowest != PROCESSOR_NULL) {
++				pset->last_chosen = lowest->cpu_id;
++				return lowest;
++			}
++		}
++
+ 		/*
+ 		 * Fall back to any remaining idle cores if none of the preferred ones and non-avoided ones are available.
+ 		 */

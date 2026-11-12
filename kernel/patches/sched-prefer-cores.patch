@@ -1,0 +1,28 @@
+--- a/osfmk/kern/processor.c	2026-11-12 11:32:02.819263432 -0400
++++ b/osfmk/kern/processor.c	2026-11-12 11:32:02.829764199 -0400
+@@ -84,6 +84,9 @@
+ #include <kern/smr.h>
+ #include <kern/task.h>
+ #include <kern/thread.h>
++
++/* darwin-lisa: the cores an idle core is looked for first (see pset_init) */
++static TUNABLE(uint64_t, lisa_sched_prefer, "sched_prefer", 0);
+ #include <kern/timer.h>
+ #if KPERF
+ #include <kperf/kperf.h>
+@@ -810,8 +813,14 @@
+ 	/*
+ 	 * No initial preferences or forced migrations, so use the least numbered
+ 	 * available idle core when picking amongst idle cores in a cluster.
++	 *
++	 * darwin-lisa: boot-arg sched_prefer=MASK makes those cores the ones an idle core is looked for first
++	 * (choose_processor). lisa's kernel has one processor set for the A78s (cpu 0-3) and the A55s (4-6) and no
++	 * performance controller to say which is which, so the window server's render thread ran 40 % of its draws on
++	 * the A55s at 3-4 times the cost (docs/gpu-device-test.md, Session 7): sched_prefer=0xf keeps every core and
++	 * gives work to an A55 only when no A78 is idle.
+ 	 */
+-	pset->perfcontrol_cpu_preferred_bitmask = 0;
++	pset->perfcontrol_cpu_preferred_bitmask = lisa_sched_prefer;
+ 	pset->perfcontrol_cpu_migration_bitmask = 0;
+ 	pset->cpu_preferred_last_chosen = -1;
+ 

@@ -75,6 +75,36 @@ panel: the loss is in the swap queue and the beat, not in the plug-in (2.5 ms of
 backboardd between commits has no meter yet: a run with `touch_lat=1` (`tl: v` per swap) and the plug-in's timeline
 is what separates it.
 
+**After 11:35 (the owner's asks, kernel only, host runs with `KERNEL=`, no vendor_boot write; root e07b4390).**
+
+The swap timeline first (gpu-e1, `touch_lat=1`, 173 swaps in bursts; `tl.py` in the session's scratch: per swap the
+`tl: s` and `tl: v` lines): backboardd hands a swap over every 16.8 ms at the median (p90 33 ms); the GPU is done
+with it 2.1 ms later at the median but 15.2 ms at p90 (the heavy frames); then 7.4 ms to its beat, 1.9 ms of copy; the
+surface is back to CoreAnimation 12.9 ms after the swap (p90 25.5). Nothing is lost (`0 gave up`) and `present` does
+not block unless two swaps wait. So the processor copy is not what limits the rate, and a direct scanout (the DPU's
+SSPP pointed at the surface) would hold each surface for a whole refresh, longer than now, besides reprogramming the
+firmware's display pipeline blind: not done. What drops frames is the heavy frames' GPU time and the CPU on the A55s.
+
+Two kernel patches, both inert without their boot-args (`kernel/patches/apply.sh` applies them):
+- `sched-prefer-cores.patch`: `sched_prefer=MASK` is the pset's `perfcontrol_cpu_preferred_bitmask` (choose_processor
+  looks for an idle core there first). Kernel `kernel-16k-s7-prefer.bak` (e8e912e8). gpu-e1 (`cpus=7
+  sched_prefer=0xf`): still ~35 % of backboardd's draws on the A55s (choose_processor already took the lowest idle
+  core; the draws land on A55s when no A78 is idle, or by the last-core hint); 120 of 136 intervals under 18 ms in the
+  best window, commits 89 on time / 24 late.
+- `sched-prefer-ui.patch`: `sched_prefer_pri=N`: a thread at or above N does not go back to an idle A55 when an A78
+  is idle, and preempts an A78 running something of lower priority before it wakes an idle A55. With N = 47
+  (`kernel-16k-s7-preferui.bak`, 858a30c2, gpu-e2): 24 % of the draws on the A55s, 141 frames in the best 5 s, 118
+  under 18 ms / 12 / 9, commits 69 / 27 / 4: no better. With N = 0 by default (every thread;
+  `kernel-16k-s7-preferall.bak`, e52b3b13, gpu-e3): 21 % on the A55s, 158 frames in the best 5 s, 112 / 16 / 7, commits
+  77 / 22 / 3, swaps every 17.0 ms at the median: no better either. None reaches `cpus=4` (185 frames, 139 / 18 / 11,
+  96 / 13 / 1). The draws that still land on the A55s come by paths choose_processor does not see (an A55 that goes
+  idle takes the next thread off the one shared run queue in thread_select; handoffs). Keeping the 7 cores and the
+  cadence of 4 needs the run queue itself to hold the band back from the A55s (a check in the clutch's thread
+  selection for a processor outside the mask while an A78 can take it), which was not tried in this window.
+  Meanwhile `cpus=4` is the measured best; it is the loader's autoboot line (vendor_boot), not changed here.
+
+
+
 **Next (owner's asks, 2026-11-12 11:15):** (a) keep the 7 cores but bias the UI threads to the A78s: this kernel has
 one processor set and no cluster types; a boot-arg-guarded bias in `choose_processor`/the clutch's thread selection
 (threads at or above the UI band, or realtime, not placed on cpu4-6 while a big core can take them) is testable in a

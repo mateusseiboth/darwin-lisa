@@ -70,6 +70,9 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        # no GMEM unless metal_gmem=1 / metal_gmem_draws=N: the binned tiles keep the frame before and cost the GPU twice
        # sysmem's time on SpringBoard's heavy passes (gpu-p1..p4, 2026-11-12; the patch's header has the numbers)
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-gmem-default.patch"
+       # metal_ubwc_rt=1: private and memoryless offscreen render targets compressed (UBWC), with the core's
+       # hakios-metal-x-ubwc-rt.patch; off unless asked (session 9, 2026-11-12: not yet drawn into on the phone)
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ubwc-rt.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

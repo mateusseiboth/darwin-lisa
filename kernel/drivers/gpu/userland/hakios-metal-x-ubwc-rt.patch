@@ -1,0 +1,527 @@
+Compressed (UBWC) render targets: cleared, drawn into, sampled, fetched and copied out compressed (2026-11-12,
+darwin-lisa session 9). The plug-in asks for them with boot-arg metal_ubwc_rt=1 (HakiosMetalCA-ubwc-rt.patch).
+
+The core already laid out a compressed RGBA8/BGRA8 texture (fdl6_layout with UBWC) for the textures the GPU only
+samples, filled from staged rows by the 2D engine, and mrtWords already gave a compressed target its flag buffer and
+RB_RENDER_CNTL.FLAG_MRTS. What a render target needs beyond that, here:
+
+1. Texture::make: a compressed render target may also be RGBA16Float (CoreAnimation's backdrop format; UBWC takes
+   FMT6_16_16_16_16_FLOAT, fd6_resource.cc ok_ubwc_format). Never a texture a kernel writes, never more than one level.
+2. mrtWords: a compressed target is named WZYX whatever the format's swap, as turnip names it (fd6_pipe2swap: "the
+   CCU ignores swap and always uses WZYX when tiled"); the TP reads the layout WZYX too (the descriptor), so the
+   registers say what the hardware does.
+3. levelDescriptor (a framebuffer fetch's view of an attachment) carries the UBWC words too (Texture::applyUbwc,
+   shared with sampledDescriptor); a swizzled view keeps them; a view of a compressed render target is the texture
+   itself or refused (another format would read the tiles as something they are not).
+4. A Clear of a compressed target: the 2D engine's solid fill into the UBWC view (TILE6_3, WZYX, FLAGS and the flag
+   buffer, as r2d_dst over a UBWC view does), which writes a few bytes a block. checkTarget refused it before.
+5. A copy out of a compressed texture (blit, texture to buffer): the 2D engine reads it compressed (SP_PS_2D_SRC_INFO
+   TILE6_3 | FLAGS, WZYX, SP_PS_2D_SRC_FLAGS), into a linear or a compressed destination. encodeBlit refused it before.
+6. The fake GPU takes a UBWC target (TILE6_3, WZYX, its FLAG_MRTS bit, a flag buffer in reach), a fill into a UBWC
+   image and a copy out of one written before, counting them (ubwcDraws, ubwcFills, ubwcReads), and keeps refusing a
+   tiled target without its flags.
+
+The CPU still never reads or writes a compressed render target (replace and read refuse it): the plug-in compresses
+only private and memoryless storage, which Metal does not let the CPU touch.
+
+Host: 266 tests (two new: a_compressed_render_target_is_cleared_drawn_sampled_and_copied_out_compressed, BGRA8 and
+RGBA16Float; a_compressed_texture_is_refused_where_its_layout_is_not_served), the same 4 tests / 14 checks failing as
+before the patch (pre-existing: the unbound-buffer refusals the earlier patches lifted). Not run on the phone yet.
+
+diff --git a/include/hakios-metal/a6xx.hpp b/include/hakios-metal/a6xx.hpp
+index b01af4c..eca44fd 100644
+--- a/include/hakios-metal/a6xx.hpp
++++ b/include/hakios-metal/a6xx.hpp
+@@ -4465,6 +4465,7 @@ inline constexpr uint32_t REG_A6XX_SP_PS_2D_SRC_PITCH = 0xb4c4;
+ inline constexpr uint32_t A6XX_SP_PS_2D_SRC_PITCH_PITCH__MASK = 0x00fffe00;                 // a6xx.xml.h:9905
+ inline constexpr uint32_t A6XX_SP_PS_2D_SRC_PITCH_PITCH__SHIFT = 9;                         // a6xx.xml.h:9906
+ inline constexpr uint32_t REG_A6XX_SP_PS_2D_SRC_FLAGS = 0xb4ca;                             // a6xx.xml.h:10017
++inline constexpr uint32_t A6XX_SP_PS_2D_SRC_INFO_FLAGS = 0x00001000;                        // a6xx.xml.h:9855  the source is UBWC
+ static_assert(REG_A6XX_SP_PS_2D_SRC_SIZE == REG_A6XX_SP_PS_2D_SRC_INFO + 1 && REG_A6XX_SP_PS_2D_SRC == REG_A6XX_SP_PS_2D_SRC_INFO + 2 &&
+                   REG_A6XX_SP_PS_2D_SRC_PITCH == REG_A6XX_SP_PS_2D_SRC_INFO + 4 && REG_A6XX_GRAS_2D_DST_TL == REG_A6XX_GRAS_2D_SRC_BR_Y + 1,
+               "INFO, SIZE, BASE lo, hi, PITCH are one pkt4; the four source coordinates run on into GRAS_2D_DST_TL");
+diff --git a/include/hakios-metal/fake_gpu.hpp b/include/hakios-metal/fake_gpu.hpp
+index fbc45d4..6511cb9 100644
+--- a/include/hakios-metal/fake_gpu.hpp
++++ b/include/hakios-metal/fake_gpu.hpp
+@@ -155,6 +155,7 @@ public:
+         uint32_t tiledFills = 0;    // ...of which into a TILE6_3 depth texture: judged, not written (the tiled order is not modelled)
+         uint32_t tiles = 0;         // GMEM tiles begun (CP_SET_MARKER RM6_BIN_RENDER_START | USES_GMEM)
+         uint32_t ubwcCopies = 0;   // 2D copies into a UBWC image
++        uint32_t ubwcDraws = 0, ubwcFills = 0, ubwcReads = 0;   // darwin-lisa: draws into, Clears of and 2D copies out of a UBWC target
+         uint32_t tileLoads = 0, tileStores = 0;   // event blits, carried out between memory and the model's GMEM
+         uint32_t tileClears = 0;    // ...and clears in GMEM
+         uint32_t binningPasses = 0, binnedDraws = 0, binData = 0;   // binning passes, the draws in them, tiles told their streams
+@@ -293,6 +294,7 @@ private:
+     // event blits load and store (the draws rasterize nothing, so a tile holds what its load put there)
+     bool inTile_ = false;
+     std::set<uint64_t> ubwcWritten_;   // the UBWC images a copy has written (their data addresses)
++    bool ubwcSourceOk();   // darwin-lisa: the 2D source is a UBWC image written compressed before
+     uint32_t binQueued_ = 0;   // tiles' streams handed over (CP_SET_BIN_DATA5*) and not yet let go by RM6_BIN_END_OF_DRAWS
+     bool binning_ = false;   // between RM6_BIN_VISIBILITY and the first tile: the draws only bin
+     std::vector<uint8_t> gmem_ = std::vector<uint8_t>(a6xx::kGmemBytes);
+diff --git a/include/hakios-metal/texture.hpp b/include/hakios-metal/texture.hpp
+index 995aba6..f5b8247 100644
+--- a/include/hakios-metal/texture.hpp
++++ b/include/hakios-metal/texture.hpp
+@@ -371,6 +371,8 @@ public:
+ private:
+     uint64_t ubwcOffset_ = 0;
+     uint32_t ubwcPitch_ = 0, ubwcLayerSize_ = 0, ubwcLogW_ = 0, ubwcLogH_ = 0;
++    void applyUbwc(a6xx::TexConst& d) const;   // darwin-lisa: the UBWC words of a descriptor
++    void copyUbwcFrom(const Texture& p);
+ };
+ 
+ // The border colour table a sampler's BCOLOR indexes, 128 bytes an entry: Metal's MTLSamplerBorderColor in its own
+diff --git a/src/fake_gpu.cpp b/src/fake_gpu.cpp
+index 4fb84ff..6327639 100644
+--- a/src/fake_gpu.cpp
++++ b/src/fake_gpu.cpp
+@@ -888,7 +888,9 @@ bool FakeGpu::execBlit(const uint32_t* p, uint32_t count) {
+     const uint32_t tile = fieldOf(info, A6XX_RB_2D_DST_INFO_TILE_MODE__MASK, A6XX_RB_2D_DST_INFO_TILE_MODE__SHIFT);
+     const bool tiled = tile == TILE6_3 && (fmt == FMT6_32_FLOAT || fmt == FMT6_8_UINT);
+     // ...or a UBWC one (TILE6_3 with FLAGS, RGBA8-sized, WZYX): what a copy fills a compressed texture through
+-    const bool ubwc = copy && tile == TILE6_3 && (info & A6XX_RB_2D_DST_INFO_FLAGS) != 0 && fmt == FMT6_8_8_8_8_UNORM &&
++    // (darwin-lisa: and a solid fill -- a Clear -- of a UBWC render target, RGBA8-sized or RGBA16Float)
++    const bool ubwc = tile == TILE6_3 && (info & A6XX_RB_2D_DST_INFO_FLAGS) != 0 &&
++                      (fmt == FMT6_8_8_8_8_UNORM || (!copy && fmt == FMT6_16_16_16_16_FLOAT) || (copy && fmt == FMT6_16_16_16_16_FLOAT)) &&
+                       fieldOf(info, A6XX_RB_2D_DST_INFO_COLOR_SWAP__MASK, A6XX_RB_2D_DST_INFO_COLOR_SWAP__SHIFT) == WZYX;
+     if (bpp == 0 || (tile != TILE6_LINEAR && !tiled && !ubwc)) {
+         fault(text("a fill into format %llu, tile mode %llu: a linear image of a known format (or a TILE6_3 depth texture) is what this GPU model fills", fmt, tile));
+@@ -928,20 +930,46 @@ bool FakeGpu::execBlit(const uint32_t* p, uint32_t count) {
+         fault(text("a fill of (%llu, %llu) to ", x0, y0) + text("(%llu, %llu) with a pitch of ", x1, y1) + text("%llu bytes at %#llx: an empty rectangle, rows wider than the pitch or a base not 64-aligned", pitch, base));
+         return false;
+     }
++    if (!copy && ubwc) {
++        // (darwin-lisa) a Clear of a UBWC target: judged (the image and its flag buffer in reach), and counted as written
++        if (at(reg64(REG_A6XX_RB_2D_DST_FLAGS), 64) == nullptr || at(base, uint64_t(y1 + 1) * pitch) == nullptr) {
++            fault("a fill of a UBWC image: the image and its flag buffer in reach is what this model takes");
++            return false;
++        }
++        ubwcWritten_.insert(base);
++        stats_.fills++;
++        stats_.ubwcFills++;
++        drawsInSubmission_++;
++        drawsWithoutCcuFlush_++;
++        drawsWithoutCacheFlush_++;
++        return true;
++    }
+     if (copy && ubwc) {
+         // Its bytes and flags are in an order this model does not reproduce: the copy is judged (the source linear and
+-        // in reach, a flag buffer in reach) and the image counted as written, which a sample of it then requires
++        // in reach, or a UBWC one already written, a flag buffer in reach) and the image counted as written, which a sample
++        // of it then requires
+         const uint64_t flags = reg64(REG_A6XX_RB_2D_DST_FLAGS);
+         const uint32_t sinfo = reg(REG_A6XX_SP_PS_2D_SRC_INFO);
+-        if (fieldOf(sinfo, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__SHIFT) != TILE6_LINEAR ||
++        if ((fieldOf(sinfo, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__SHIFT) != TILE6_LINEAR && !ubwcSourceOk()) ||
+             at(reg64(REG_A6XX_SP_PS_2D_SRC), 64) == nullptr || at(flags, 64) == nullptr || at(base, uint64_t(y1 + 1) * pitch) == nullptr) {
+-            fault("a copy into a UBWC image: from a linear source, into an image and a flag buffer in reach, is what this model takes");
++            fault("a copy into a UBWC image: from a linear source (or a UBWC one written before), into an image and a flag buffer in reach, is what this model takes");
+             return false;
+         }
+         ubwcWritten_.insert(base);
+         stats_.ubwcCopies++;
+         return true;
+     }
++    if (copy && fieldOf(reg(REG_A6XX_SP_PS_2D_SRC_INFO), A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__SHIFT) == TILE6_3 &&
++        (reg(REG_A6XX_SP_PS_2D_SRC_INFO) & A6XX_SP_PS_2D_SRC_INFO_FLAGS) != 0) {
++        // (darwin-lisa) a copy out of a UBWC image into a linear one: judged (the source written compressed before, its
++        // flag buffer and the destination in reach); the destination's bytes are not reproduced
++        if (!ubwcSourceOk() || tile != TILE6_LINEAR || at(base + uint64_t(y0) * pitch, uint64_t(y1 - y0) * pitch + uint64_t(x1 + 1) * bpp) == nullptr) {
++            fault("a copy out of a UBWC image: from one written compressed before, with its flag buffer, into a linear image in reach, is what this model takes");
++            return false;
++        }
++        stats_.ubwcReads++;
++        return true;
++    }
+     if (copy) {
+         return execCopy(fmt, bpp, ifmt, x0, y0, x1, y1, base, pitch, tiled);
+     }
+@@ -1007,6 +1035,16 @@ bool FakeGpu::execBlit(const uint32_t* p, uint32_t count) {
+     return true;
+ }
+ 
++// (darwin-lisa) the 2D source is a UBWC image this model saw written compressed, WZYX, with its flag buffer in reach
++bool FakeGpu::ubwcSourceOk() {
++    using namespace a6xx;
++    const uint32_t sinfo = reg(REG_A6XX_SP_PS_2D_SRC_INFO);
++    return fieldOf(sinfo, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__SHIFT) == TILE6_3 &&
++           (sinfo & A6XX_SP_PS_2D_SRC_INFO_FLAGS) != 0 &&
++           fieldOf(sinfo, A6XX_SP_PS_2D_SRC_INFO_COLOR_SWAP__MASK, A6XX_SP_PS_2D_SRC_INFO_COLOR_SWAP__SHIFT) == WZYX &&
++           ubwcWritten_.count(reg64(REG_A6XX_SP_PS_2D_SRC)) != 0 && at(reg64(REG_A6XX_SP_PS_2D_SRC_FLAGS), 64) != nullptr;
++}
++
+ bool FakeGpu::execCopy(uint32_t fmt, uint32_t bpp, uint32_t ifmt, uint32_t x0, uint32_t y0, uint32_t x1, uint32_t y1, uint64_t base, uint64_t pitch, bool tiled) {
+     using namespace a6xx;
+     if (tiled) {
+@@ -1374,12 +1412,22 @@ bool FakeGpu::execDraw(const uint32_t* p, uint32_t count) {
+             fault("RB_MRT_BUF_INFO[" + which + "]: " + text("COLOR_FORMAT %llu is not one this GPU model knows", format));
+             return false;
+         }
+-        if (tile != TILE6_LINEAR) {
+-            fault("RB_MRT_BUF_INFO[" + which + "]: " + text("tile mode %llu: only linear targets are what this GPU model runs", tile));
++        // (darwin-lisa) or a UBWC target: TILE6_3 in WZYX, its bit in RB_RENDER_CNTL.FLAG_MRTS, its flag buffer in reach
++        // (tu6_emit_mrt, fd6_view.c). Its bytes are in an order this model does not reproduce: the draw is judged, and the
++        // image counted as written compressed, which a later sample or copy of it requires
++        const bool ubwcTarget = tile == TILE6_3 && (reg(REG_A6XX_RB_RENDER_CNTL) >> (16 + t) & 1) != 0 &&
++                                fieldOf(bufInfo, A6XX_RB_MRT_BUF_INFO_COLOR_SWAP__MASK, A6XX_RB_MRT_BUF_INFO_COLOR_SWAP__SHIFT) == WZYX &&
++                                at(reg64(regRbMrtFlagBuffer(REG_A6XX_RB_MRT_FLAG_BUFFER_ADDR, t)), 64) != nullptr;
++        if (tile != TILE6_LINEAR && !ubwcTarget) {
++            fault("RB_MRT_BUF_INFO[" + which + "]: " + text("tile mode %llu: only linear targets, or UBWC ones (TILE6_3, WZYX, FLAG_MRTS and a flag buffer), are what this GPU model runs", tile));
+             return false;
+         }
+         const uint64_t pitch = uint64_t(fieldOf(reg(regRbMrt(REG_A6XX_RB_MRT_PITCH, t)), A6XX_RB_MRT_PITCH__MASK, A6XX_RB_MRT_PITCH__SHIFT)) << A6XX_RB_MRT_PITCH__SCALE;
+         const uint64_t base = reg64(regRbMrt(REG_A6XX_RB_MRT_BASE, t));
++        if (ubwcTarget) {
++            ubwcWritten_.insert(base);
++            stats_.ubwcDraws++;
++        }
+         if (pitch < width * bpp * d.samples) {
+             fault("RB_MRT_PITCH[" + which + "] " + text("%llu bytes for rows of %llu pixels", pitch, width) + text(" of %llu bytes", bpp) +
+                   text(" and %llu sample(s): shorter than a row", d.samples));
+diff --git a/src/render.cpp b/src/render.cpp
+index d68b5e9..b2f44c4 100644
+--- a/src/render.cpp
++++ b/src/render.cpp
+@@ -131,7 +131,9 @@ MrtWords mrtWords(const Texture& t, uint32_t level, uint32_t slice = 0) {
+     MrtWords m{};
+     // (a layer, a face or a depth plane: the slices are one 2D layout each, sliceBytes apart -- fd6_layout.c's layer_size)
+     const uint64_t base = t.levelAddress(level) + (slice != 0 ? uint64_t(slice) * t.sliceBytes() : 0);
+-    m.bufInfo = rbMrtBufInfo(colorFmt(f), t.compressed() ? TILE6_3 : TILE6_LINEAR, f.swap);
++    // (darwin-lisa: a compressed target WZYX: "the CCU ignores swap and always uses WZYX when tiled", fd6_pipe2swap, and the
++    // TP reads the layout WZYX too -- Texture::applyUbwc -- so the two agree whatever the format's own order)
++    m.bufInfo = rbMrtBufInfo(colorFmt(f), t.compressed() ? TILE6_3 : TILE6_LINEAR, t.compressed() ? WZYX : f.swap);
+     if (t.compressed()) {
+         // its flag buffer, as tu6_emit_mrt / fd6 emit_mrt write it (fd6_view.c's FLAG_BUFFER_PITCH: the pitch, the layer
+         // size over 4); RB_RENDER_CNTL.FLAG_MRTS turns its use on
+@@ -931,8 +933,18 @@ void fillStream(pm4::Stream& stream, const Texture& target, const ClearWords& c,
+     reg(stream, REG_A6XX_SP_2D_DST_FORMAT, sp2dDstFormat(colorFmt(f), f.element == kElemInt, f.element == kElemUint, f.srgb));
+     regs(stream, REG_A6XX_GRAS_2D_DST_TL, {regXY(0, 0), regXY(W - 1, H - 1)});
+     regs(stream, REG_A6XX_RB_2D_SRC_SOLID_C0, {c.value[0], c.value[1], c.value[2], c.value[3]});
+-    regs(stream, REG_A6XX_RB_2D_DST_INFO, {rb2dDstInfo(colorFmt(f), tile, f.swap, f.srgb), uint32_t(at), uint32_t(at >> 32), A6XX_RB_2D_DST_PITCH(uint32_t(L.pitch))});
+-    regs(stream, REG_A6XX_RB_2D_DST_FLAGS, {0, 0, 0});
++    if (target.compressed()) {
++        // (darwin-lisa) a compressed target filled compressed (r2d_dst over a UBWC view, tu_clear_blit.cc: the view's
++        // RB_2D_DST_INFO with TILE6_3, WZYX and FLAGS, and its flag buffer): a Clear writes a few bytes a block, not
++        // the whole image -- CoreAnimation clears its offscreen targets every frame
++        regs(stream, REG_A6XX_RB_2D_DST_INFO, {rb2dDstInfo(colorFmt(f), TILE6_3, WZYX, f.srgb) | A6XX_RB_2D_DST_INFO_FLAGS, uint32_t(at), uint32_t(at >> 32),
++                                                A6XX_RB_2D_DST_PITCH(uint32_t(L.pitch))});
++        regs(stream, REG_A6XX_RB_2D_DST_FLAGS, {uint32_t(target.flagAddress()), uint32_t(target.flagAddress() >> 32),
++                                                A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(target.flagPitch()) | A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(target.flagLayerSize() >> 2)});
++    } else {
++        regs(stream, REG_A6XX_RB_2D_DST_INFO, {rb2dDstInfo(colorFmt(f), tile, f.swap, f.srgb), uint32_t(at), uint32_t(at >> 32), A6XX_RB_2D_DST_PITCH(uint32_t(L.pitch))});
++        regs(stream, REG_A6XX_RB_2D_DST_FLAGS, {0, 0, 0});
++    }
+     command1(stream, CP_BLIT, cpBlit0(BLIT_OP_SCALE));
+ }
+ 
+@@ -1016,9 +1028,6 @@ bool checkTarget(const RenderPass& pass, std::string* why) {
+         const FormatInfo& f = t.info();
+         // (attachment 0's sentences are the ones a single target always had; a later one's name its index)
+         const std::string which = "colour attachment " + n(i), of = i == 0 ? std::string() : " of " + which, at = i == 0 ? std::string() : which + ": ";
+-        if (t.compressed() && (i == 0 ? pass.load : pass.more[i - 1].load) == LoadAction::kClear) {
+-            return refuse(why, at + "a Clear of a compressed texture: the 2D engine's fill writes linear rows (not served yet)");
+-        }
+         if ((t.usage() & kTextureUsageRenderTarget) == 0) {
+             return refuse(why, "the " + n(t.width()) + " x " + n(t.height()) + " " + f.name + " texture" + of +
+                                    " was made without render-target usage (MTLTextureUsageRenderTarget, 4); a draw needs it");
+@@ -2566,9 +2575,7 @@ bool encodeBlit(pm4::Stream& stream, const Texture& src, uint32_t srcLevel, Blit
+     if (sf.depth || df.depth) {
+         return refuse(why, std::string("a copy of a ") + (sf.depth ? sf.name : df.name) + " texture: a depth texture is tiled, the 2D copy is written for linear ones");
+     }
+-    if (src.compressed()) {
+-        return refuse(why, "a copy from a compressed texture: the 2D copy reads linear ones (not served yet)");
+-    }
++    // (darwin-lisa: a compressed source -- a render target drawn compressed -- is read compressed, r2d_src over its UBWC view)
+     if (dst.compressed() && (sf.fmt6 != df.fmt6 || dstLevel != 0 || linear)) {
+         return refuse(why, "a copy into a compressed texture: from its own format, pixel for pixel, into level 0 is what is served");
+     }
+@@ -2616,7 +2623,7 @@ bool encodeBlit(pm4::Stream& stream, const Texture& src, uint32_t srcLevel, Blit
+     // for 1, 2 and 4 bytes (a unorm8 copy is exact), 32-bit uint pairs and quads for 8 and 16. RGBA8Snorm and
+     // RGBA16Unorm, which Resident Evil 4 uploads, go that way; nothing about them is converted, so nothing can be wrong.
+     a6xx_format srcFmt = sf.fmt6, dstFmt = colorFmt(df);
+-    a3xx_color_swap srcSwap = sf.swap, dstSwap = df.swap;
++    a3xx_color_swap srcSwap = src.compressed() ? WZYX : sf.swap, dstSwap = df.swap;
+     bool dstInt = df.element == kElemInt, dstUint = df.element == kElemUint;
+     uint32_t ifmt;
+     switch (df.fmt6) {
+@@ -2657,11 +2664,21 @@ bool encodeBlit(pm4::Stream& stream, const Texture& src, uint32_t srcLevel, Blit
+                                             regXY(d.x + d.w - 1, d.y + d.h - 1)});
+     const uint64_t from = src.levelAddress(srcLevel), to = dst.levelAddress(dstLevel);
+     const a3xx_msaa_samples srcSamples = src.samples() == 4 ? MSAA_FOUR : src.samples() == 2 ? MSAA_TWO : MSAA_ONE;
+-    const uint32_t srcInfo = sp2dSrcInfo(srcFmt, srcSwap, srgb, linear && scaled) | A6XX_SP_PS_2D_SRC_INFO_SAMPLES(srcSamples) |
+-                             (srcSamples != MSAA_ONE && sf.element == kElemFloat ? A6XX_SP_PS_2D_SRC_INFO_SAMPLES_AVERAGE : 0u);
++    uint32_t srcInfo = sp2dSrcInfo(srcFmt, srcSwap, srgb, linear && scaled) | A6XX_SP_PS_2D_SRC_INFO_SAMPLES(srcSamples) |
++                       (srcSamples != MSAA_ONE && sf.element == kElemFloat ? A6XX_SP_PS_2D_SRC_INFO_SAMPLES_AVERAGE : 0u);
++    if (src.compressed()) {
++        // fdl6_view_init's SP_PS_2D_SRC_INFO of a UBWC view: TILE6_3 and FLAGS; the flag buffer as tu_cs_image_flag_ref gives it
++        srcInfo = (srcInfo & ~A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK) | field(TILE6_3, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__SHIFT, A6XX_SP_PS_2D_SRC_INFO_TILE_MODE__MASK) |
++                  A6XX_SP_PS_2D_SRC_INFO_FLAGS;
++    }
+     regs(stream, REG_A6XX_SP_PS_2D_SRC_INFO, {srcInfo, sp2dSrcSize(SL.width, SL.height), uint32_t(from),
+                                               uint32_t(from >> 32), sp2dSrcPitch(uint32_t(SL.pitch))});
+-    regs(stream, REG_A6XX_SP_PS_2D_SRC_FLAGS, {0, 0, 0});
++    if (src.compressed()) {
++        regs(stream, REG_A6XX_SP_PS_2D_SRC_FLAGS, {uint32_t(src.flagAddress()), uint32_t(src.flagAddress() >> 32),
++                                                   A6XX_RB_MRT_FLAG_BUFFER_PITCH_PITCH(src.flagPitch()) | A6XX_RB_MRT_FLAG_BUFFER_PITCH_ARRAY_PITCH(src.flagLayerSize() >> 2)});
++    } else {
++        regs(stream, REG_A6XX_SP_PS_2D_SRC_FLAGS, {0, 0, 0});
++    }
+     if (dst.compressed()) {
+         // into a UBWC layout (r2d_dst over a UBWC view, tu_clear_blit.cc; fdl6_view_init's RB_2D_DST_INFO): TILE6_3, WZYX
+         // (the layout's order, the source's swap reordering a BGRA texture's bytes into it), FLAGS, and its flag buffer
+diff --git a/src/texture.cpp b/src/texture.cpp
+index ec89503..f35cfc0 100644
+--- a/src/texture.cpp
++++ b/src/texture.cpp
+@@ -448,9 +448,14 @@ std::shared_ptr<Texture> Texture::make(Gpu& gpu, const TextureDesc& desc, std::s
+         // UBWC as Mesa lays it out for this chip (fdl6_layout with the tile mode and UBWC asked for, as turnip asks when
+         // an image is optimal): the flag buffer first, then the tiled data, at offsets fdl gives
+ #ifdef HAKIOS_METAL_MESA
+-        if (desc.type != TextureType::k2D || desc.mipLevels != 1 || desc.samples != 1 ||
+-            (desc.format != PixelFormat::kRGBA8Unorm && desc.format != PixelFormat::kBGRA8Unorm)) {
+-            refuse(why, std::string("a compressed ") + info->name + " texture: one level of 2D, single-sampled RGBA8Unorm or BGRA8Unorm is what is served");
++        // (darwin-lisa: a render target -- drawn into, cleared and sampled by the GPU alone, never staged -- may also be
++        // RGBA16Float, CoreAnimation's backdrop format; UBWC takes FMT6_16_16_16_16_FLOAT, fd6_resource.cc ok_ubwc_format)
++        const bool target = (desc.usage & kTextureUsageRenderTarget) != 0;
++        const bool rgba8 = desc.format == PixelFormat::kRGBA8Unorm || desc.format == PixelFormat::kBGRA8Unorm;
++        if (desc.type != TextureType::k2D || desc.mipLevels != 1 || desc.samples != 1 || (desc.usage & kTextureUsageWrite) != 0 ||
++            (!rgba8 && !(target && desc.format == PixelFormat::kRGBA16Float))) {
++            refuse(why, std::string("a compressed ") + info->name + " texture: one level of 2D, single-sampled RGBA8Unorm or BGRA8Unorm (or an RGBA16Float " +
++                            "render target), not written by a kernel, is what is served");
+             return nullptr;
+         }
+         // (rows for this processor only for one it does not draw into: a render target's truth is what the GPU drew,
+@@ -468,7 +473,8 @@ std::shared_ptr<Texture> Texture::make(Gpu& gpu, const TextureDesc& desc, std::s
+         fdl_layout l{};
+         l.ubwc = true;
+         l.tile_mode = a6xx::TILE6_3;
+-        if (dev == nullptr || !fdl6_layout(&l, dev, PIPE_FORMAT_R8G8B8A8_UNORM, 1, desc.width, desc.height, 1, 1, 1, false, false, true, nullptr) || !l.ubwc) {
++        const enum pipe_format layoutFormat = rgba8 ? PIPE_FORMAT_R8G8B8A8_UNORM : PIPE_FORMAT_R16G16B16A16_FLOAT;
++        if (dev == nullptr || !fdl6_layout(&l, dev, layoutFormat, 1, desc.width, desc.height, 1, 1, 1, false, false, true, nullptr) || !l.ubwc) {
+             refuse(why, "no UBWC layout for a " + n(desc.width) + " x " + n(desc.height) + " texture on this chip");
+             return nullptr;
+         }
+@@ -808,21 +814,7 @@ a6xx::TexConst Texture::sampledDescriptor() const {
+         d.dword[0] = (d.dword[0] & ~A6XX_TEX_CONST_0_SAMPLES__MASK) |
+                      A6XX_TEX_CONST_0_SAMPLES(desc_.samples == 4 ? MSAA_FOUR : MSAA_TWO);
+     }
+-    if (ubwc_) {
+-        // a UBWC texture (fdl6_view_init, fd6_view.c:251-306): TILE6_3, TILE_ALL (fdl6_layout sets it for UBWC on a
+-        // chip without has_ubwc_linear_mipmap_fallback), and the flag buffer's address, pitch, layer and blocks
+-        // (a tiled layout holds every 8-bit format in WZYX order: fd6_texture_swap gives WZYX for one that is not linear,
+-        // and the 2D copy that fills it from the linear rows reorders a BGRA texture's bytes so)
+-        d.dword[0] = (d.dword[0] & ~(A6XX_TEX_CONST_0_TILE_MODE__MASK | A6XX_TEX_CONST_0_SWAP__MASK)) | A6XX_TEX_CONST_0_TILE_MODE(TILE6_3) |
+-                     A6XX_TEX_CONST_0_SWAP(WZYX);
+-        d.dword[3] |= A6XX_TEX_CONST_3_TILE_ALL | A6XX_TEX_CONST_3_FLAG;
+-        const uint64_t flags = flagAddress();
+-        d.dword[7] = uint32_t(flags);
+-        d.dword[8] = uint32_t(flags >> 32);
+-        d.dword[9] |= A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(ubwcLayerSize_ >> 2);
+-        d.dword[10] |= A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(ubwcPitch_) | A6XX_TEX_CONST_10_FLAG_BUFFER_LOGW(ubwcLogW_) |
+-                       A6XX_TEX_CONST_10_FLAG_BUFFER_LOGH(ubwcLogH_);
+-    }
++    if (ubwc_) applyUbwc(d);
+     if (info_->depth) {
+         // the depth plane as the TP reads it (fdl6_view_init over a depth layout): TILE6_3, and TILE_ALL since every level
+         // of a depth layout is tiled (fd6_layout.c:157-164 "Linear D/S is not supported by HW"); FMT6_32_FLOAT, the depth
+@@ -847,10 +839,38 @@ a6xx::TexConst Texture::levelDescriptor(uint32_t level) const {
+     const TextureLevel L = this->level(level);
+     a6xx::TexConst d = texture2d(levelAddress(level), L.width, L.height, uint32_t(L.pitch), pitchAlign_ != ~0u ? pitchAlign_ : log2u(info_->bytesPerPixel),
+                                  info_->fmt6, info_->swap, info_->hasAlpha, info_->srgb);
++    // (darwin-lisa: a compressed render target read by a framebuffer fetch is read compressed, as it was drawn)
++    if (ubwc_) applyUbwc(d);
+     d.dword[0] = swizzleWord(d.dword[0]);
+     return d;
+ }
+ 
++// a UBWC texture's words (fdl6_view_init, fd6_view.c:251-306): TILE6_3, TILE_ALL (fdl6_layout sets it for UBWC on a chip
++// without has_ubwc_linear_mipmap_fallback), and the flag buffer's address, pitch, layer and blocks. (A tiled layout holds
++// every format in WZYX order: fd6_texture_swap gives WZYX for one that is not linear, the 2D copy that fills it from the
++// linear rows reorders a BGRA texture's bytes so, and the RB writes a tiled target WZYX whatever the swap: mrtWords.)
++void Texture::applyUbwc(a6xx::TexConst& d) const {
++    using namespace a6xx;
++    d.dword[0] = (d.dword[0] & ~(A6XX_TEX_CONST_0_TILE_MODE__MASK | A6XX_TEX_CONST_0_SWAP__MASK)) | A6XX_TEX_CONST_0_TILE_MODE(TILE6_3) |
++                 A6XX_TEX_CONST_0_SWAP(WZYX);
++    d.dword[3] |= A6XX_TEX_CONST_3_TILE_ALL | A6XX_TEX_CONST_3_FLAG;
++    const uint64_t flags = flagAddress();
++    d.dword[7] = uint32_t(flags);
++    d.dword[8] = uint32_t(flags >> 32);
++    d.dword[9] |= A6XX_TEX_CONST_9_FLAG_BUFFER_ARRAY_PITCH(ubwcLayerSize_ >> 2);
++    d.dword[10] |= A6XX_TEX_CONST_10_FLAG_BUFFER_PITCH(ubwcPitch_) | A6XX_TEX_CONST_10_FLAG_BUFFER_LOGW(ubwcLogW_) |
++                   A6XX_TEX_CONST_10_FLAG_BUFFER_LOGH(ubwcLogH_);
++}
++
++void Texture::copyUbwcFrom(const Texture& p) {
++    ubwc_ = p.ubwc_;
++    ubwcOffset_ = p.ubwcOffset_;
++    ubwcPitch_ = p.ubwcPitch_;
++    ubwcLayerSize_ = p.ubwcLayerSize_;
++    ubwcLogW_ = p.ubwcLogW_;
++    ubwcLogH_ = p.ubwcLogH_;
++}
++
+ uint32_t Texture::swizzleWord(uint32_t dword0) const {
+     using namespace a6xx;
+     if (swizzle_[0] == 2 && swizzle_[1] == 3 && swizzle_[2] == 4 && swizzle_[3] == 5) return dword0;
+@@ -879,6 +899,7 @@ std::shared_ptr<Texture> Texture::swizzled(const std::shared_ptr<Texture>& textu
+     std::shared_ptr<Texture> t = adopt(new Texture(p.buffer_, p.desc_, p.info_, p.pitch_, p.offset_, p.pitchAlign_, p.surface_));
+     t->chroma_ = p.chroma_;
+     t->layerPitch_ = p.layerPitch_;
++    t->copyUbwcFrom(p);   // (darwin-lisa: a swizzle of a compressed render target reads it compressed)
+     // over the parent's: a component naming red reads what the parent's red reads
+     for (int c = 0; c < 4; c++) t->swizzle_[c] = swizzle[c] < 2 ? swizzle[c] : p.swizzle_[swizzle[c] - 2];
+     return t;
+@@ -1073,6 +1094,13 @@ std::shared_ptr<Texture> Texture::view(const std::shared_ptr<Texture>& parent, P
+     if (parent->staging_ != nullptr) return view(parent->staging_, format, type, baseLevel, levels, baseSlice, slices, why);
+     const Texture& p = *parent;
+     const FormatInfo* info = formatInfo(format);
++    if (p.ubwc_) {
++        // (darwin-lisa) a compressed render target: the view that changes nothing is the texture; another format, type or
++        // range would read the tiles as something they are not
++        if (format == p.format() && type == p.type() && baseLevel == 0 && levels == 1 && baseSlice == 0 && slices == 1) return parent;
++        refuse(why, "a view in pixel format " + n(uint32_t(format)) + " of a compressed " + p.info().name + " render target: only the whole of it, as it is, is served");
++        return nullptr;
++    }
+     const bool layered = p.type() == TextureType::k2DArray || p.type() == TextureType::kCube || p.type() == TextureType::kCubeArray;
+     const uint32_t parentSlices = layered ? p.depth() : 1;
+     const std::string asked = "a view in pixel format " + n(uint32_t(format)) + ", type " + n(uint32_t(type)) + ", levels " + n(baseLevel) + "+" + n(levels) +
+diff --git a/tests/render_test.cpp b/tests/render_test.cpp
+index 6c2194e..7a20b07 100644
+--- a/tests/render_test.cpp
++++ b/tests/render_test.cpp
+@@ -1572,7 +1572,7 @@ TEST(the_fake_refuses_a_draw_whose_target_does_not_hold_together) {
+     {
+         Twin w;
+         w.at(regRbMrt(REG_A6XX_RB_MRT_BUF_INFO, 0)) = rbMrtBufInfo(FMT6_8_8_8_8_UNORM, a6xx_tile_mode(3), WZYX);   // TILE6_3 (a6xx.xml.h:60), which the enum here does not name
+-        CHECK(has(w.fault(), "RB_MRT_BUF_INFO[0]: tile mode 3: only linear targets are what this GPU model runs"));
++        CHECK(has(w.fault(), "RB_MRT_BUF_INFO[0]: tile mode 3: only linear targets, or UBWC ones"));
+     }
+     {
+         Twin w;
+@@ -3014,6 +3014,124 @@ TEST(a_compressed_texture_is_copied_in_before_a_draw_samples_it_after_its_rows_c
+     if (r.fake->stats().faults) std::printf("       %s\n", r.fake->stats().lastFault.c_str());
+ }
+ 
++// darwin-lisa: a compressed render target (CoreAnimation's offscreen targets with metal_ubwc_rt=1): cleared by the 2D
++// engine into its UBWC layout, drawn into through RB_MRT with its flag buffer (TILE6_3, WZYX: the CCU writes a tiled
++// target in that order whatever the format's own), sampled and read back by a framebuffer fetch through its UBWC
++// descriptor, and copied out by the 2D engine reading it compressed. Its rows are the GPU's alone: replace and read
++// refuse, a view that changes nothing is the texture itself, and a swizzled view still reads it compressed. RGBA16Float
++// (the backdrops' format) is served for a render target too.
++TEST(a_compressed_render_target_is_cleared_drawn_sampled_and_copied_out_compressed) {
++    using namespace a6xx;
++    for (PixelFormat format : {PixelFormat::kBGRA8Unorm, PixelFormat::kRGBA16Float}) {
++        Rig r;
++        TextureDesc cd;
++        cd.format = format;
++        cd.width = 256;
++        cd.height = 256;
++        cd.usage = kTextureUsageRead | kTextureUsageRenderTarget;
++        cd.compressed = true;
++        std::string why;
++        auto ct = Texture::make(*r.gpu, cd, &why);
++        if (ct == nullptr && why.find("this build has none") != std::string::npos) {
++            std::printf("       (no Mesa in this build: %s; the compressed render target did not run)\n", why.c_str());
++            return;
++        }
++        CHECK(ct != nullptr);
++        if (ct == nullptr) { std::printf("       %s\n", why.c_str()); return; }
++        CHECK(ct->compressed() && ct->staging() == nullptr && ct->contents() == nullptr);
++        std::vector<uint8_t> rows(16 * 16 * 8);
++        CHECK(!ct->replace(0, 0, 16, 16, rows.data(), 16 * 8, &why));
++        CHECK(!ct->read(0, 0, 16, 16, rows.data(), 16 * 8, &why));
++        CHECK(Texture::view(ct, format, TextureType::k2D, 0, 1, 0, 1, &why) == ct);
++        CHECK(Texture::view(ct, PixelFormat::kRGBA8Unorm, TextureType::k2D, 0, 1, 0, 1, &why) == nullptr || format == PixelFormat::kRGBA8Unorm);
++        const uint8_t swz[4] = {5, 4, 3, 2};
++        auto sw = Texture::swizzled(ct, swz, &why);
++        CHECK(sw != nullptr && sw->compressed() && (sw->sampledDescriptor().dword[3] & A6XX_TEX_CONST_3_FLAG) != 0);
++        CHECK((ct->levelDescriptor(0).dword[3] & A6XX_TEX_CONST_3_FLAG) != 0);
++        CHECK_EQ((ct->levelDescriptor(0).dword[0] & A6XX_TEX_CONST_0_SWAP__MASK) >> A6XX_TEX_CONST_0_SWAP__SHIFT, uint32_t(WZYX));
++        // a Clear and a draw into it, one pass
++        const uint32_t fillsBefore = r.fake->stats().ubwcFills, drawsBefore = r.fake->stats().ubwcDraws;
++        {
++            auto cb = r.queue->commandBuffer();
++            RenderPass p = clearPass(ct.get(), 0.25, 0.5, 0.75, 1.0);
++            CHECK(cb->draw(flatProgram(), p, wholeDraw(3, 256, 256), Bindings{}, Bindings{}));
++            cb->commit();
++            cb->waitUntilCompleted();
++            CHECK(cb->status() == CommandBuffer::kCompleted);
++        }
++        CHECK_EQ(r.fake->stats().ubwcFills - fillsBefore, 1u);
++        CHECK_EQ(r.fake->stats().ubwcDraws - drawsBefore, 1u);
++        CHECK_EQ(r.fake->stats().lastDraw.mrtTileMode, uint32_t(TILE6_3));
++        CHECK_EQ(r.fake->stats().lastDraw.mrtSwap, uint32_t(WZYX));
++        // a pass that is only a Clear
++        {
++            auto cb = r.queue->commandBuffer();
++            CHECK(cb->clear(clearPass(ct.get(), 0, 0, 0, 0)));
++            cb->commit();
++            cb->waitUntilCompleted();
++            CHECK(cb->status() == CommandBuffer::kCompleted);
++        }
++        CHECK_EQ(r.fake->stats().ubwcFills - fillsBefore, 2u);
++        // sampled into a linear target, and read back by a framebuffer fetch as its own target
++        auto out = target(r, 256, 256, kTextureUsageRenderTarget | kTextureUsageRead, format);
++        {
++            Sampler smp = nearestClamp();
++            RenderPass p;
++            p.color0 = out.get();
++            Bindings fsb;
++            fsb.textures = {ct.get()};
++            fsb.samplers = {&smp};
++            auto cb = r.queue->commandBuffer();
++            CHECK(cb->draw(texProgram(), p, wholeDraw(6, 256, 256), Bindings{}, fsb));
++            RenderPass q;
++            q.color0 = ct.get();
++            const Program fb{kernels::tri_flat_vs_air, kernels::tri_fb_fs_air, Linkage{}, "tri_fb"};
++            CHECK(cb->draw(fb, q, wholeDraw(6, 256, 256), Bindings{}, Bindings{}));
++            cb->commit();
++            cb->waitUntilCompleted();
++            CHECK(cb->status() == CommandBuffer::kCompleted);
++        }
++        // copied out into a linear texture by the 2D engine, and into another compressed one
++        const uint32_t readsBefore = r.fake->stats().ubwcReads, copiesBefore = r.fake->stats().ubwcCopies;
++        auto ct2 = Texture::make(*r.gpu, cd, &why);
++        CHECK(ct2 != nullptr);
++        {
++            auto cb = r.queue->commandBuffer();
++            CHECK(cb->blit(*ct, 0, render::BlitRect{0, 0, 256, 256}, *out, 0, render::BlitRect{0, 0, 256, 256}, false));
++            CHECK(ct2 != nullptr && cb->blit(*ct, 0, render::BlitRect{0, 0, 256, 256}, *ct2, 0, render::BlitRect{0, 0, 256, 256}, false));
++            cb->commit();
++            cb->waitUntilCompleted();
++            CHECK(cb->status() == CommandBuffer::kCompleted);
++        }
++        CHECK_EQ(r.fake->stats().ubwcReads - readsBefore, 1u);
++        CHECK_EQ(r.fake->stats().ubwcCopies - copiesBefore, 1u);
++        CHECK_EQ(r.fake->stats().faults, 0u);
++        if (r.fake->stats().faults) std::printf("       %s\n", r.fake->stats().lastFault.c_str());
++    }
++}
++
++// darwin-lisa: what a compressed texture may be: RGBA16Float only as a render target (its staged copy-in is RGBA8's
++// alone), never one a kernel writes, and never more than one level
++TEST(a_compressed_texture_is_refused_where_its_layout_is_not_served) {
++    Rig r;
++    std::string why;
++    TextureDesc cd;
++    cd.width = 256;
++    cd.height = 256;
++    cd.compressed = true;
++    cd.format = PixelFormat::kRGBA16Float;
++    cd.usage = kTextureUsageRead;
++    auto a = Texture::make(*r.gpu, cd, &why);
++    if (a == nullptr && why.find("this build has none") != std::string::npos) return;
++    CHECK(a == nullptr && why.find("render target") != std::string::npos);
++    cd.format = PixelFormat::kBGRA8Unorm;
++    cd.usage = kTextureUsageRead | kTextureUsageWrite | kTextureUsageRenderTarget;
++    CHECK(Texture::make(*r.gpu, cd, &why) == nullptr);
++    cd.usage = kTextureUsageRead | kTextureUsageRenderTarget;
++    cd.mipLevels = 2;
++    CHECK(Texture::make(*r.gpu, cd, &why) == nullptr);
++}
++
+ // The table's texture and sampler parts are written as far as the command processor loads them (SP_FS_TEX_COUNT
+ // descriptors, NSAMP samplers) and no further: on the phone the table is write-combined memory, and the sixteen slots of
+ // each stage written in full, zeroed before that, were 3.8 KB a draw for a draw that loads one descriptor. What Encoded

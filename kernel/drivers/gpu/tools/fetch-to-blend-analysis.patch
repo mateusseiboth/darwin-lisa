@@ -1,0 +1,629 @@
+Analysis only, NOT applied by build-hakios-metal.sh (darwin-lisa session 9, 2026-11-12): does CoreAnimation's
+framebuffer fetch ever only blend? Applies over the hakios-metal-*.patch series in userland/ (after
+hakios-metal-x-ubwc-rt.patch).
+
+compiler.cpp fetchToBlend: between ir3_finalize_nir and lowerFbRead, colour 0 of a fragment stage is followed back
+through the NIR from its store; when every channel is A + B * dst.same-channel (A and B free of the destination,
+dst the framebuffer fetch of colour 0) the stage is rewritten to output A, and B as the second source when it is not
+the 1 - A.a of source-over, and Program::fetchBlend tells the draw to blend ONE, ONE_MINUS_SRC_ALPHA or ONE, SRC1_*.
+compileStage takes it as FETCH_TO_BLEND; tools/sweep.cpp -b compiles one function so, and HM_FETCHBLEND_DUMP=1 prints
+the decision and the NIR.
+
+Result over QuartzCore 26's default.metallib (arm64 slice), the 46 constant sets of fixed_frag_lph_cph found in the
+logs and every *_lph fragment function: none converts. The draws that blend plainly (fc_blend_function 29=62) do not
+fetch at all (fbRead 0: CoreAnimation gives them the pipeline's blend); the ones that fetch unpremultiply the
+destination (dst.rgb / max(dst.a, 1e-4)), run a 4x4 colour matrix over it and clamp it (29=43, 29=50), read the clip's
+SDF attachment (path_blit, 55=2), branch on the destination (p3_clamp, edr_clamp, color_edr,
+alpha_linear_premultiply) or square it (luma_boost, edr_scale). So no fixed-function blend can take their place, and
+a copy of the target read as a texture costs a full-screen copy more than the fetch it replaces.
+
+Use: apply this over the series in a copy of hakios-metal, `make MESA=1 out/host-mesa/sweep`, then
+`HM_FETCHBLEND_DUMP=1 out/host-mesa/sweep -b -f fixed_frag_lph_cph -c 5=2 -c 29=43 ... qc.metallib` (qc.metallib: the
+first slice of QuartzCore.framework/default.metallib, bytes 48..1551232).
+
+diff -ru a/include/hakios-metal/compiler.hpp b/include/hakios-metal/compiler.hpp
+--- a/include/hakios-metal/compiler.hpp	2026-11-12 13:53:55.456474010 -0400
++++ b/include/hakios-metal/compiler.hpp	2026-11-12 13:53:55.457535499 -0400
+@@ -88,6 +88,7 @@
+     std::vector<std::pair<uint32_t, Sampler>> inlineSamplers;   // as CompiledKernel's
+     uint32_t iboBase = 0;                    // compileStage's IBO_BASE, as it took effect (0 for a stage with no device buffers)
+     bool writesMemory = true;                // the NIR stores to or does atomics on a device buffer (or global memory); false only when it was looked at and does not
++    uint8_t fetchBlend = 0;                  // darwin-lisa: compileStage's FETCH_TO_BLEND took the fetch out (render.hpp: Program::fetchBlend)
+     std::string name;
+     std::string listing;
+ };
+@@ -130,8 +131,11 @@
+     uint32_t binding = 0;
+     std::vector<uint8_t> bytes;
+ };
++// FETCH_TO_BLEND (darwin-lisa): the pipeline does not blend colour attachment 0, so a fragment stage whose colour 0 is
++// A + B * its own target read through framebuffer fetch may hand A (and B) to the blend unit instead (compiler.cpp:
++// fetchToBlend; the stage's fetchBlend then says how, and the draw blends so)
+ std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, std::string* why, const FunctionConstants& constants = {},
+-                                           uint32_t iboBase = 0, const KnownBuffer* known = nullptr);
++                                           uint32_t iboBase = 0, const KnownBuffer* known = nullptr, bool fetchToBlend = false);
+ // compileStage's choice for a stage that spilled with ir3's preamble (WITH) and was compiled again without it (WITHOUT):
+ // the one that spills less, then the one with fewer registers; WITH on a tie. (CoreAnimation's fixed_frag_lph_cpf: 48
+ // registers and 512 bytes of spills with the preamble, 21 and none without; its draws 6.6 ms each so, 2.6 without.)
+diff -ru a/include/hakios-metal/render.hpp b/include/hakios-metal/render.hpp
+--- a/include/hakios-metal/render.hpp	2026-11-12 13:53:55.460880141 -0400
++++ b/include/hakios-metal/render.hpp	2026-11-12 13:53:55.461949285 -0400
+@@ -248,8 +248,15 @@
+     // found in the NIR: a stage that only reads them may be replayed tile by tile (gmemDrawOk). A program not made by
+     // linkProgram says all: unknown is taken as writing.
+     uint8_t ssboWrites = 3;
++    // darwin-lisa: the FS's framebuffer fetch was rewritten to the blend unit (compiler.cpp: fetchToBlend), and
++    // colour attachment 0 blends as this says, whatever `blend` holds but its write mask (render::effectiveBlend)
++    uint8_t fetchBlend = 0;   // kFetchBlendNone, kFetchBlendOver or kFetchBlendDual
+ };
+ 
++constexpr uint8_t kFetchBlendNone = 0;   // the stage blends itself, or does not read its target
++constexpr uint8_t kFetchBlendOver = 1;   // ONE, ONE_MINUS_SRC_ALPHA on RGB and alpha (premultiplied source-over)
++constexpr uint8_t kFetchBlendDual = 2;   // ONE, SRC1_COLOR on RGB, ONE, SRC1_ALPHA on alpha ([[color(0), index(1)]])
++
+ namespace render {
+ 
+ // VS to FS as ir3_link_shaders does it: every FS input with compmask && bary and inloc < totalIn takes the VS output of
+diff -ru a/src/compiler.cpp b/src/compiler.cpp
+--- a/src/compiler.cpp	2026-11-12 13:53:55.451850798 -0400
++++ b/src/compiler.cpp	2026-11-12 13:53:55.452873414 -0400
+@@ -6,7 +6,9 @@
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <map>
+ #include <mutex>
++#include <set>
+ 
+ #ifdef HAKIOS_METAL_MESA
+ // Mesa's headers carry their own C++ guards (and templates behind them: no extern "C" around these) and are not clean
+@@ -32,7 +34,7 @@
+     return nullptr;
+ }
+ 
+-std::unique_ptr<CompiledStage> compileStage(const void*, size_t, std::string* why, const FunctionConstants&, uint32_t, const KnownBuffer*) {
++std::unique_ptr<CompiledStage> compileStage(const void*, size_t, std::string* why, const FunctionConstants&, uint32_t, const KnownBuffer*, bool) {
+     *why = "no compiler in this build: it is linked in with MESA_BUILD= (tools/compiler.mk), and was not";
+     return nullptr;
+ }
+@@ -235,6 +237,8 @@
+     ir3_shader_variant* v = nullptr;
+     uint32_t* bin = nullptr;              // the assembled binary (ralloc'd under the variant)
+     uint8_t fbTargets[kMaxTextureSlots] = {};   // lowerFbRead's slots: n + 1 where colour attachment n is read
++    bool fetchToBlend = false;                  // darwin-lisa: try fetchToBlend (compileStage's FETCH_TO_BLEND)
++    uint8_t fetchBlend = 0;                     // ...and what it did
+     Translation() = default;
+     Translation(const Translation&) = delete;
+     Translation& operator=(const Translation&) = delete;
+@@ -726,6 +730,341 @@
+     return false;
+ }
+ 
++// darwin-lisa: a framebuffer fetch that only blends, handed to the blend unit (fetchToBlend below).
++//
++// CoreAnimation's uber shader reads its target on every draw (fc_framebuffer_fetch) and blends in the shader, with
++// the pipeline's blending off. In sysmem the fetch costs a full-screen draw twice what the blend unit costs for the
++// same picture: the probe's "full-screen cost, 4 draws" is 3.7 ms with no fetch and 7.1 ms with it (1.78 ms a draw),
++// and "GMEM cost: 8 full-screen blended draws" 7.3 ms with the blend unit (0.91 ms a draw): the RB reads the
++// destination through the colour cache, the fetch through the texture unit after a CCU flush. The heavy passes of the
++// Settings scroll and the cover sheet are 8-9 such draws at ~1.9 ms each.
++//
++// When colour 0 is, channel by channel, A + B * dst (A and B free of the destination, dst the same channel of the
++// target), the stage is rewritten to hand A over as its colour and the blend unit does the rest: with B the same
++// value 1 - A.a on every channel, the blend ONE, ONE_MINUS_SRC_ALPHA (source-over, premultiplied); else B goes out as
++// the second source and the blend is ONE, SRC1_COLOR / ONE, SRC1_ALPHA (dual source). A and B are built from the
++// shader's own expression with dst set to 0 and to its derivative, so nothing is approximated but the rounding of
++// the last multiply-add, which the blend unit now does instead of the shader.
++//
++// Refused (the stage is left as it was): a read of another target, a destination value that reaches anything but
++// colour 0 (a branch, a discard, a memory store, a texture coordinate, another output), a product or a min/max of
++// two destination terms, a channel mixed into another (non-separable blend modes), colour 0 stored more than once,
++// and for the dual-source form any other colour output.
++namespace fetchblend {
++
++struct Lin {
++    uint8_t kind = 0;   // 0 free of the destination, 1 a + b * dst.ch, 2 anything else
++    uint8_t ch = 0;
++};
++struct Built {
++    nir_def* a = nullptr;   // nullptr: 0
++    nir_def* b = nullptr;
++};
++using Key = std::pair<nir_def*, unsigned>;
++
++struct Ctx {
++    std::set<nir_def*> fetches;   // load_output fbfetch of colour 0
++    std::set<nir_def*> tainted;   // every def a fetch reaches
++    std::map<Key, Lin> lin;
++    std::map<Key, Built> built;
++    nir_builder* b = nullptr;
++};
++
++Lin merge(Lin x, Lin y) {
++    if (x.kind == 2 || y.kind == 2) return {2, 0};
++    if (x.kind == 0) return y;
++    if (y.kind == 0) return x;
++    return x.ch == y.ch ? x : Lin{2, 0};
++}
++
++bool isConversion(nir_op op) {
++    return op == nir_op_f2f16 || op == nir_op_f2f32 || op == nir_op_f2fmp || op == nir_op_f2f16_rtne || op == nir_op_f2f16_rtz;
++}
++
++Lin analyze(Ctx& c, nir_scalar s) {
++    s = nir_scalar_chase_movs(s);
++    if (c.fetches.count(s.def) != 0) return {1, uint8_t(s.comp)};
++    if (c.tainted.count(s.def) == 0) return {0, 0};
++    const Key k{s.def, s.comp};
++    auto it = c.lin.find(k);
++    if (it != c.lin.end()) return it->second;
++    Lin r{2, 0};
++    if (nir_scalar_is_alu(s)) {
++        auto src = [&](unsigned i) { return analyze(c, nir_scalar_chase_alu_src(s, i)); };
++        const nir_op op = nir_scalar_alu_op(s);
++        switch (op) {
++        case nir_op_fadd:
++        case nir_op_fsub:
++            r = merge(src(0), src(1));
++            break;
++        case nir_op_fneg:
++            r = src(0);
++            break;
++        case nir_op_fmul: {
++            const Lin x = src(0), y = src(1);
++            r = x.kind == 0 || y.kind == 0 ? merge(x, y) : Lin{2, 0};
++            break;
++        }
++        case nir_op_ffma: {
++            const Lin x = src(0), y = src(1);
++            r = merge(x.kind == 0 || y.kind == 0 ? merge(x, y) : Lin{2, 0}, src(2));
++            break;
++        }
++        case nir_op_bcsel:
++            r = src(0).kind == 0 ? merge(src(1), src(2)) : Lin{2, 0};
++            break;
++        default:
++            if (isConversion(op)) r = src(0);
++            break;
++        }
++    }
++    c.lin[k] = r;
++    return r;
++}
++
++nir_def* scalarOf(Ctx& c, nir_scalar s) { return nir_channel(c.b, s.def, s.comp); }
++nir_def* zero(Ctx& c, unsigned bits) { return nir_imm_floatN_t(c.b, 0.0, bits); }
++nir_def* add(Ctx& c, nir_def* x, nir_def* y) { return x == nullptr ? y : y == nullptr ? x : nir_fadd(c.b, x, y); }
++nir_def* sub(Ctx& c, nir_def* x, nir_def* y) { return y == nullptr ? x : x == nullptr ? nir_fneg(c.b, y) : nir_fsub(c.b, x, y); }
++bool isConstOf(nir_def* d, double v) {
++    if (d == nullptr) return false;
++    const nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(d, 0));
++    return nir_scalar_is_const(s) && nir_scalar_as_float(s) == v;
++}
++nir_def* mul(Ctx& c, nir_def* f, nir_def* y) { return y == nullptr ? nullptr : isConstOf(y, 1.0) ? f : nir_fmul(c.b, f, y); }
++nir_def* fma(Ctx& c, nir_def* f, nir_def* y, nir_def* z) { return y == nullptr ? z : add(c, mul(c, f, y), z); }
++// a conversion of a built value; of the constant 1 (the destination's own B), the constant in the new size
++nir_def* conv(Ctx& c, nir_op op, nir_def* x) {
++    if (x == nullptr) return nullptr;
++    const nir_scalar s = nir_scalar_chase_movs(nir_get_scalar(x, 0));
++    if (nir_scalar_is_const(s)) return nir_imm_floatN_t(c.b, nir_scalar_as_float(s), nir_alu_type_get_type_size(nir_op_infos[op].output_type) ? nir_alu_type_get_type_size(nir_op_infos[op].output_type) : 16);
++    return nir_build_alu1(c.b, op, x);
++}
++
++Built build(Ctx& c, nir_scalar s) {
++    s = nir_scalar_chase_movs(s);
++    if (c.fetches.count(s.def) != 0) return {nullptr, nir_imm_floatN_t(c.b, 1.0, s.def->bit_size)};
++    if (analyze(c, s).kind == 0) return {scalarOf(c, s), nullptr};
++    const Key k{s.def, s.comp};
++    auto it = c.built.find(k);
++    if (it != c.built.end()) return it->second;
++    auto at = [&](unsigned i) { return nir_scalar_chase_alu_src(s, i); };
++    const nir_op op = nir_scalar_alu_op(s);
++    Built r;
++    switch (op) {
++    case nir_op_fadd: {
++        const Built x = build(c, at(0)), y = build(c, at(1));
++        r = {add(c, x.a, y.a), add(c, x.b, y.b)};
++        break;
++    }
++    case nir_op_fsub: {
++        const Built x = build(c, at(0)), y = build(c, at(1));
++        r = {sub(c, x.a, y.a), sub(c, x.b, y.b)};
++        break;
++    }
++    case nir_op_fneg: {
++        const Built x = build(c, at(0));
++        r = {x.a ? nir_fneg(c.b, x.a) : nullptr, x.b ? nir_fneg(c.b, x.b) : nullptr};
++        break;
++    }
++    case nir_op_fmul:
++    case nir_op_ffma: {
++        nir_scalar f = at(0), y = at(1);
++        if (analyze(c, f).kind != 0) std::swap(f, y);
++        const Built yb = build(c, y);
++        nir_def* fd = scalarOf(c, f);
++        if (op == nir_op_fmul) {
++            r = {mul(c, fd, yb.a), mul(c, fd, yb.b)};
++        } else {
++            const Built z = build(c, at(2));
++            r = {fma(c, fd, yb.a, z.a), fma(c, fd, yb.b, z.b)};
++        }
++        break;
++    }
++    case nir_op_bcsel: {
++        nir_def* cond = scalarOf(c, at(0));
++        const Built x = build(c, at(1)), y = build(c, at(2));
++        const unsigned bits = s.def->bit_size;
++        auto sel = [&](nir_def* p, nir_def* q) -> nir_def* {
++            if (p == nullptr && q == nullptr) return nullptr;
++            return nir_bcsel(c.b, cond, p ? p : zero(c, bits), q ? q : zero(c, bits));
++        };
++        r = {sel(x.a, y.a), sel(x.b, y.b)};
++        break;
++    }
++    default: {   // a conversion (analyze let nothing else through)
++        const Built x = build(c, at(0));
++        r = {conv(c, op, x.a), conv(c, op, x.b)};
++        break;
++    }
++    }
++    c.built[k] = r;
++    return r;
++}
++
++bool isColor0(nir_variable* v) { return v != nullptr && v->data.mode == nir_var_shader_out && v->data.location == FRAG_RESULT_DATA0 && v->data.index == 0; }
++
++// B's channel is 1 - A.a, as the shader wrote it: fadd(1, -x), fsub(1, x) or ffma(x, -1, 1), x being A.a
++bool isOneMinus(nir_scalar bs, nir_scalar alpha) {
++    bs = nir_scalar_chase_movs(bs);
++    alpha = nir_scalar_chase_movs(alpha);
++    auto same = [&](nir_scalar x) { x = nir_scalar_chase_movs(x); return x.def == alpha.def && x.comp == alpha.comp; };
++    auto isConst = [](nir_scalar x, double v) { x = nir_scalar_chase_movs(x); return nir_scalar_is_const(x) && nir_scalar_as_float(x) == v; };
++    auto negOf = [&](nir_scalar x) {
++        x = nir_scalar_chase_movs(x);
++        return nir_scalar_is_alu(x) && nir_scalar_alu_op(x) == nir_op_fneg && same(nir_scalar_chase_alu_src(x, 0));
++    };
++    if (!nir_scalar_is_alu(bs)) return false;
++    auto at = [&](unsigned i) { return nir_scalar_chase_alu_src(bs, i); };
++    switch (nir_scalar_alu_op(bs)) {
++    case nir_op_fadd:
++        return (isConst(at(0), 1.0) && negOf(at(1))) || (isConst(at(1), 1.0) && negOf(at(0)));
++    case nir_op_fsub:
++        return isConst(at(0), 1.0) && same(at(1));
++    case nir_op_ffma:
++        return isConst(at(2), 1.0) && ((same(at(0)) && isConst(at(1), -1.0)) || (same(at(1)) && isConst(at(0), -1.0)));
++    default:
++        return false;
++    }
++}
++
++}  // namespace fetchblend
++
++// The rewrite itself, between ir3_finalize_nir (the constants folded, the outputs one store each) and lowerFbRead:
++// kFetchBlendNone when the stage is left alone, else the blend the draw must use (render.hpp: Program::fetchBlend).
++// HM_FETCHBLEND_DUMP=1 (host) prints the decision and the NIR before and after.
++uint8_t fetchToBlend(nir_shader* nir) {
++    using namespace fetchblend;
++    if (nir->info.stage != MESA_SHADER_FRAGMENT || !nir->info.fs.uses_fbfetch_output) return kFetchBlendNone;
++    const bool dump = getenv("HM_FETCHBLEND_DUMP") != nullptr;
++    auto no = [&](const char* why) {
++        if (dump) fprintf(stderr, "fetchblend: %s: left as it is: %s\n", nir->info.name ? nir->info.name : "?", why);
++        return kFetchBlendNone;
++    };
++    nir_function_impl* impl = nir_shader_get_entrypoint(nir);
++    if (impl == nullptr) return no("no entry point");
++    Ctx c;
++    std::vector<nir_intrinsic_instr*> otherOutputs;
++    nir_foreach_block(block, impl) {
++        nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic) continue;
++            nir_intrinsic_instr* in = nir_instr_as_intrinsic(instr);
++            if (in->intrinsic == nir_intrinsic_load_output) {
++                const nir_io_semantics io = nir_intrinsic_io_semantics(in);
++                if (!io.fb_fetch_output) continue;
++                if (io.location != FRAG_RESULT_DATA0 || io.dual_source_blend_index != 0) return no("it reads a target other than colour 0");
++                c.fetches.insert(&in->def);
++            }
++        }
++    }
++    if (c.fetches.empty()) return no("no read of colour 0");
++    // every def a fetch reaches, and where the values end: colour 0's one store, nothing else
++    nir_intrinsic_instr* store = nullptr;
++    std::vector<nir_def*> work(c.fetches.begin(), c.fetches.end());
++    c.tainted.insert(c.fetches.begin(), c.fetches.end());
++    while (!work.empty()) {
++        nir_def* d = work.back();
++        work.pop_back();
++        nir_foreach_use_including_if(use, d) {
++            if (nir_src_is_if(use)) return no("a branch reads the destination");
++            nir_instr* user = nir_src_parent_instr(use);
++            if (user->type == nir_instr_type_intrinsic) {
++                nir_intrinsic_instr* in = nir_instr_as_intrinsic(user);
++                if (in->intrinsic == nir_intrinsic_store_deref && use == &in->src[1] && isColor0(nir_intrinsic_get_var(in, 0))) {
++                    if (store != nullptr && store != in) return no("colour 0 is stored more than once");
++                    store = in;
++                    continue;
++                }
++                if (!nir_intrinsic_infos[in->intrinsic].has_dest) return no("the destination reaches a store or a discard");
++            }
++            nir_def* out = nir_instr_def(user);
++            if (out == nullptr) return no("the destination reaches an instruction with no value");
++            if (c.tainted.insert(out).second) work.push_back(out);
++        }
++    }
++    if (store == nullptr) return no("colour 0 is not stored from the destination");
++    nir_variable* color0 = nir_intrinsic_get_var(store, 0);
++    nir_def* value = store->src[1].ssa;
++    const unsigned wrmask = nir_intrinsic_write_mask(store);
++    const unsigned comps = value->num_components;
++    for (unsigned ch = 0; ch < comps; ch++) {
++        if ((wrmask & (1u << ch)) == 0) continue;
++        const Lin l = analyze(c, nir_get_scalar(value, ch));
++        if (l.kind == 2) {
++            if (dump) nir_print_shader(nir, stderr);
++            return no("colour 0 is not A + B * destination");
++        }
++        if (l.kind == 1 && l.ch != ch) return no("a channel of colour 0 reads another channel of the destination");
++    }
++    // the other colour outputs, which the dual-source form cannot keep
++    bool others = false;
++    nir_foreach_shader_out_variable(v, nir) {
++        if (v->data.location >= FRAG_RESULT_DATA0 && !isColor0(v)) others = true;
++    }
++    if (dump) {
++        fprintf(stderr, "fetchblend: %s: the NIR before:\n", nir->info.name ? nir->info.name : "?");
++        nir_print_shader(nir, stderr);
++    }
++    nir_builder b = nir_builder_at(nir_before_instr(&store->instr));
++    c.b = &b;
++    Built ch[4];
++    for (unsigned i = 0; i < comps && i < 4; i++) ch[i] = build(c, nir_get_scalar(value, i));
++    // source-over: every channel's B the one value 1 - A.a
++    bool over = comps == 4 && ch[3].a != nullptr;
++    auto sameScalar = [](nir_def* x, nir_def* y) {
++        const nir_scalar p = nir_scalar_chase_movs(nir_get_scalar(x, 0)), q = nir_scalar_chase_movs(nir_get_scalar(y, 0));
++        return p.def == q.def && p.comp == q.comp;
++    };
++    for (unsigned i = 0; over && i < 4; i++) {
++        over = ch[i].b != nullptr && sameScalar(ch[i].b, ch[0].b);
++    }
++    if (over) {
++        // (B was built from the shader's own 1 - a, a free def: scalarOf gives the same channel def for each, so the
++        // comparison is on what it was built from)
++        over = isOneMinus(nir_get_scalar(ch[0].b, 0), nir_get_scalar(ch[3].a, 0));
++    }
++    if (!over && others) {
++        return no("the blend needs a second source and the stage writes other colour outputs");
++    }
++    const unsigned bits = value->bit_size;
++    nir_def* av[4];
++    nir_def* bv[4];
++    for (unsigned i = 0; i < comps; i++) {
++        av[i] = ch[i].a != nullptr ? ch[i].a : zero(c, bits);
++        bv[i] = ch[i].b != nullptr ? ch[i].b : zero(c, bits);
++    }
++    nir_store_deref(&b, nir_build_deref_var(&b, color0), nir_vec(&b, av, comps), wrmask);
++    if (!over) {
++        nir_variable* second = nir_variable_clone(color0, nir);
++        second->name = ralloc_strdup(second, "color0_src1");
++        second->data.index = 1;
++        nir_shader_add_variable(nir, second);
++        nir_store_deref(&b, nir_build_deref_var(&b, second), nir_vec(&b, bv, comps), wrmask);
++        nir->info.fs.color_is_dual_source = true;
++    }
++    nir_instr_remove(&store->instr);
++    nir_opt_dce(nir);
++    nir_opt_cse(nir);
++    bool left = false;
++    nir_foreach_block(block, impl) {
++        nir_foreach_instr(instr, block) {
++            if (instr->type == nir_instr_type_intrinsic && nir_instr_as_intrinsic(instr)->intrinsic == nir_intrinsic_load_output) left = true;
++        }
++    }
++    if (left) {
++        // (cannot happen: every use of the fetch was followed to the store; kept as the stage's own refusal)
++        fprintf(stderr, "fetchblend: %s: a destination read is left after the rewrite\n", nir->info.name ? nir->info.name : "?");
++    }
++    nir->info.fs.uses_fbfetch_output = left;
++    nir->info.fs.fbfetch_coherent = left && nir->info.fs.fbfetch_coherent;
++    if (!left) nir->info.outputs_read = 0;
++    if (dump) {
++        fprintf(stderr, "fetchblend: %s: %s\n", nir->info.name ? nir->info.name : "?", over ? "source-over (ONE, ONE_MINUS_SRC_ALPHA)" : "dual source (ONE, SRC1)");
++        nir_print_shader(nir, stderr);
++    }
++    return over ? kFetchBlendOver : kFetchBlendDual;
++}
++
+ bool compileVariant(Translation& t, PassOrder order, std::string* why) {
+     ir3_compiler* compiler = theCompiler();
+     nir_shader* nir = t.nir;
+@@ -749,6 +1088,7 @@
+     nir_shader_instructions_pass(nir, lowerUclz, nir_metadata_control_flow, nullptr);
+     ir3_nir_lower_io_to_temporaries(nir);
+     ir3_finalize_nir(compiler, &nirOptions, nir);
++    if (t.fetchToBlend) t.fetchBlend = fetchToBlend(nir);
+     if (!lowerFbRead(nir, t.fbTargets, why)) return false;
+ 
+     t.shader = static_cast<ir3_shader*>(rzalloc_size(nullptr, sizeof(ir3_shader)));
+@@ -1152,7 +1492,7 @@
+ 
+ namespace {
+ std::unique_ptr<CompiledStage> compileStageOnce(const void* bitcode, size_t size, std::string* why, const FunctionConstants& constants, uint32_t iboBase,
+-                                                const KnownBuffer* known);
++                                                const KnownBuffer* known, bool fetchToBlend);
+ }  // namespace
+ 
+ // A stage compiled as turnip compiles it, unless that spills: ir3's preamble pass hoists what is uniform into a
+@@ -1207,7 +1547,8 @@
+ // The file name of a stage in the cache (no directory), "" when no cache is configured: the writable directory
+ // HAKIOS_METAL_CACHE, and the read-only ones HAKIOS_METAL_CACHE_SEED (':' between them) -- stages compiled on an
+ // earlier boot and put into the system image, looked in after the writable one and never written.
+-std::string stageCacheName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known) {
++std::string stageCacheName(const void* bitcode, size_t size, const FunctionConstants& constants, uint32_t iboBase, const KnownBuffer* known,
++                           bool fetchToBlend) {
+     const char* dir = getenv("HAKIOS_METAL_CACHE");
+     const char* seed = getenv("HAKIOS_METAL_CACHE_SEED");
+     if ((dir == nullptr || dir[0] == 0) && (seed == nullptr || seed[0] == 0)) return {};
+@@ -1232,6 +1573,7 @@
+         mix(&known->binding, sizeof(known->binding));
+         mix(known->bytes.data(), known->bytes.size());
+     }
++    if (fetchToBlend) mix("fetchToBlend", 12);   // (a stage compiled without it keeps its key)
+     char name[64];
+     snprintf(name, sizeof(name), "/%016llx%016llx.stage", (unsigned long long)h[0], (unsigned long long)h[1]);
+     return name;
+@@ -1272,6 +1614,7 @@
+     }
+     w.u32(s.iboBase);
+     w.u32(s.writesMemory ? 1 : 0);
++    w.u32(s.fetchBlend);
+     w.str(s.name);
+     w.str(s.listing);
+     const std::string tmp = path + ".tmp";
+@@ -1342,6 +1685,7 @@
+     }
+     s->iboBase = r.u32();
+     s->writesMemory = r.u32() != 0;
++    s->fetchBlend = uint8_t(r.u32());
+     s->name = r.str();
+     s->listing = r.str();
+     if (!r.ok || r.p != r.end) return nullptr;
+@@ -1356,13 +1700,13 @@
+ }  // namespace
+ 
+ std::unique_ptr<CompiledStage> compileStage(const void* bitcode, size_t size, std::string* why, const FunctionConstants& constants, uint32_t iboBase,
+-                                           const KnownBuffer* known) {
++                                           const KnownBuffer* known, bool fetchToBlend) {
+     std::lock_guard<std::mutex> g(gCompilerLock);
+     if (theCompiler() == nullptr) {
+         refuse(why, "ir3 has no compiler for chip 0x06030500");
+         return nullptr;
+     }
+-    const std::string name = stageCacheName(bitcode, size, constants, iboBase, known);
++    const std::string name = stageCacheName(bitcode, size, constants, iboBase, known, fetchToBlend);
+     const std::string cached = stageCacheWritable(name);
+     if (!cached.empty()) {
+         if (std::unique_ptr<CompiledStage> s = stageCacheLoad(cached)) return s;
+@@ -1377,14 +1721,14 @@
+             if (std::unique_ptr<CompiledStage> s = stageCacheLoad(dir + name)) return s;
+         }
+     }
+-    std::unique_ptr<CompiledStage> with = compileStageOnce(bitcode, size, why, constants, iboBase, known);
++    std::unique_ptr<CompiledStage> with = compileStageOnce(bitcode, size, why, constants, iboBase, known, fetchToBlend);
+     std::unique_ptr<CompiledStage> chosen;
+     if (with == nullptr || with->stage.k.pvtmemSize == 0 || !theCompiler()->has_preamble) {
+         chosen = std::move(with);
+     } else {
+         theCompiler()->has_preamble = false;
+         std::string whyNot;
+-        std::unique_ptr<CompiledStage> without = compileStageOnce(bitcode, size, &whyNot, constants, iboBase, known);
++        std::unique_ptr<CompiledStage> without = compileStageOnce(bitcode, size, &whyNot, constants, iboBase, known, fetchToBlend);
+         theCompiler()->has_preamble = true;
+         chosen = without != nullptr && preferWithoutPreamble(with->stage.k, without->stage.k) ? std::move(without) : std::move(with);
+     }
+@@ -1396,8 +1740,9 @@
+ 
+ namespace {
+ std::unique_ptr<CompiledStage> compileStageOnce(const void* bitcode, size_t size, std::string* why, const FunctionConstants& constants, uint32_t iboBase,
+-                                                const KnownBuffer* known) {
++                                                const KnownBuffer* known, bool fetchToBlend) {
+     Translation t;
++    t.fetchToBlend = fetchToBlend;
+     if (!translate(bitcode, size, t, why, constants, known)) return nullptr;
+     // the stage is the module's named metadata (air.vertex / air.fragment / air.kernel: air_to_nir.c module_stage)
+     const std::string name = t.info.entry_point ? t.info.entry_point : "the function";
+@@ -1433,6 +1778,7 @@
+         out->iboBase = iboBase;
+     }
+     if (!compileVariant(t, PassOrder::kGraphics, why)) return nullptr;
++    out->fetchBlend = t.fetchBlend;
+     KernelHome home{out->stage.k, out->words, out->immediates, out->resources, out->name, out->listing};
+     if (!fillKernel(t, home, highestSampler, why)) return nullptr;
+     if (!fillStage(t, classes, out->stage, why)) return nullptr;
+@@ -1627,6 +1973,7 @@
+     out->program.fs = F;
+     out->program.fsIboBase = fs->iboBase;
+     out->program.ssboWrites = uint8_t((vs->writesMemory ? 1 : 0) | (fs->writesMemory ? 2 : 0));
++    out->program.fetchBlend = fs->fetchBlend;
+     out->program.name = out->name.c_str();
+     return out;
+ }
+diff -ru a/src/render.cpp b/src/render.cpp
+--- a/src/render.cpp	2026-11-12 13:53:55.465335225 -0400
++++ b/src/render.cpp	2026-11-12 13:53:55.466458362 -0400
+@@ -866,6 +866,22 @@
+     uint32_t mrtControl, mrtBlendControl;
+ };
+ 
++// darwin-lisa: colour attachment I's blend as the draw uses it. A stage whose framebuffer fetch was handed to the blend
++// unit (Program::fetchBlend, compiler.cpp: fetchToBlend) blends attachment 0 the way its rewrite says, with the
++// pipeline's write mask; the pipeline's own blend for it is off (the stage was compiled so only then)
++ColorBlend effectiveBlend(const Program& program, uint32_t i) {
++    if (i != 0) return program.moreBlend[i - 1];
++    if (program.fetchBlend == kFetchBlendNone) return program.blend;
++    ColorBlend b{};
++    b.enabled = true;
++    b.rgbOp = b.alphaOp = 0;   // Add
++    b.srcRgb = b.srcAlpha = 1;   // One
++    b.dstRgb = program.fetchBlend == kFetchBlendOver ? 5 : 15;     // OneMinusSourceAlpha, or Source1Color
++    b.dstAlpha = program.fetchBlend == kFetchBlendOver ? 5 : 17;   // OneMinusSourceAlpha, or Source1Alpha
++    b.writeMask = program.blend.writeMask;
++    return b;
++}
++
+ bool blendWords(const ColorBlend& b, const FormatInfo& f, BlendWords* out, std::string* why) {
+     static const adreno_rb_blend_factor kFactor[] = {
+         FACTOR_ZERO, FACTOR_ONE, FACTOR_SRC_COLOR, FACTOR_ONE_MINUS_SRC_COLOR, FACTOR_SRC_ALPHA, FACTOR_ONE_MINUS_SRC_ALPHA,
+@@ -1411,7 +1427,11 @@
+     uint32_t blendMask = 0;
+     for (uint32_t i = 0; i < numRt; i++) {
+         if (fs.colorRegid[i] == kRegidNone) continue;   // RB_MRT_CONTROL 0: no components written, no blend
+-        const ColorBlend& cb = i == 0 ? program.blend : program.moreBlend[i - 1];
++        if (i == 0 && program.fetchBlend != kFetchBlendNone && program.blend.enabled) {
++            return refuse(why, std::string(stageName(fs)) + " was compiled to blend through the blend unit (its framebuffer fetch taken out), and the "
++                                   "pipeline blends colour attachment 0 itself");
++        }
++        const ColorBlend cb = effectiveBlend(program, i);
+         if (cb.enabled && !dual) {
+             // a second source colour asked of a stage that writes none: nothing for the factor to read
+             const uint32_t factors[4] = {cb.srcRgb, cb.dstRgb, cb.srcAlpha, cb.dstAlpha};
+@@ -2976,6 +2996,7 @@
+         add(sizes, sizeof sizes);
+         add(&program.blend, sizeof program.blend);
+         add(program.moreBlend, sizeof program.moreBlend);
++        add(&program.fetchBlend, sizeof program.fetchBlend);
+         add(&encodeOptions, sizeof encodeOptions);
+         if (joins && !open_->staticKey.empty() && open_->staticKey == staticKey) {
+             encodeOptions.zsNone = encodeOptions.mrt = encodeOptions.msaaOff = encodeOptions.renderCntl = encodeOptions.lrzOff = false;
+diff -ru a/tools/sweep.cpp b/tools/sweep.cpp
+--- a/tools/sweep.cpp	2026-11-12 13:53:55.470133068 -0400
++++ b/tools/sweep.cpp	2026-11-12 13:53:55.471133793 -0400
+@@ -106,11 +106,14 @@
+ 
+ int main(int argc, char** argv) {
+     bool verbose = false;
++    bool fetchToBlend = false;   // -b: compile as a pipeline that does not blend colour 0 (compileStage's FETCH_TO_BLEND)
+     std::string only;
+     std::vector<std::string> files;
+     for (int i = 1; i < argc; i++) {
+         if (std::strcmp(argv[i], "-v") == 0) {
+             verbose = true;
++        } else if (std::strcmp(argv[i], "-b") == 0) {
++            fetchToBlend = true;
+         } else if (std::strcmp(argv[i], "-f") == 0 && i + 1 < argc) {
+             only = argv[++i];
+         } else if (std::strcmp(argv[i], "-c") == 0 && i + 1 < argc) {
+@@ -164,10 +167,12 @@
+                 // (one function by name is compiled in this process, so that Mesa's own debug output reaches the terminal)
+                 if (!only.empty() && t != 2) {
+                     // the stage's tables as a draw reads them: what samples what, and through which sampler
+-                    auto st = compileStage(bc, len, &why, gConstants);
++                    auto st = compileStage(bc, len, &why, gConstants, 0, nullptr, fetchToBlend);
+                     ok = st != nullptr;
+                     if (ok) {
+                         const Kernel& k = st->stage.k;
++                        std::printf("sweep: %s: %u words, maxReg %d, fbRead %u, dual source %u, fetchBlend %u\n", f.name.c_str(), k.numWords,
++                                    int(k.maxReg), unsigned(st->stage.fbRead), unsigned(st->stage.dualSrcBlend), unsigned(st->fetchBlend));
+                         std::printf("sweep: %s: %u texture slots, sampler mask %#x, %u prefetch(es)", f.name.c_str(), k.numTextureSlots, k.samplerMask,
+                                     unsigned(st->stage.numSamplerPrefetch));
+                         for (unsigned i = 0; i < st->stage.numSamplerPrefetch; i++)

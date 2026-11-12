@@ -1,5 +1,108 @@
 # GPU on the phone: the run book (one session)
 
+## Session 9 (2026-11-12 evening, host only): where a heavy pass's time goes, and compressed offscreen targets
+
+Nothing was run on the phone. Goal: the Settings scroll (26-27 fps, 12.5-12.9 ms of GPU a command buffer) and the
+8-9-draw full-screen passes (14-20 ms) under ~10 ms of GPU a frame, the picture unchanged.
+
+**What a full-screen draw costs here** (the probe's own measurements, gpu-probe-1551..1721: sysmem, 1125x2436 BGRA8,
+best of three, per draw):
+
+| draw | ms |
+|---|---|
+| opaque, reads nothing (`full-screen cost`, flat/sysmem) | 0.93 |
+| source-over by the blend unit (`GMEM cost`, sysmem) | 0.91 |
+| framebuffer fetch, writes the result (fetch/sysmem, barrier or raster order) | 1.78 |
+| blended, sampling a 4x4 texture (`full-screen sampling`) | 1.80 |
+| blended, sampling a 1125x2436 linear texture, mapping turned | 4.45 |
+
+The RB writes a screen in ~0.9 ms whether it also reads it (blend: 22 MB) or not (11 MB): the target's bytes do not
+set that time. Every stream read through the texture unit adds ~0.85 ms a screen (13 GB/s, against the colour
+cache's 24). CoreAnimation's ~1.9 ms a draw in the heavy passes is that: the RB plus one texture-unit stream. And GMEM,
+which takes the target off memory, gave ~0 on the 8-draw pass (gpu-p2: 15.0 ms binned against 14.4-16.9 in sysmem):
+the pass waits on what it reads, not on its target. So the lever is the sources' bytes.
+
+1. **UBWC.** The display surface stays linear: the kernel's framebuffer driver copies it to the panel by processor
+   (kernel not in scope), and a compressed shadow would cost a full write every frame (~0.9 ms, the resolve) to save
+   on an RB that is not byte-bound: not done. Textures the GPU only samples are already compressed
+   (`hm_compress`, ShaderRead-only, shared, >= 256x256; `metal_noubwc` turns it off). What was linear: CoreAnimation's
+   offscreen render targets, which it draws, clears and then samples every frame: the glass backdrops (1088x2432 BGRA8
+   and RGBA16Float, 576x1216 and 1216x576 RGBA16Float in the nc1/v5 traces), the blur levels, flattened layers.
+   Done: `metal_ubwc_rt=1` (below).
+2. **Framebuffer fetch.** CoreAnimation fetches only where no fixed-function blend can stand in. A NIR pass that
+   hands "colour 0 = A + B * destination" to the blend unit (source-over, or dual source) was written and run over
+   QuartzCore 26's `default.metallib` (`kernel/drivers/gpu/tools/fetch-to-blend-analysis.patch`, `sweep -b`): of the
+   46 constant sets of `fixed_frag_lph_cph` found in the logs and every `*_lph` fragment function, none converts. The
+   plain blends (`fc_blend_function` 29=62) do not fetch at all (fbRead 0: the pipeline's blend unit does them); the
+   ones that fetch divide the destination by its alpha and run a 4x4 colour matrix over it (29=43, 29=50: vibrancy),
+   read the clip's SDF attachment (55=2, `path_blit`), branch on the destination (`p3_clamp`, `edr_clamp`,
+   `color_edr`, `alpha_linear_premultiply`) or square it (`luma_boost`, `edr_scale`). A copy of the target read as a
+   texture costs a full copy (~0.9 ms) more than the fetch it replaces (1.78 against 0.93 + 0.85). Nothing shipped.
+3. **Redundant work.** A Load costs nothing in sysmem; a Clear of a 1088x2432 RGBA16Float target is 21 MB (~1.8 ms),
+   and with `metal_ubwc_rt=1` it is the 2D engine's fill into the UBWC layout (a few bytes a block). RGBA16Float to
+   RGBA8 and a smaller blur change the picture: not done. Scissor: CoreAnimation's quads already bound their elements
+   (pixels outside a primitive cost nothing).
+4. **GMEM with correct binning:** not done; the measurement above says the heavy pass would not gain from it either.
+
+**`metal_ubwc_rt=1`** (off by default; plug-in glass9):
+- core `kernel/drivers/gpu/userland/hakios-metal-x-ubwc-rt.patch`: a compressed render target (RGBA8, BGRA8, and
+  RGBA16Float for a render target) is cleared by the 2D engine into its UBWC layout (was refused), drawn into WZYX
+  with its flag buffer (as turnip does: fd6_pipe2swap, the CCU ignores a tiled target's swap and writes WZYX, and the
+  TP reads the layout WZYX), read by a framebuffer fetch through a UBWC
+  descriptor (levelDescriptor had none), kept compressed by a swizzled view, and copied out by the 2D engine reading
+  it compressed (was refused). The fake GPU takes UBWC targets, fills and copies-out and counts them.
+- plug-in `HakiosMetalCA-ubwc-rt.patch`: with the boot-arg, private and memoryless render targets of those formats,
+  one 2D level, >= 256x256, not kernel-written and without PixelFormatView, are made compressed (the CPU never touches
+  such storage). `metal_fps=timeline` names each one (`timeline: a compressed render target of ...`).
+- Host: 266 tests, the same 4 tests / 14 checks failing as before (pre-existing unbound-buffer refusals);
+  `a_compressed_render_target_is_cleared_drawn_sampled_and_copied_out_compressed` (BGRA8 and RGBA16Float) and
+  `a_compressed_texture_is_refused_where_its_layout_is_not_served` new. The fake does not reproduce UBWC's bytes:
+  the picture is the phone's to show.
+- Estimate (not measured): a 21 MB Clear 1.8 -> ~0.2 ms; a full-screen read or write of an offscreen target ~0.85 ->
+  ~0.4-0.6 ms (UBWC's usual 2:1 or better on flat UI). With two backdrop Clears and three screen-sized offscreen
+  reads/writes in a frame that is 3-4 ms off the 12.5: the run below measures it.
+
+Files: plug-in `userland-26/out/plugin-glass9/` (`HakiosMetal` `13ea2c9a`, NOTE.md); root
+`userland-26/out/system-26.apfs.full-efed09de` (complete, 4,999,610,368 B, 61209 files; = `out/sysroot-26` as it is,
+with glass9 in place of glass7: libdlisa `6e01d4a3` with the PosterBoard fix, init26 `d2506319`, the sysroot's tweaks;
+NOT written). The first boot of that root compiles every uber-shader variant again (~13 s of links: the cache key follows
+the patches).
+
+### Tonight, part 3 (after Session 8's S8-A..D, same trip; the phone in pmOS)
+
+Needs the root flashed once (root only; kernel, vendor_boot and darwin_var untouched). KERNEL and cpus= as S8-A/B
+decided (rc3 and `cpus=4`, the measured best, if S8 is not run). The synthetic scroll in Settings draws no frame
+(Session 8), so the scroll is a FINGER: from +215 s to +245 s (script time) scroll Settings' list up and down
+continuously; `up@262` closes it, `cc@280` opens the Control Center for the glass.
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-efed09de   # reads back efed09de
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
+T="150 200 225 240 255 275 290 305"
+# S9-W: warm-up (the first boot's ~13 s of compiles) and which targets get compressed, with the heavy buffers' timeline (457 chars)
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s9w "$B metal_fps=timeline cpus=4 metal_ubwc_rt=1 touch_seq=tap:56800:5600@190,up@262,cc@280" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S9-A: glass9, UBWC targets off (= glass8's behaviour), finger scroll at +215..245 s (434 chars)
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s9a "$B metal_fps=1 cpus=4 touch_seq=tap:56800:5600@190,up@262,cc@280" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S9-B: the same with metal_ubwc_rt=1 (450 chars)
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s9b "$B metal_fps=1 cpus=4 metal_ubwc_rt=1 touch_seq=tap:56800:5600@190,up@262,cc@280" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read (S9-A against S9-B, the scroll window and the app-close and Control Center windows):
+- `fps: ... passes timed by the GPU ... the slowest` and `GPU busy`: ms of GPU a pass and a command buffer;
+- `MiniIOMobileFramebuffer: from one frame to the next`: swaps in the scroll window (intervals under 18 ms);
+- `grep -a "compressed render target\|refused" logs/gpu-s9w-end.log`: what was compressed, and nothing refused for it;
+- `grep -a -c "no answer" logs/gpu-s9b-end.log`: 0;
+- screenshots `gpu-s9a-q*.png` against `gpu-s9b-q*.png`: Settings, its glass search bar, the Control Center's glass.
+
+Pass (make it the default in a plug-in glass10, a one-line change in `hm_compress_rt_on`): S9-B's scroll command
+buffers at least 20 % under S9-A's (12.5 -> 10 ms or less) or its heaviest passes so, swaps under 18 ms more often
+than S9-A, no refusal, no hang, and the screenshots the same to the eye (glass blurred, colours right: red and blue
+not exchanged, no black or garbage blocks). Fail on any wrong picture or hang: leave the boot-arg off (glass9 without
+it is glass8). Rollback of the root: `tools/flash-root.sh userland-26/out/system-26.apfs.full-e07b4390` (or
+`e775216c`, the PosterBoard fix). If time allows after S9-B: the standalone check (cold boot, screenshot at +4/+5 min)
+for the root, as every root gets.
+
 ## Session 8 (2026-11-12 afternoon, host only): the frame's account, by the window that actually moves
 
 **Correction first.** No host run (p1, p3, p5, c1, c2, d3, e1) drew the Settings scroll: between `scr`/`scrd` and the next

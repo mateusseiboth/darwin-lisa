@@ -1,0 +1,78 @@
+Boot-arg metal_ubwc_rt=1: CoreAnimation's offscreen render targets compressed (UBWC), 2026-11-12, darwin-lisa session 9.
+
+Private and memoryless render targets of RGBA8, BGRA8 or RGBA16Float, one 2D level, 256x256 pixels or more, not
+written by a kernel and not to be viewed in another format, are made with hakios_metal_texture_new_compressed (the
+core's hakios-metal-x-ubwc-rt.patch: cleared, drawn into, sampled, fetched and copied out compressed). Those are the
+glass's backdrops (1088x2432 BGRA8 and RGBA16Float, 576x1216 RGBA16Float), its blur levels and the layers
+CoreAnimation flattens. Linear, each full-screen read of one costs the texture unit some 0.85 ms (probe "full-screen
+cost": a fetch over the screen 1.78 ms a draw against 0.93 without) and each Clear of a 1088x2432 RGBA16Float one some
+1.8 ms (21 MB at the 12 GB/s measured); compressed, a Clear writes a few bytes a block and flat UI content moves a
+fraction of its bytes. Off unless asked: the layout is drawn into on the phone for the first time with it. A texture
+the core will not compress is made linear as before. metal_noubwc turns this off too. With metal_fps=timeline each
+one made is named ("timeline: a compressed render target of ...").
+
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -3793,6 +3793,47 @@
+ }
+ 
+ /*
++ * darwin-lisa, boot-arg metal_ubwc_rt=1: CoreAnimation's offscreen render targets -- the backdrops the glass samples,
++ * its blur levels, the layers it flattens -- drawn, cleared and sampled compressed (UBWC), as turnip lays out every
++ * optimal image. Linear, each full-screen read of one costs the texture unit about 0.85 ms and each Clear of a
++ * 1088x2432 RGBA16Float one about 1.8 ms (21 MB); compressed, a Clear writes a few bytes a block and the reads and
++ * writes of flat UI content move a fraction of the bytes. Only what the CPU can never touch: private or memoryless
++ * storage, a render target not written by a kernel and not to be viewed in another format, one 2D level of RGBA8,
++ * BGRA8 or RGBA16Float, 256x256 pixels or more. A copy out of it (blit, texture to buffer) is the 2D engine reading it
++ * compressed. Off unless asked: the layout is drawn into on the phone for the first time with it (hakios-metal
++ * render_test a_compressed_render_target_is_cleared_drawn_sampled_and_copied_out_compressed runs it on the fake GPU).
++ */
++static BOOL
++hm_compress_rt_on(void)
++{
++	static int on = -1;
++
++	if (on < 0) {
++		char args[1024] = {0};
++		size_t size = sizeof(args) - 1;
++
++		on = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_ubwc_rt=1") != NULL && strstr(args, "metal_noubwc") == NULL;
++		if (on) {
++			HM_ONCE("metal_ubwc_rt=1: private and memoryless render targets of RGBA8, BGRA8 and RGBA16Float are compressed (UBWC)\n");
++		}
++	}
++	return on > 0;
++}
++
++static BOOL
++hm_compress_rt(MTLTextureDescriptor *descriptor, MTLTextureUsage usage)
++{
++	const MTLPixelFormat f = [descriptor pixelFormat];
++
++	return hm_compress_rt_on() && [descriptor textureType] == MTLTextureType2D && [descriptor mipmapLevelCount] == 1 && [descriptor sampleCount] == 1 &&
++	       [descriptor arrayLength] == 1 && (f == MTLPixelFormatRGBA8Unorm || f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatRGBA16Float) &&
++	       (usage & MTLTextureUsageRenderTarget) != 0 && (usage & MTLTextureUsageShaderWrite) == 0 &&
++	       ([descriptor usage] & MTLTextureUsagePixelFormatView) == 0 &&
++	       ([descriptor storageMode] == MTLStorageModePrivate || [descriptor storageMode] == MTLStorageModeMemoryless) &&
++	       [descriptor width] * [descriptor height] >= 65536;
++}
++
++/*
+  * The one gate a texture descriptor passes here, by hand. Metal's own validator (-[MTLTextureDescriptorInternal
+  * validateWithDevice:]) is an assert that ends in abort(), like every validation context of this Metal, so it is never
+  * called; and _MTLDevice has no -newTextureWithDescriptor: of its own to fall back on. What is served is what hakios-metal's
+@@ -3915,6 +3956,14 @@
+ 	} else if ([descriptor textureType] == MTLTextureType3D) {
+ 		texture = hakios_metal_texture_new_3d(_gpu, (unsigned)[descriptor pixelFormat], (unsigned)[descriptor width], (unsigned)[descriptor height],
+ 						      (unsigned)[descriptor depth], (unsigned)usage);
++	} else if (hm_compress_rt(descriptor, usage) &&
++		   (texture = hakios_metal_texture_new_compressed(_gpu, (unsigned)[descriptor pixelFormat], (unsigned)[descriptor width],
++								  (unsigned)[descriptor height], (unsigned)usage)) != NULL) {
++		if (hm_timeline_on()) {
++			hm_print("timeline: a compressed render target of %lux%lu, format %lu, storage %lu, usage %#lx\n", (unsigned long)[descriptor width],
++				 (unsigned long)[descriptor height], (unsigned long)[descriptor pixelFormat], (unsigned long)[descriptor storageMode],
++				 (unsigned long)usage);
++		}
+ 	} else if (hm_compress(descriptor, usage)) {
+ 		texture = hakios_metal_texture_new_compressed(_gpu, (unsigned)[descriptor pixelFormat], (unsigned)[descriptor width],
+ 							      (unsigned)[descriptor height], (unsigned)usage);

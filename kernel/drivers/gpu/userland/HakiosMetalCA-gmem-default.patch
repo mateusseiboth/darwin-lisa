@@ -1,0 +1,19 @@
+GMEM off unless asked for. The plug-in tiled every pass of 56 draws or more by default (`metal_gmem_draws` 56 when not
+given, and `hakios_metal_cb_set_gmem(cb, hm_gmem_on() || hm_gmem_draws() != 0)`), with the hardware's binning: that path
+leaves tiles with the frame before (gpu-p2, 2026-11-12: the home screen's labels twice, icons cut at the tile seams;
+gpu-v6: the Control Center's glass flat, its glyphs garbled) and costs the GPU 11-13 ms for SpringBoard's 70-85-draw
+passes against 4.9-5.4 in sysmem (gpu-p4 against gpu-p1, same root). Without binning the picture is right but every
+draw runs in every one of the 76 tiles and CoreAnimation falls to one frame a second (gpu-p1, gpu-p3). So: no GMEM by
+default; `metal_gmem=1` or `metal_gmem_draws=N` turn it back on as before, for the day the binning is right.
+
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -5715,7 +5715,7 @@
+ 		size_t size = sizeof(args) - 1;
+ 		const char *at;
+
+-		draws = 56;
++		draws = 0;   /* (darwin-lisa) no GMEM unless asked: the binned tiles keep the frame before and cost more than sysmem */
+ 		if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && (at = strstr(args, "metal_gmem_draws=")) != NULL) {
+ 			draws = atoi(at + strlen("metal_gmem_draws="));
+ 		}

@@ -1,5 +1,87 @@
 # GPU on the phone: the run book (one session)
 
+## Session 6 (2026-11-12 morning): where the frame time goes, and why GMEM is not the default yet
+
+Root 3d2017d2, kernel rc3, host runs gpu-p1..p3 (`logs/gpu-p1-*` ...). The kernel's clock runs about 19 s behind the
+quiet-run script's: a gesture asked for at 190 s posts at kernel 209 s (`touch_synth: seq ... posted`), so read the
+screenshots against the kernel times, not the requested ones.
+
+**The clipping (switch track, slider fill, AirPlay square) is NOT in GMEM or in a mask texture.** The host `air2nir`
+(`research/hackios-xnu-kernel/build/mesa-host/build/src/compiler/air/air2nir --interface`, over the arm64 slice of
+QuartzCore's `default.metallib`: the file is a FAT header, slice at 0x30) names the uber shader's constants: 28 is
+`fc_texture_function`, 29 `fc_blend_function`, 47 `fc_image_function0`, 48 `fc_image_function1`, 49
+`fc_coord_function0`, 35 `fc_dest_count`, 32 `fc_image_count`, 55 `fc_memoryless_index0`, 4 `fc_framebuffer_fetch`
+(1 on every draw), 15 `fc_has_image_0A`. The unclipped draws bind only their content texture (t3) and the LUT (t4/t9):
+the rounded corner is computed inside the shader, by the branch `fc_image_function0` picks (values 10, 11, 20, 21, 24,
+25, 35, 38 seen). Finding where the AIR -> NIR translation loses it means comparing the NIR of two specialisations of a
+7000-line shader (the dump: `metal_dump=FNV` prints the module, air2nir -c INDEX=VALUE translates it on the host): not a
+small fix, parked behind the performance work by the owner's decision.
+
+**What the frame costs (sysmem, Settings scroll, from the metal_fps lines):** the main pass is 8 draws into 1080x2400
+at 15 ms (bandwidth: each full-screen blended draw reads its layer and reads and writes the target, the memory gives
+12 GB/s); SpringBoard's home pass is 74-85 draws at 4.9 ms. The plug-in's own CPU is 55-110 us a draw (the C++ core's,
+not the ObjC: "draw calls, N us of ours each (M of them the core's)"), 7-9 ms for an 85-draw frame; CA's commits come a
+frame late in a quarter of the cases. The GPU is at 550 MHz, the top of this chip's speed bin (fuse 117 -> bin 0 in the
+mainline DT `sm7325-xiaomi-lisa.dtb`: only 315/450/550 MHz allowed; 608+ are other bins), and casts no DDR vote
+(`hfi_bw_table` "off"); the LPDDR4X gives 17 GB/s theoretical and the GPU measures 12, so the DDR already runs at or near
+its top: neither the clock nor a bus vote is the lever. The lever is GMEM (fewer bytes through memory) and the CPU cost
+per draw.
+
+**GMEM, three runs:**
+
+| run | boot-args | picture | speed |
+|---|---|---|---|
+| gpu-p1 | `metal_gmem=1 metal_gmem_off=24` (every pass over 56 draws tiled, no hardware binning) | home, Settings, NC correct (`gpu-p1-q2/q5.png`) | slow: every draw runs in every one of the 76 tiles, 85 draws 16 ms a pass, 23 ms a command buffer; frame intervals in the scroll window: 1 under 18 ms, 18 under 35, 12 longer (median 32 ms) |
+
+(Read the frame rate from `MiniIOMobileFramebuffer: from one frame to the next` (the histogram of intervals between
+presented frames) and from the plug-in's `gaps between commits while something moves`, not from `N frames in M ms`:
+that window spans the idle seconds between gestures, so `57 frames in 50984 ms (1 a second)` is three two-second
+bursts and 45 s of nothing. An earlier draft of this section read it as a collapse; it is not one.)
+| gpu-p2 | `metal_gmem=1 metal_gmem_off=15` (binning ON, whole-window tiles, every attachment loaded and stored, fetch by barrier) | WRONG: the home screen during a drag keeps tile rows of the frame before (labels twice, icons cut at tile seams, `gpu-p2-q5..q7.png`) | 74 draws in 76 tiles 13-15 ms |
+| gpu-v6 (yesterday) | `metal_gmem=1 metal_gmem_off=8` (binning ON) | WRONG: glass flat, glyphs garbled | 30 frames/s in one window |
+
+So the picture defects are the hardware binning's (the visibility streams: tiles whose draws are skipped keep what was
+loaded), not the tiles' loads and stores: without binning the picture is right. And the tiles are too many (76: two
+window-sized attachments at 8 bytes a pixel in the 480 KB below the CCU cache, bins of 544x64), so an unbinned pass
+costs draws x tiles. GMEM pays only for passes of few full-screen blended draws (the Settings scroll's 8-draw pass:
+the probe measured 8 blended screens 7.6 ms sysmem, 3.1 GMEM), not for SpringBoard's 74-draw passes, whose framebuffer
+fetches read GMEM at a quarter of the memory rate (HakiosMetalCA.m, hm_gmem_on's note). gpu-p3 (`metal_gmem=1
+metal_gmem_draws=0 metal_gmem_off=16`): GMEM or sysmem chosen per kind of pass by what each cost (`CommandQueue::preferGmem`,
+converges after one pass of each kind), binning off: the picture right (`gpu-p3-q5.png`, Settings mid-scroll), the
+scroll's intervals 14 under 18 ms, 5 under 26, 12 under 35, 5 longer (median 21 ms): no better than sysmem. Against it
+the sysmem boot of 3d2017d2: `165 frames in 5045 ms (32 a second)` with the GPU 8.6 ms a command buffer (29 % busy), so
+in sysmem too the CPU side, not the GPU, sets the 30 fps.
+**The default was binned GMEM already.** `metal_gmem_draws` defaulted to 56 and `hakios_metal_cb_set_gmem(cb,
+hm_gmem_on() || hm_gmem_draws() != 0)`, so with no GMEM boot-arg at all every pass of 56 draws or more (SpringBoard's
+home, the Control Center with every tile) was tiled with the hardware's binning: gpu-p4 (no `metal_gmem`) shows `draws 85
+in 76 tiles 11.45 ms`, and gpu-v6, read as "GMEM forced", was the default in effect. That is where yesterday's flat
+glass and garbled glyphs came from, and why the standalone's heavy passes cost 11-13 ms where sysmem takes 5.
+`userland/HakiosMetalCA-gmem-default.patch` (applied by `build-hakios-metal.sh` now) sets the default to 0: no pass is
+tiled unless `metal_gmem=1` or `metal_gmem_draws=N` asks. Plug-in b61c43dc (`userland-26/out/plugin-glass6/`), root
+`system-26.apfs.full-e07b4390` (complete, 4,999,610,368 B), flashed and read back at 09:59. Checked by gpu-p5 and gpu-p6:
+home, Settings and the Control Center opened from the home screen are right (`gpu-p6-q2/q3.png`: the Liquid Glass with
+its blur, the rounded tiles; the clipping defects as before), no pass tiled, SpringBoard's 67-85-draw passes 5.6-7.0 ms
+on the GPU (11-13 in binned GMEM), the Settings scroll's main pass 6.3-6.9 ms this time (9 draws). The frame cadence is
+unchanged (`gaps between commits`: 16 on time, 23 a frame late, 11 stalls in one window; intervals median 18 ms with a
+third over 26 ms): the CPU side still sets it. The Control Center opened OVER SETTINGS comes up as flat grey squares
+(`gpu-p5-q3.png`, one frame, 2 s into the `up` swipe): not seen again from the home screen; to be checked before it is
+called a defect of this root.
+
+gpu-p4 (`ca_prof=5000 cpuload=5000 metal_fps=1`, the CPU profile): the sampler itself stalls the render loop (every
+thread suspended 200 times a second: `2 frames in 59997 ms` once the scroll began), and a busy thread's stacks fragment
+into "0%" lines (it groups by exact 10-frame stack: made for a thread blocked in one place). For the per-draw cost use
+`perf` on the host through the fake GPU, or a sampler keyed by the top two frames.
+
+**Next (host first):**
+1. The binning path: `render::encodeGmem` (the VSC pipe table, `CP_SET_BIN_DATA5_OFFSET`, the binning pass running the
+   same IB2 as the tiles) against turnip's `tu6_emit_binning_pass`/`tu6_emit_tile_select`; the fake GPU's tests
+   (`hakios-metal/tests/render_test.cpp`) are the place to reproduce "a tile keeps the frame before" before the phone.
+   Then fewer tiles: no bin for an attachment no draw touches (the second screen is DontCare and 2436 rows).
+2. The core's 55-110 us a draw: profile on the phone with `ca_prof=5000` (stacks of backboardd's render thread with
+   image+symbol, HakiosMetalCA.m `ca_prof_main`) or on the host under `perf` through the fake GPU; the suspects are
+   `drawCommon`'s vectors, `appendDeduped`'s per-word map, the dual recording (GMEM and sysmem) and `piece()`.
+3. Then the clipping (above).
+
 ## Session 4 (2026-11-11 afternoon): Notification Center, Control Center, the app switcher, and the crawl
 
 **Input without a hand on the glass.** Kernel `kernel-16k-gpustop2-touchseq.bak` (88aede9c) = gpustop2 + boot-arg

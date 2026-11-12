@@ -72,6 +72,39 @@ loop; the kernel never execs it. LaunchServices does not know it: installd's log
 and scanned 0 bundle containers, then every boot says "System App Migration is complete" and skips. That is the
 queue's item 4 (apps missing on the home screen); fixing it brings the controls and the widget.
 
+## Next session: the two GMEM runs for the 60 fps scroll (prepared 2026-11-12, not run)
+
+Why: with `metal_fps=1` the plug-in timed the Settings scroll's full-screen passes at about 2 ms per full-screen
+blended draw in sysmem ("draw 1080x2400 draws 8 in sysmem 16.3 ms", `logs/gpu-nc1-t400.log`): each draw reads its
+10 MB layer and reads and writes the 10 MB framebuffer, at the 12 GB/s the memory gives. That is the 30 fps. Tiled
+rendering (GMEM) keeps the framebuffer in on-chip memory for the whole pass; hakios-metal has it (`gmemPlan`:
+colour-only passes, 4- and 8-byte float formats, window-sized attachments) but the plug-in keeps it OFF by default
+(`hm_gmem_on`, and `metal_gmem_draws` defaults to 56 draws, chosen on SpringBoard's many small passes).
+
+Both lines fit the loader's 460 characters only without `keystore=1` and with one scroll gesture (B is 451) (an alternative is a kernel rebuild that puts
+`interrupt-masked-debug-mode=0` into the lisa=1 defaults, `kernel/drivers/bootargs/lisa-defaults-wire.py`). Root: one
+with the glass2 plug-in (`userland-26/out/plugin-glass2/NOTE.md`); kernel `kernel-16k-consolidated-rc3.bak` (the
+`scr`/`scrd` gestures). The phone in pmOS first; `gpu-quietrun.sh` brings up the loader itself.
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+# A: the baseline, per-pass GPU timing
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-gmemA \
+ "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 cpus=7 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 metal_fps=1 touch_seq=tap:56800:5600@190,scr@220" \
+ "150 200 215 225 235 245 260"; bash darwin-lisa/tools/bootos.sh pmos
+# B: GMEM for every pass that qualifies, tuned against sysmem per pass kind (metal_gmem_off=8 instead forces GMEM)
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-gmemB \
+ "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 cpus=7 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 metal_fps=1 touch_seq=tap:56800:5600@190,scr@220 metal_gmem=1 metal_gmem_draws=1" \
+ "150 200 215 225 235 245 260"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read, in `logs/gpu-gmemA-end.log` and `-gmemB-end.log`: `MiniIOMobileFramebuffer: from one frame to the next` for the
+periods covering 220-245 s (frames under 18 ms = 60 Hz), `fps: ... passes timed by the GPU ... the slowest`, and
+`fps: ... passes in GMEM (N tiles)`. If B wins, make it the default in `HakiosMetalCA.m` (`hm_gmem_on`,
+`hm_gmem_draws`) and rebuild the plug-in. The same two runs validate the glass: `grep 'HakiosMetal\[SpringBoard'`
+for `refused: a render pipeline` (should be none from RenderBox) and the Control Center screenshot after a `sw` gesture
+run (`touch_seq=sw@200,up@240`).
+
 ## Session 5 (evening of 2026-11-11): Metal in every process that draws
 
 **The crash behind `metal_all=1` was not mesh shading.** SpringBoard aborted in MetalPerformanceShaders

@@ -1,7 +1,17 @@
-diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_private.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_private.h
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_private.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_private.h
 --- a/air_private.h	2026-11-11 19:53:08.294437525 -0400
-+++ b/air_private.h	2026-11-11 19:57:18.939009003 -0400
-@@ -247,6 +247,21 @@
++++ b/air_private.h	2026-11-12 06:22:26.124161554 -0400
+@@ -150,6 +150,9 @@
+    struct hash_table *phi_cursors;
+    /* phi -> nir register decl */
+    struct hash_table *phi_regs;
++   /* darwin-lisa: a phi of a STRUCT or ARRAY, one register per leaf: the phi instruction -> a tree
++    * (air_val, AIR_VAL_AGG) whose leaves are AIR_VAL_SSA holding the register decl (phi_agg_regs) */
++   struct hash_table *phi_aggs;
+    /* Where this function's constants are built: the top of its entry block,
+     * which dominates every use of them. air_get caches a constant the first
+     * time it is asked for, so the def has to be somewhere every later block
+@@ -247,6 +250,21 @@
     unsigned num_params;
     struct air_val **params;
  
@@ -23,9 +33,9 @@ diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-
     /* the argument buffers the entry point declares, in the order its input
      * metadata lists them, which is the order their members are numbered in */
     unsigned num_argbufs;
-diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_to_nir.c /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_to_nir.c
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_to_nir.c /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_to_nir.c
 --- a/air_to_nir.c	2026-11-11 19:53:08.296449194 -0400
-+++ b/air_to_nir.c	2026-11-11 20:12:07.146583516 -0400
++++ b/air_to_nir.c	2026-11-12 06:25:37.054279528 -0400
 @@ -1016,15 +1016,17 @@
         * first thing that would tell a wrong packing from a right one is a
         * pipeline that sets one of these two constants.
@@ -191,7 +201,309 @@ diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-
        var->data.driver_location = c->nir->num_inputs++;
        if (md_key(node, "air.flat") >= 0)
           var->data.interpolation = INTERP_MODE_FLAT;
-@@ -5969,7 +6042,13 @@
+@@ -2532,6 +2605,23 @@
+       return true;
+    }
+ 
++   /* darwin-lisa: a visible function table (`[[visible_function_table(n)]]`, RenderBox's
++    * uber_fragment `custom_fn`, gated by the function constant has_function_table). This
++    * frontend calls no function through a table; the parameter is an undef, so a
++    * specialisation whose constants leave the table unused (every SwiftUI and Liquid Glass
++    * draw without a custom shader) translates, and one that calls through it is refused
++    * where the call is. */
++   if (md_key(node, "air.visible_function_table") >= 0) {
++      struct air_constant u = { .base = { .kind = AIR_VALUE_CONSTANT, .type = t }, .ckind = AIR_CONST_UNDEF };
++      struct air_val *v = air_constant_val(c, &u);
++      if (!v)
++         return false;
++      air_note(c, "parameter %u is a visible function table, which this frontend does not call "
++                  "through: undefined, and a call through it is refused", param);
++      c->params[param] = v;
++      return true;
++   }
++
+    /* the one thing left that is not an error: an argument nothing reads */
+    if (md_key(node, "air.arg_unused") >= 0) {
+       c->params[param] = air_val_ssa(c, nir_undef(&c->b, air_nir_components(t),
+@@ -3670,6 +3760,10 @@
+             return air_error(c, "instruction: field %u of a returned struct is not a "
+                                 "number, from a function called in the module", i);
+          nir_def *d = v->elems[i]->def;
++         /* darwin-lisa: a boolean member goes through the 32-bit return variable
++          * param_glsl_type declares for it (the caller reads it back with ine) */
++         if (d->bit_size == 1)
++            d = nir_b2iN(&c->b, d, 32);
+          nir_store_deref(&c->b, c->ret_fields[i], d,
+                          nir_component_mask(d->num_components));
+       }
+@@ -3680,6 +3774,10 @@
+       if (!d)
+          return air_error(c, "instruction: a return of a value this cannot put in a "
+                              "register, from a function called in the module");
++      /* darwin-lisa: a `zeroext i1` return (RenderBox's accumulator_shape_is_alpha, in
++       * uber_fragment) through the 32-bit return variable; the caller reads it back with ine */
++      if (d->bit_size == 1)
++         d = nir_b2iN(&c->b, d, 32);
+       nir_store_deref(&c->b, c->ret_deref, d, nir_component_mask(d->num_components));
+       return true;
+    }
+@@ -4324,7 +4422,7 @@
+    nir_builder saved_b = c->b;
+    const struct air_function *saved_fn = c->fn;
+    struct hash_table *sv = c->values, *sb = c->blocks,
+-                     *sp = c->phi_cursors, *sr = c->phi_regs;
++                     *sp = c->phi_cursors, *sr = c->phi_regs, *sa = c->phi_aggs;
+    nir_deref_instr *saved_ret = c->ret_deref;
+    nir_deref_instr **saved_ret_fields = c->ret_fields;
+    unsigned saved_num_ret_fields = c->num_ret_fields;
+@@ -4338,6 +4436,7 @@
+    c->blocks = _mesa_pointer_hash_table_create(c->mem_ctx);
+    c->phi_cursors = _mesa_pointer_hash_table_create(c->mem_ctx);
+    c->phi_regs = _mesa_pointer_hash_table_create(c->mem_ctx);
++   c->phi_aggs = _mesa_pointer_hash_table_create(c->mem_ctx);
+    c->b = nir_builder_at(nir_before_impl(nir_function_impl_create(fn)));
+    /* as for the entry point: this translator emits an unstructured CFG with
+     * nir_goto, and nir_goto_if asserts on a structured impl. A new impl is
+@@ -4457,6 +4556,7 @@
+    c->blocks = sb;
+    c->phi_cursors = sp;
+    c->phi_regs = sr;
++   c->phi_aggs = sa;
+    c->const_cursor = saved_consts;
+    c->ret_deref = saved_ret;
+    c->ret_fields = saved_ret_fields;
+@@ -4585,11 +4685,19 @@
+    if (ret_struct) {
+       struct air_val *agg = air_val_agg(c, rt->num_members);
+       for (unsigned i = 0; i < rt->num_members; i++)
+-         if (fields[i])
+-            agg->elems[i] = air_val_ssa(c, nir_load_var(&c->b, fields[i]));
++         if (fields[i]) {
++            nir_def *r = nir_load_var(&c->b, fields[i]);
++            /* darwin-lisa: a boolean member came through a 32-bit variable (the return) */
++            if (air_nir_bit_size(c, rt->members[i]) == 1)
++               r = nir_ine_imm(&c->b, r, 0);
++            agg->elems[i] = air_val_ssa(c, r);
++         }
+       air_set(c, &in->base, agg);
+    } else if (has_ret) {
+-      air_set(c, &in->base, air_val_ssa(c, nir_load_var(&c->b, tmp)));
++      nir_def *r = nir_load_var(&c->b, tmp);
++      if (air_nir_bit_size(c, rt) == 1)
++         r = nir_ine_imm(&c->b, r, 0);   /* darwin-lisa: a `zeroext i1` return, see the return */
++      air_set(c, &in->base, air_val_ssa(c, r));
+    }
+    return true;
+ }
+@@ -5252,6 +5360,96 @@
+    return k == AIR_CONST_UNDEF || k == AIR_CONST_POISON;
+ }
+ 
++/* darwin-lisa: a phi of an aggregate, one register per leaf (translate_body).
++ * phi_agg_regs declares the tree of registers for a type, phi_agg_load reads them where
++ * the phi stands, phi_agg_store writes an operand's leaves at the end of a predecessor.
++ * A leaf of the operand that is missing (an undef aggregate, or a member never inserted)
++ * leaves its register as it was, which is what undef means over that edge. */
++static struct air_val *
++phi_agg_regs(struct air_ctx *c, nir_builder *entry, const struct air_type *t)
++{
++   if (t->kind == AIR_TYPE_STRUCT || t->kind == AIR_TYPE_ARRAY) {
++      unsigned n = t->kind == AIR_TYPE_STRUCT ? t->num_members : (unsigned)t->count;
++      struct air_val *v = air_val_agg(c, n);
++      for (unsigned i = 0; i < n; i++) {
++         v->elems[i] = phi_agg_regs(c, entry, t->kind == AIR_TYPE_STRUCT ? t->members[i] : t->elem);
++         if (!v->elems[i])
++            return NULL;
++      }
++      return v;
++   }
++   unsigned bits = air_narrow_bits(c, t);
++   if (c->error[0])
++      return NULL;
++   return air_val_ssa(c, nir_decl_reg(entry, air_nir_components(t), bits, 0));
++}
++
++static struct air_val *
++phi_agg_load(struct air_ctx *c, const struct air_val *regs)
++{
++   if (regs->kind == AIR_VAL_AGG) {
++      struct air_val *v = air_val_agg(c, regs->num_elems);
++      for (unsigned i = 0; i < regs->num_elems; i++)
++         v->elems[i] = phi_agg_load(c, regs->elems[i]);
++      return v;
++   }
++   return air_val_ssa(c, nir_load_reg(&c->b, regs->def));
++}
++
++static bool
++phi_agg_store(struct air_ctx *c, const struct air_val *regs, const struct air_val *val)
++{
++   if (!val)
++      return true;
++   if (regs->kind == AIR_VAL_AGG) {
++      if (val->kind != AIR_VAL_AGG)
++         return air_error(c, "instruction: a phi of an aggregate whose operand is not one");
++      for (unsigned i = 0; i < regs->num_elems; i++)
++         if (!phi_agg_store(c, regs->elems[i], i < val->num_elems ? val->elems[i] : NULL))
++            return false;
++      return true;
++   }
++   if (val->kind != AIR_VAL_SSA)
++      return air_error(c, "instruction: a phi of an aggregate one of whose members is not a number");
++   /* (the register's shape is in its decl_reg intrinsic, not in the handle def) */
++   nir_intrinsic_instr *decl = nir_instr_as_intrinsic(regs->def->parent_instr);
++   if (val->def->num_components != nir_intrinsic_num_components(decl) ||
++       val->def->bit_size != nir_intrinsic_bit_size(decl))
++      return air_error(c, "instruction: a phi of an aggregate whose member arrives as %ux%u bits into a register of %ux%u",
++                       val->def->num_components, val->def->bit_size, nir_intrinsic_num_components(decl),
++                       nir_intrinsic_bit_size(decl));
++   nir_store_reg(&c->b, val->def, regs->def);
++   return true;
++}
++
++/* darwin-lisa: the byte offset an operand of a carried pointer phi contributes, as a 32-bit
++ * def, when it names the phi's resource (pv): a resolved pointer's own offset, or, for a
++ * pointer CHOSEN at run time between two into that same resource (`select i1 %c, ptr %a,
++ * ptr %b`, RenderBox's path_*_vertex walking a segment list by halving), the chosen offset.
++ * NULL when it names something else. */
++static nir_def *
++ptr_phi_offset(struct air_ctx *c, const struct air_val *ov, const struct air_val *pv)
++{
++   if (ov->kind == AIR_VAL_PTR_SELECT) {
++      nir_def *a = ov->elems[0] ? ptr_phi_offset(c, ov->elems[0], pv) : NULL;
++      nir_def *b = ov->elems[1] ? ptr_phi_offset(c, ov->elems[1], pv) : NULL;
++      return a && b ? nir_bcsel(&c->b, ov->def, a, b) : NULL;
++   }
++   if (ov->kind != AIR_VAL_PTR || ov->ptr.class != pv->ptr.class || ov->ptr.binding != pv->ptr.binding ||
++       ov->ptr.is_image != pv->ptr.is_image)
++      return NULL;
++   return ov->ptr.offset ? nir_u2u32(&c->b, ov->ptr.offset) : nir_imm_int(&c->b, 0);
++}
++
++/* the resolved pointer a run-time choice is made of (its first resolved leaf), or NULL */
++static const struct air_val *
++ptr_select_leaf(const struct air_val *v)
++{
++   while (v && v->kind == AIR_VAL_PTR_SELECT)
++      v = v->elems[0];
++   return v && v->kind == AIR_VAL_PTR ? v : NULL;
++}
++
+ static bool
+ resolve_pointer_phi(struct air_ctx *c, const struct air_inst *in, const bool *live,
+                     const int *taken_succ, unsigned my_block)
+@@ -5282,11 +5480,26 @@
+          continue;
+       }
+       struct air_val *v = e->data;
++      if (v && v->kind == AIR_VAL_PTR_SELECT) {
++         /* darwin-lisa: a pointer chosen at run time between two into one resource: the
++          * phi is carried as an offset register, and the store at the edge selects the
++          * offset (ptr_phi_offset). The choice's first leaf names the resource here. */
++         const struct air_val *leaf = ptr_select_leaf(v);
++         if (!leaf)
++            return air_error(c, "instruction: a phi of pointers one of whose operands is "
++                                "a run-time choice with no resolved pointer in it");
++         if (!first)
++            first = (struct air_val *)leaf;
++         else if (first->ptr.class != leaf->ptr.class || first->ptr.binding != leaf->ptr.binding ||
++                  first->ptr.is_image != leaf->ptr.is_image)
++            return air_error(c, "instruction: a phi between pointers that name different "
++                                "places, which would have to be chosen at run time");
++         carried = true;
++         continue;
++      }
+       if (!v || v->kind != AIR_VAL_PTR)
+          return air_error(c, "instruction: a phi of pointers one of whose operands is "
+-                             "%s", v && v->kind == AIR_VAL_PTR_SELECT
+-                                      ? "itself a pointer chosen at run time"
+-                                      : "not a resolved pointer");
++                             "not a resolved pointer");
+       if (!first)
+          first = v;
+       else if (first->ptr.class != v->ptr.class || first->ptr.binding != v->ptr.binding ||
+@@ -5353,10 +5566,21 @@
+           * not what is wrong with it.
+           */
+          if (in->base.type->kind == AIR_TYPE_STRUCT ||
+-             in->base.type->kind == AIR_TYPE_ARRAY)
+-            return air_error(c, "instruction: a phi of %s, which NIR has no register for",
+-                             in->base.type->kind == AIR_TYPE_STRUCT ? "a struct"
+-                                                                    : "an array");
++             in->base.type->kind == AIR_TYPE_ARRAY) {
++            /* darwin-lisa: one register per leaf of the aggregate (phi_agg_regs). RenderBox's
++             * filter_blur_fragment carries `{ <4 x half>, i8 }` sample results over a phi:
++             * the register tree is loaded where the phi is and each leaf is stored at the
++             * end of every predecessor, as for a scalar phi. A leaf that is a pointer has no
++             * register and is still refused. */
++            if (type_has_pointer(in->base.type, 8))
++               return air_error(c, "instruction: a phi of %s that holds a pointer, which NIR has no register for",
++                                in->base.type->kind == AIR_TYPE_STRUCT ? "a struct" : "an array");
++            struct air_val *regs = phi_agg_regs(c, &entry, in->base.type);
++            if (!regs)
++               return false;
++            _mesa_hash_table_insert(c->phi_aggs, in, regs);
++            continue;
++         }
+          /* A phi of a width NIR has no register for is exact: the register
+           * is the next width up and a phi only COPIES, so a canonical value
+           * in is a canonical value out (narrow_int_bits). What may be done
+@@ -5435,6 +5659,11 @@
+                return false;
+             continue;
+          }
++         struct hash_entry *ae = _mesa_hash_table_search(c->phi_aggs, in);
++         if (ae) {
++            air_set(c, &in->base, phi_agg_load(c, ae->data));
++            continue;
++         }
+          struct hash_entry *e = _mesa_hash_table_search(c->phi_regs, in);
+          air_set(c, &in->base,
+                  air_val_ssa(c, nir_load_reg(&c->b, e->data)));
+@@ -5631,7 +5860,8 @@
+          if (in->op != AIR_OP_PHI)
+             continue;
+          struct hash_entry *re = _mesa_hash_table_search(c->phi_regs, in);
+-         if (!re)
++         struct hash_entry *ae = re ? NULL : _mesa_hash_table_search(c->phi_aggs, in);
++         if (!re && !ae)
+             continue; /* a phi in an unreachable block, or one of pointers */
+          for (unsigned k = 0; k < in->num_operands; k++) {
+             struct hash_entry *ce = _mesa_hash_table_search(c->phi_cursors, in->targets[k]);
+@@ -5641,6 +5871,14 @@
+             nir_def *val;
+             if (in->base.type->kind == AIR_TYPE_POINTER && undef_operand(in->operands[k]))
+                continue;   /* the register holds whatever it held: undef over this edge */
++            if (ae) {
++               /* darwin-lisa: an aggregate phi: every leaf of the operand into its register */
++               struct air_val *agg = air_get(c, in->operands[k]);
++               if (!agg || !phi_agg_store(c, ae->data, agg))
++                  return false;
++               *(nir_cursor *)ce->data = c->b.cursor;
++               continue;
++            }
+             if (in->base.type->kind == AIR_TYPE_POINTER) {
+                /* a carried pointer phi (resolve_pointer_phi): the operand's offset, once
+                 * it is known to name the phi's resource -- over a loop edge this is the
+@@ -5649,12 +5887,14 @@
+                struct hash_entry *pe = _mesa_hash_table_search(c->values, &in->base);
+                struct hash_entry *oe = _mesa_hash_table_search(c->values, in->operands[k]);
+                const struct air_val *pv = pe ? pe->data : NULL, *ov = oe ? oe->data : NULL;
+-               if (!pv || !ov || ov->kind != AIR_VAL_PTR || ov->ptr.class != pv->ptr.class ||
+-                   ov->ptr.binding != pv->ptr.binding || ov->ptr.is_image != pv->ptr.is_image)
++               if (!pv || !ov)
++                  return air_error(c, "instruction: a phi of pointers whose operand over "
++                                      "an edge was never resolved");
++               val = ptr_phi_offset(c, ov, pv);
++               if (!val)
+                   return air_error(c, "instruction: a phi of pointers whose operand over "
+                                       "an edge names another resource, so which one it is "
+                                       "depends on the path taken");
+-               val = ov->ptr.offset ? nir_u2u32(&c->b, ov->ptr.offset) : nir_imm_int(&c->b, 0);
+             } else {
+                val = air_get_ssa(c, in->operands[k]);
+             }
+@@ -5969,7 +6209,13 @@
        unsigned stores = 0;
  
        for (unsigned k = 0; ok && k < c->m->num_globals; k++) {
@@ -206,7 +518,43 @@ diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-
              ok = false;
        }
  
-@@ -6635,6 +6714,8 @@
+@@ -6118,6 +6364,7 @@
+          pl->binding = next;
+ 
+          uint64_t word = 0;
++         bool shared = false;   /* darwin-lisa: the same state as an inline sampler already given a slot */
+          if (g->init && !air_const_uint(g->init, &word)) {
+             /* newer AIR (macOS 26's CoreAnimation, home_affordance_base) gives the state as an aggregate: its
+              * first integer member is the 64-bit word the older form held alone (a zeroinitializer is all zero) */
+@@ -6134,6 +6381,19 @@
+                return;
+             }
+          }
++         /* darwin-lisa: one slot per distinct state. RenderBox's uber_fragment declares 15
++          * `constexpr sampler`s of 6 states beside 2 API samplers, which is 17 slots of the
++          * driver's 16 (kMaxTextureSlots); the sampler is the state word and nothing else,
++          * so two globals with one word are one sampler. */
++         for (unsigned k = 0; k < c->info->num_resources && !shared; k++) {
++            const struct air_resource *r = &c->info->resources[k];
++            if (r->kind == AIR_RESOURCE_SAMPLER && r->inline_sampler && r->sampler_state == word) {
++               pl->binding = r->index;
++               shared = true;
++            }
++         }
++         if (shared)
++            continue;
+          struct air_shader_info *info = c->info;
+          info->resources = reralloc(c->mem_ctx, info->resources, struct air_resource,
+                                     info->num_resources + 1);
+@@ -6561,6 +6821,7 @@
+    c.blocks = _mesa_pointer_hash_table_create(ctx);
+    c.phi_cursors = _mesa_pointer_hash_table_create(ctx);
+    c.phi_regs = _mesa_pointer_hash_table_create(ctx);
++   c.phi_aggs = _mesa_pointer_hash_table_create(ctx);
+    c.num_params = fn->num_args;
+    c.params = rzalloc_array(ctx, struct air_val *, MAX2(c.num_params, 1));
+ 
+@@ -6635,6 +6896,8 @@
        materialise_globals(&c);
     if (!c.error[0])
        run_static_initializers(&c);
@@ -215,9 +563,9 @@ diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-
  
     if (!c.error[0]) {
        if (stitch) {
-diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/nir_air.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/nir_air.h
+diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/nir_air.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/nir_air.h
 --- a/nir_air.h	2026-11-11 19:53:08.296973757 -0400
-+++ b/nir_air.h	2026-11-11 19:57:18.943045751 -0400
++++ b/nir_air.h	2026-11-12 06:22:26.128161620 -0400
 @@ -418,6 +418,10 @@
  struct air_constant_value {
     unsigned index;     /* the function constant's index */

@@ -6,7 +6,7 @@
 #
 # The root is chosen by the kernel's UFS driver (kernel/drivers/ufs, tag hakios_ufs): rd=md0 ufs=2 ufs_part=super
 # ufs_root=1 (README there: keep rd=md0, the loader only adds it when it uploads a RAM disk). Read only unless the
-# arguments ask for the data volume (ufs_write=1 ufs_data=super var_ufs=1, docs/data-volume.md).
+# arguments ask for the data volume (ufs_write=1 ufs_data=darwin_var var_ufs=1, docs/data-volume.md).
 # Environment:
 #   KERNEL         the kernel (default kernel26.nopac, in research/hackios-xnu-kernel)
 #   XL_SECS        seconds before the kernel returns to the loader (default 1500)

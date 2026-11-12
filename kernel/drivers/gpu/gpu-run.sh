@@ -25,7 +25,7 @@ CMD=${1:?usage: gpu-run.sh print|run STEP}
 STEP=${2:?usage: gpu-run.sh print|run STEP}
 MAX=460
 
-UFS="rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=super var_ufs=1"
+UFS="rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=darwin_var var_ufs=1"
 # run-flashroot.sh's own words in front (the epoch is ten digits)
 FRONT="loader_return_after=1500 epoch=1794400000 sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v"
 BASE="display=1 keystore=1 console_open=1 dlisa_unlock=1 cpus=7 cpufreq=1 cpufreq_max=2400 battery=1 wlan_stub=1"

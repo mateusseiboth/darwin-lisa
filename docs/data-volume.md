@@ -416,3 +416,53 @@ Not worth it: a RAM-only rootfs for pmOS. The debug shell is that, already built
 
 Alternative without the resize: `mkvarvol.py --blocks <B's size>` makes an empty B volume, and the first-boot work
 runs once more. That is simpler and loses the state.
+
+### Status (2026-11-12): B is the layout on the phone
+
+The carve, with the user's authorization (pmOS's staging copies of old root images in `/home/mateus`, 72 GB, were
+deleted first; pmOS's root then used 6.8 GB). Blocks of 4096 on LUN 0, everything 1 MiB aligned:
+
+| GPT entry | Before | After |
+|---|---|---|
+| 33 `userdata` (type `1b81e7e6-…`, unique `76152dc1-…`, both kept) | LBA 2967552..30617594 (105.48 GiB) | LBA 2967552..22228735, 19261184 blocks (73.47 GiB) |
+| 34 `darwin_var` (type Apple HFS+ `48465300-0000-11aa-aa11-00306543ecac`, unique `7b9f2109-07d5-4cb6-941b-d974a2425d30`) | none | LBA 22228736..30617343, 8388608 blocks (exactly 32 GiB) |
+| unallocated | none | LBA 30617344..30617594 (251 blocks, 1 MiB) |
+
+Inside userdata, pmOS's image (4096-byte sectors, 128-entry GPT): p1 `pmOS_boot` 2048..124927 unchanged; p2
+`pmOS_root` from 124928..27650037 (27525110 blocks) to 124928..19261178 (19136251 blocks, 73.0 GiB), the ext4 resized
+to exactly that, and the inner backup GPT moved to blocks 19261179..19261183 (`sgdisk -e` on a loop device limited to
+the new size, BEFORE the outer shrink: Linux's and U-Boot's GPT parsers reject a primary header whose `last_usable_lba`
+lies past the device, so the inner table has to be consistent with the smaller userdata the moment it exists).
+
+How it was done, no keys, the phone reached only over USB:
+
+1. **Backups** in `backups/lisa-planb-20261112/`: sda's GPT head and tail (64 blocks each, equal to the 2026-11-10
+   backup), userdata's inner head and tail, `dumpe2fs -h`, `extlinux.conf`, and the HFSX data volume from super's tail
+   (`var-super-tail.hfsx.zst`, raw sha256 `e12cd4a6…`, verified after decompression). No image of pmOS itself: the user
+   said the restore set `out/pmos-lisa-r17-20261110/` is enough.
+2. **The debug-shell round trip** (`tools/pmos-debug-shell.py`: telnet to 172.16.42.1:23, one marker per command):
+   `pmos.debug-shell` appended to the `append` line of `/boot/extlinux/extlinux.conf`, `bootos.sh hakios`, `fastboot oem
+   bootos:pmos`, the shell answers in about 15 s, `pmos_continue_boot` boots pmOS. The initramfs (3.12.5) enters the shell
+   BEFORE `mount_subpartitions`, so the loop device is set up by hand there (`losetup --show -Pf --direct-io=on
+   --sector-size 4096 /dev/sda33`) and detached before continuing. It has `e2fsck`, `resize2fs`, `parted`, `losetup`,
+   `blkid`, `fdisk`; no `sgdisk`.
+3. **The ext4 shrink** in that shell: `e2fsck -f -y`, `resize2fs /dev/loop0p2 19136251`, `e2fsck -f -y` (section
+   "Shrink log" below has the numbers).
+4. **The inner GPT** from normal pmOS (`apk add sgdisk`), through a second loop device: `losetup --sector-size 4096
+   --sizelimit $((19261184*4096)) /dev/sda33`, then `sgdisk -e -d 2 -n 2:124928:0 -t 2:<type> -u 2:<unique> -c 2:<name>`,
+   `sgdisk -v`, and the new table read back with `iflag=direct` and parsed on the PC. The mounted p1/p2 are untouched
+   (the table lives in blocks the filesystems never use).
+5. **The outer GPT**: the same `sgdisk -d 33 -n 33:2967552:22228735 … -n 34:22228736:30617343 …` command first on a
+   sparse image file carrying the live head and tail (`sgdisk -v`, the kernel's own parse through `losetup -P`), then on
+   `/dev/sda`; the head and tail read back must equal the simulation's byte for byte. The kernel keeps the old table
+   until the reboot, which `bootos.sh hakios` + `bootos.sh pmos` does.
+6. `pmos.debug-shell` removed again; pmOS boots from the smaller userdata (U-Boot's `pmos_boot` takes `part start/size`
+   of userdata from the new GPT; the initramfs's `resize_root_partition` and `resize_root_filesystem` find nothing to
+   grow).
+
+Then the wiring of section "Migrating A to B": `loader/data-regions.h` names only `darwin_var` now (A's super line is
+retired: `ufs_data=super` answers "no such region"), `build-standalone.sh` takes `DATAVOL_PART` (default `darwin_var`),
+`tools/var-write.sh`, `flash-root.sh` and `metal-cache-seed.sh` address the partition, and the HFSX volume was copied
+block for block from super's tail into `darwin_var` and grown there with `var_grow=1`. super is the root's alone:
+`mkimage-trim.sh` bounds the FULL image by super's 9,126,805,504 bytes (padded to 32 MiB, no longer to a fixed size), and
+`flash-root.sh` writes the image's own size.

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # darwin-lisa: the window server's compiled shader stages from the phone's data volume into the next root image.
 #
-#   PMOS_PASS=... tools/metal-cache-seed.sh            the phone in pmOS: read the HFSX data volume (super's tail,
-#                                                      read only), take its db/hakios-metal-cache (and tmp/, the
+#   PMOS_PASS=... tools/metal-cache-seed.sh            the phone in pmOS: read the HFSX data volume (the darwin_var
+#                                                      partition, read only), take its db/hakios-metal-cache (and tmp/, the
 #                                                      fallback of a boot that had no db/ directory) into
 #                                                      userland-26/out/sysroot-26/redwood/share/hakios-metal-cache,
 #                                                      where HakiosMetalCA.m looks (HM_CACHE_SEED) after its own cache
@@ -16,9 +16,10 @@
 set -euo pipefail
 M=/home/mateusseiboth/Dev/mobile
 SEED=$M/userland-26/out/sysroot-26/redwood/share/hakios-metal-cache
-VAR_OFFSET=4831838208          # the data volume: super bytes [4831838208, ...) (tools/var-write.sh ROOT_MIB)
+VAR_PART=/dev/disk/by-partlabel/darwin_var   # the data volume: its own partition since plan B (loader/data-regions.h)
+VAR_OFFSET=0
 HOST=mateus@172.16.42.1
-# (the copy of the volume is 4 GiB: the home disk, not /tmp)
+# (the copy of the volume is the volume's size, 4 to 32 GiB: the home disk, not /tmp)
 S=$(mktemp -d -p "$M/userland-26/out" metal-cache-seed.XXXXXX)
 trap 'rm -rf "$S"' EXIT
 
@@ -29,17 +30,17 @@ else
 	: "${PMOS_PASS:?PMOS_PASS (the pmOS password) in the environment, never in a file}"
 	ssh_pm() { sshpass -p "$PMOS_PASS" ssh -o StrictHostKeyChecking=no -o ConnectTimeout=10 "$HOST" "$@"; }
 	# the HFS+ volume header: 1024 bytes in; block size at +40, block count at +44 (big endian)
-	printf '%s\n' "$PMOS_PASS" | ssh_pm "sudo -S dd if=/dev/disk/by-partlabel/super bs=512 skip=$((VAR_OFFSET / 512 + 2)) count=1 2>/dev/null" > "$S/hdr"
+	printf '%s\n' "$PMOS_PASS" | ssh_pm "sudo -S dd if=$VAR_PART bs=512 skip=$((VAR_OFFSET / 512 + 2)) count=1 2>/dev/null" > "$S/hdr"
 	read -r BLOCK TOTAL < <(python3 -I -c "
 import struct,sys
 d=open('$S/hdr','rb').read()
 sig=d[0:2]
-if sig not in (b'H+', b'HX'): sys.exit('not an HFS+ volume header at super+%d: %r' % ($VAR_OFFSET, sig))
+if sig not in (b'H+', b'HX'): sys.exit('not an HFS+ volume header at $VAR_PART+%d: %r' % ($VAR_OFFSET, sig))
 bs,tb=struct.unpack('>II', d[40:48]); print(bs, tb)")
 	SIZE=$((BLOCK * TOTAL))
 	echo "metal-cache-seed: data volume: $TOTAL blocks of $BLOCK = $SIZE bytes; reading it (read only)"
-	IMAGE=$M/userland-26/out/darwin-var.hfsx          # kept: 4 GiB, read again with --image without the phone
-	printf '%s\n' "$PMOS_PASS" | ssh_pm "sudo -S sh -c 'dd if=/dev/disk/by-partlabel/super bs=1M skip=$((VAR_OFFSET / 1048576)) count=$(( (SIZE + 1048575) / 1048576 )) 2>/dev/null | gzip -1'" | gunzip > "$IMAGE"
+	IMAGE=$M/userland-26/out/darwin-var.hfsx          # kept: read again with --image without the phone
+	printf '%s\n' "$PMOS_PASS" | ssh_pm "sudo -S sh -c 'dd if=$VAR_PART bs=1M skip=$((VAR_OFFSET / 1048576)) count=$(( (SIZE + 1048575) / 1048576 )) 2>/dev/null | gzip -1'" | gunzip > "$IMAGE"
 	echo "metal-cache-seed: $(stat -c %s "$IMAGE") bytes read"
 fi
 

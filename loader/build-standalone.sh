@@ -23,8 +23,10 @@
 # Environment:
 #   KERNEL        the kernel (default research/hackios-xnu-kernel/kernel26.nopac). Use the presentation kernel
 #   AUTOBOOT      seconds the loader waits for a host (default 10)
-#   DATAVOL       1 (default): the persistent /private/var in super's tail (ufs_write=1 ufs_data=super var_ufs=1);
+#   DATAVOL       1 (default): the persistent /private/var on the flash (ufs_write=1 ufs_data=$DATAVOL_PART var_ufs=1);
 #                 0: ramfs /private/var (every boot is a first boot: much slower)
+#   DATAVOL_PART  the GPT partition of the data volume, a line of loader/data-regions.h: darwin_var (default, plan B
+#                 since 2026-11-12); super was option A, the tail of the root's partition
 #   FW_RAMDISK    an APFS image carried as the resident md0 (the WiFi firmware: userland-26/out/fw-26-pad32.apfs).
 #                 Empty (default): no WiFi (wlan_stub=1)
 #   PRESENT_EPOCH the wall clock the kernel starts from (no RTC is read anywhere): default the build time
@@ -51,6 +53,7 @@ KERNEL=${KERNEL:-$H/kernel26.nopac}
 IDENTITY=${IDENTITY:-$H/xnuloader/identity.h}
 AUTOBOOT=${AUTOBOOT:-10}
 DATAVOL=${DATAVOL:-1}
+DATAVOL_PART=${DATAVOL_PART:-darwin_var}
 FW_RAMDISK=${FW_RAMDISK:-}
 GEOMETRY=${GEOMETRY:-}
 NAME=${NAME:-standalone}
@@ -82,7 +85,11 @@ fi
 # dlisa_*: libdlisa in SpringBoard (userland/inject/presentation-springboard.patch, inside the root image): unlock once
 # at boot, no auto-lock, FrontBoard's launch watchdog x4. A root without that patch ignores them.
 ROOT="rd=md0 ufs=2 ufs_part=super ufs_root=1"
-[[ $DATAVOL = 1 ]] && ROOT="$ROOT ufs_write=1 ufs_data=super var_ufs=1"
+if [[ $DATAVOL = 1 ]]; then
+	grep -q "\.name = \"$DATAVOL_PART\"" "$M/darwin-lisa/loader/data-regions.h" ||
+		{ echo "build-standalone: DATAVOL_PART=$DATAVOL_PART is not a region of loader/data-regions.h" >&2; exit 1; }
+	ROOT="$ROOT ufs_write=1 ufs_data=$DATAVOL_PART var_ufs=1"
+fi
 WLAN="wlan_stub=1"
 [[ -n $FW_RAMDISK ]] && WLAN="wifi=1 wifi_mac=02:6c:69:73:61:01"
 [[ $WIFI = 1 ]] && WLAN="wifi=1 wifi_irq=0 wifi_mac=02:6c:69:73:61:01"

@@ -14,14 +14,15 @@ TRIM=(Applications Library/Wallpaper System/Library/OnBoardingBundles)
 IMG=system-26.apfs.trim
 LIMIT=4294967296                                   # fastboot's single-download limit
 
-# FULL=1: the flash-root image (out/system-26.apfs.full): nothing left out, bounded by the ROOT REGION of lisa's super
-# partition, the 4,831,838,208 bytes before the HFSX data volume (darwin-lisa/docs/data-volume.md; tools/flash-root.sh
-# writes exactly that many). The image is padded to that size, so a smaller build still flashes whole.
-ROOT_BYTES=4831838208
+# FULL=1: the flash-root image (out/system-26.apfs.full): nothing left out, bounded by the whole of lisa's super
+# partition, 2228224 blocks of 4096 (darwin-lisa/loader/data-regions.h: since plan B, 2026-11-12, the data volume has
+# its own partition, darwin_var, and super is the root's alone). tools/flash-root.sh writes the image's own size, a
+# multiple of 32 MiB (the padding below), and refuses anything bigger than super.
+SUPER_BYTES=9126805504
 if [ "${FULL:-0}" = 1 ]; then
 	TRIM=()
 	IMG=system-26.apfs.full
-	LIMIT=$((ROOT_BYTES + 1))
+	LIMIT=$((SUPER_BYTES + 1))
 fi
 
 # LEAN=1: also leave out the LaunchDaemons listed in lean-daemons.txt (memory; see that file).
@@ -72,7 +73,3 @@ truncate -s $(( (size + 0x1FFFFFF) / 0x2000000 * 0x2000000 )) "out/$IMG"
 size=$(stat -c %s "out/$IMG")
 echo "$IMG: $size bytes"
 [ "$size" -lt "$LIMIT" ] || { echo "$IMG is over its limit ($LIMIT bytes)" >&2; exit 1; }
-if [ "${FULL:-0}" = 1 ] && [ "$size" -lt "$ROOT_BYTES" ]; then
-	truncate -s "$ROOT_BYTES" "out/$IMG"
-	echo "$IMG: padded to the root region, $ROOT_BYTES bytes"
-fi

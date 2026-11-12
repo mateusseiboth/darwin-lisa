@@ -9,7 +9,7 @@ TAG=$1; EXTRA=$2; TIMES=$3
 KERNEL=${KERNEL:-kernel-16k-final1-fix-gpustop2.bak}
 cd "$H"
 cp "$KERNEL" hakios-kernel
-UFS="rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=super var_ufs=1"
+UFS=${UFS:-"rd=md0 ufs=2 ufs_part=super ufs_root=1 ufs_write=1 ufs_data=darwin_var var_ufs=1"}
 ARGS="loader_return_after=3000 epoch=$(date +%s) sb_delay=8 hv_wdt_pet=1 bootcpu=7 debug=0x8 -v $UFS $EXTRA"
 echo "### ${#ARGS} chars: $ARGS"
 [ ${#ARGS} -le 460 ] || { echo "too long"; exit 1; }

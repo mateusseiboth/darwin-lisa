@@ -22,7 +22,7 @@ MOBILE=/home/mateusseiboth/Dev/mobile
 MKAPFS=$MOBILE/research/hackios-xnu-kernel/tools/apfs/mkapfs.py
 FW=${WIFI_FW_DIR-$MOBILE/userland-26/out/sysroot-26/fw}
 WIFI_ARGS=${WIFI_ARGS:-wifi=1 wifi_irq=0 wifi_loud=1 wifi_mac=02:6c:69:73:61:01 rtc=1}
-DATA_ARGS="ufs_write=1 ufs_data=super var_ufs=1"
+DATA_ARGS="ufs_write=1 ufs_data=darwin_var var_ufs=1"
 
 umask 077
 WORK=$(mktemp -d -p /dev/shm wifi-run.XXXXXX)

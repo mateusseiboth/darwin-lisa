@@ -160,10 +160,31 @@ replaceInstanceMethod(const char *className, const char *selectorName, IMP repla
 	return method_setImplementation(method, replacement);
 }
 
+/* darwin-lisa, boot-arg dlisa_personas=1: containermanagerd keeps Apple's answer to personasAreSupported. The
+ * replacement below (NO) dates from the chase of lsd's user-container lookup, before the XPC check-in bug was found;
+ * with it containermanagerd believes there are no personas while CoreServices still asks usermanagerd for the persona
+ * list, and MobileInstallation registered only the applications that need no data container (2026-11-11). */
+static bool
+isBootArgSet(const char *what)
+{
+	static char arguments[1024];
+	size_t size = sizeof(arguments) - 1;
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
+		return false;
+	}
+	arguments[size] = 0;
+	return strstr(arguments, what) != NULL;
+}
+
 static void
 fixContainerManager(void)
 {
-	replaceClassMethod("MCMUserIdentityCache", "personasAreSupported", (IMP)personasAreNotSupported);
+	if (isBootArgSet("dlisa_personas=1")) {
+		say("dlisa[%s]: personasAreSupported left to Apple (dlisa_personas=1)\n", getprogname());
+	} else {
+		replaceClassMethod("MCMUserIdentityCache", "personasAreSupported", (IMP)personasAreNotSupported);
+	}
 	origDispatch = replaceInstanceMethod("MCMCommandDispatcher", "dispatchMessage:context:reply:", (IMP)sayDispatch);
 	origCommandClass = replaceInstanceMethod("MCMCommandDispatcher", "_commandClassFromXPCMessage:context:error:",
 	    (IMP)sayCommandClass);
@@ -1035,13 +1056,27 @@ isLogWanted(void)
 	return false;
 }
 
+static uint8_t logHookLevel;    /* 0 OS_LOG_TYPE_DEFAULT; 0x02 OS_LOG_TYPE_DEBUG, the lowest: every message */
+
 static void
 copyLogToConsole(void)
 {
 	if (!isLogWanted()) {
 		return;
 	}
-	previousHook = os_log_set_hook(0 /* OS_LOG_TYPE_DEFAULT and above */, ^(uint8_t type, os_log_message_t message) {
+	/* darwin-lisa, boot-arg dlisa_oslog_debug=1: the info and debug messages too (OS_LOG_TYPE_DEBUG is the lowest
+	 * level, so a hook at it sees every message): MobileInstallation says why it leaves an application out at those
+	 * levels, and at the default level only that it scanned the directory */
+	{
+		static char arguments[1024];
+		size_t size = sizeof(arguments) - 1;
+
+		if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+			arguments[size] = 0;
+			logHookLevel = strstr(arguments, "dlisa_oslog_debug=1") != NULL ? 0x02 : 0;
+		}
+	}
+	previousHook = os_log_set_hook(logHookLevel /* 0: OS_LOG_TYPE_DEFAULT and above */, ^(uint8_t type, os_log_message_t message) {
 		char *text = os_log_copy_message_string(message);
 
 		say("oslog[%s] %02x %s\n", getprogname(), type, text != NULL ? text : "?");

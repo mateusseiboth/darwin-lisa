@@ -20,12 +20,13 @@
 #define VDIR 2                  /* fsobj_type_t: enum vtype of the kernel's sys/vnode.h, which the SDK does not ship */
 #include <unistd.h>
 
+/* the attributes come back in bit order: RETURNED_ATTRS, NAME, OBJTYPE, then ERROR (0x20000000) last */
 struct bulk_entry {
 	uint32_t length;
 	attribute_set_t returned;
-	uint32_t error;
 	attrreference_t name;
 	fsobj_type_t type;
+	uint32_t error;
 };
 
 static unsigned

@@ -1,6 +1,6 @@
-diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_private.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_private.h
+diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_private.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_private.h
 --- a/air_private.h	2026-11-11 19:53:08.294437525 -0400
-+++ b/air_private.h	2026-11-11 19:55:59.221627308 -0400
++++ b/air_private.h	2026-11-11 19:57:18.939009003 -0400
 @@ -247,6 +247,21 @@
     unsigned num_params;
     struct air_val **params;
@@ -23,9 +23,9 @@ diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baa
     /* the argument buffers the entry point declares, in the order its input
      * metadata lists them, which is the order their members are numbered in */
     unsigned num_argbufs;
-diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_to_nir.c /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_to_nir.c
+diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/air_to_nir.c /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/air_to_nir.c
 --- a/air_to_nir.c	2026-11-11 19:53:08.296449194 -0400
-+++ b/air_to_nir.c	2026-11-11 19:56:38.524308027 -0400
++++ b/air_to_nir.c	2026-11-11 20:12:07.146583516 -0400
 @@ -1016,15 +1016,17 @@
         * first thing that would tell a wrong packing from a right one is a
         * pipeline that sets one of these two constants.
@@ -191,7 +191,22 @@ diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baa
        var->data.driver_location = c->nir->num_inputs++;
        if (md_key(node, "air.flat") >= 0)
           var->data.interpolation = INTERP_MODE_FLAT;
-@@ -6635,6 +6708,8 @@
+@@ -5969,7 +6042,13 @@
+       unsigned stores = 0;
+ 
+       for (unsigned k = 0; ok && k < c->m->num_globals; k++) {
+-         if (k != i && const_mentions(c->m->globals[k]->init, &g->base, 8))
++         /* darwin-lisa: not the llvm.compiler.used / llvm.used lists, which name a global to keep
++          * it and read nothing: RenderBox's __metal_implicit_attr_int_expr_N and
++          * __metal_implicit_fc_pred_N (the [[color(fc_expr)]] target and its presence predicate)
++          * are listed there, and their value is exactly what resolve_deferred_fetches needs */
++         const char *kn = c->m->globals[k]->base.name;
++         if (k != i && !(kn && !strncmp(kn, "llvm.", 5)) &&
++             const_mentions(c->m->globals[k]->init, &g->base, 8))
+             ok = false;
+       }
+ 
+@@ -6635,6 +6714,8 @@
        materialise_globals(&c);
     if (!c.error[0])
        run_static_initializers(&c);
@@ -200,9 +215,9 @@ diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baa
  
     if (!c.error[0]) {
        if (stitch) {
-diff -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/nir_air.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/nir_air.h
+diff --color -ruN /tmp/claude-1000/-home-mateusseiboth-Dev-mobile/f76d081e-3d90-45e4-baac-852911cdbf11/scratchpad/air-base/nir_air.h /home/mateusseiboth/Dev/mobile/userland-26/gpu-build/mesa/mesa-25.0.7/src/compiler/air/nir_air.h
 --- a/nir_air.h	2026-11-11 19:53:08.296973757 -0400
-+++ b/nir_air.h	2026-11-11 19:53:35.338135258 -0400
++++ b/nir_air.h	2026-11-11 19:57:18.943045751 -0400
 @@ -418,6 +418,10 @@
  struct air_constant_value {
     unsigned index;     /* the function constant's index */

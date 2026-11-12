@@ -1,0 +1,53 @@
+--- a/bsd/hfs/hfs_vnops.c
++++ b/bsd/hfs/hfs_vnops.c
+@@ -4549,6 +4549,50 @@
+ 	
+ 	/* Check the flags first, so we can avoid grabbing locks if necessary */
+ 	if (ap->a_flags) {
++		/*
++		 * darwin-lisa (kernel/patches/hfs-rename-swap.patch): VFS_RENAME_SWAP, which HFS Plus refuses, done as
++		 * three plain renames in a row: the target to a name of its own, the source to the target's name, the
++		 * target to the source's name. Not atomic, but serialised with every other rename of the volume by the
++		 * VFS's rename lock, and the end state is the swap. Why: iOS 26's Foundation swaps unconditionally
++		 * (renamex_np(RENAME_SWAP): NSFileManager's replaceItemAtURL and the _NSIRD staging directories, usermanagerd's
++		 * persona manifest and user session, containermanagerd's metadata), and on this port's HFSX data volume
++		 * every one of them failed with ENOTSUP: usermanagerd could not save its persona manifest, lsd could not
++		 * swap its staging directories, and MobileInstallation registered no application that needs a data container.
++		 */
++		if ((ap->a_flags & VFS_RENAME_SWAP) != 0 && tvp != NULL) {
++			struct vnop_renamex_args step;
++			struct componentname tmpcn;
++			char tmpname[64];
++			int err;
++
++			tmpcn = *tcnp;
++			tmpcn.cn_namelen = snprintf(tmpname, sizeof(tmpname), ".dlisa-swap-%u-%u", VTOC(tvp)->c_fileid, VTOC(fvp)->c_fileid);
++			tmpcn.cn_nameptr = tmpname;
++			tmpcn.cn_hash = 0;
++			step = *ap;
++			step.a_flags = 0;
++			step.a_vap = NULL;
++			/* 1. the target out of the way */
++			step.a_fdvp = tdvp; step.a_fvp = tvp; step.a_fcnp = tcnp;
++			step.a_tdvp = tdvp; step.a_tvp = NULL; step.a_tcnp = &tmpcn;
++			if ((err = hfs_vnop_renamex(&step)) != 0) {
++				return err;
++			}
++			/* 2. the source onto the target's name */
++			step.a_fdvp = fdvp; step.a_fvp = fvp; step.a_fcnp = fcnp;
++			step.a_tdvp = tdvp; step.a_tvp = NULL; step.a_tcnp = tcnp;
++			if ((err = hfs_vnop_renamex(&step)) != 0) {
++				/* back: the target to its name */
++				step.a_fdvp = tdvp; step.a_fvp = tvp; step.a_fcnp = &tmpcn;
++				step.a_tdvp = tdvp; step.a_tvp = NULL; step.a_tcnp = tcnp;
++				(void)hfs_vnop_renamex(&step);
++				return err;
++			}
++			/* 3. the target onto the source's name */
++			step.a_fdvp = tdvp; step.a_fvp = tvp; step.a_fcnp = &tmpcn;
++			step.a_tdvp = fdvp; step.a_tvp = NULL; step.a_tcnp = fcnp;
++			return hfs_vnop_renamex(&step);
++		}
+ 		/* These are the only flags we support for now */
+ 		if ((ap->a_flags & (VFS_RENAME_EXCL)) == 0) {
+ 			return ENOTSUP;	

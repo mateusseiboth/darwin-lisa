@@ -81,6 +81,9 @@ keeps the volume consistent either way.
 | `var_migrate=1` | init26 | do not write DataMigrator's "already migrated" record (default: written at every boot) |
 | `ufs_data_restore_ms=N` | kernel | with `ufs_native=1`: when the kernel's list goes back in after writes (0 = end of run) |
 | `ufs_write_first=N` | kernel | can only raise the floor; normally not needed |
+| `ls_reset=1` | init26 | LaunchServices' stores, installd's markers and the MobileGestalt cache go; apps and extensions register again this boot |
+| `cc_reset=1` | init26 | `mobile/Library/ControlCenter/*` goes (ControlsIconState, ModuleConfiguration, ControlsMigrationSettings): a layout saved while no module or control was registered is empty and stays so; the default controls are laid out again |
+| `poster_reset=1` | init26 | `mobile/Library/Application Support/PRBPosterExtensionDataStore/*` and PosterBoard's defaults go; PosterBoard sets the default posters up again (PBFInitialPosterHelper) |
 
 The A line, added to the usual flash-root arguments:
 

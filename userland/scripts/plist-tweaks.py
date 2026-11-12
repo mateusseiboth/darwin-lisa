@@ -141,9 +141,26 @@ def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DIS
     return path
 
 
+LOGGING_PREFS = "Library/Preferences/Logging/com.apple.system.logging.plist"
+
+
+def saveLoggingPrivateData(sysroot):
+    """libtrace reads this plist at every process's start: Enable-Private-Data makes os_log format its %{private}
+    arguments instead of printing <private>, so the lines libdlisa copies to the console (dlisa_oslog=NAME) carry
+    the paths and errors a diagnosis needs (PosterBoard's "Failed to migrate to Version 61 from 59 (<private>)")."""
+    path = os.path.join(sysroot, LOGGING_PREFS)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "wb") as f:
+        plistlib.dump({"Enable-Private-Data": True}, f, fmt=plistlib.FMT_BINARY)
+    os.chmod(path, 0o644)
+    print(f"plist-tweaks: {LOGGING_PREFS}: Enable-Private-Data")
+    return path
+
+
 if __name__ == "__main__":
     for name, change in TWEAKS.items():
         tweak(name, change)
     for board in BOARDS:
         saveDefaultTimingProfile(SYSROOT, board)
     saveLdGroups(SYSROOT, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lean-daemons.txt"))
+    saveLoggingPrivateData(SYSROOT)

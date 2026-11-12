@@ -660,6 +660,23 @@ mountVar(void)
 		if (bootArgNumber("ls_reset", 0) == 1) {
 			resetLaunchServices();
 		}
+		/* cc_reset=1: Control Center's saved layout goes (ControlsIconState.plist, ModuleConfiguration.plist,
+		 * ControlsMigrationSettings.plist under mobile/Library/ControlCenter): a layout saved by a boot on which the
+		 * module bundles and the apps' controls were not yet registered is empty, and SpringBoard keeps showing that
+		 * empty Control Center on every later boot; without the files it lays the default controls out again. */
+		if (bootArgNumber("cc_reset", 0) == 1) {
+			emptyTree("/private/var/mobile/Library/ControlCenter", 0);
+			printf("init26: VAR cc_reset: Control Center's saved layout removed; the default controls are laid out again this boot\n");
+		}
+		/* poster_reset=1: PosterBoard's store goes (mobile/Library/Application Support/PRBPosterExtensionDataStore,
+		 * and its defaults): PosterBoard sets the default lock-screen and home-screen posters up again (its
+		 * PBFInitialPosterHelper), as on a first boot. */
+		if (bootArgNumber("poster_reset", 0) == 1) {
+			emptyTree("/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore", 0);
+			unlink("/private/var/mobile/Library/Preferences/com.apple.PosterBoard.unprotectedUserDefaults.plist");
+			unlink("/private/var/mobile/Library/Preferences/com.apple.PosterBoard.plist");
+			printf("init26: VAR poster_reset: PosterBoard's store and defaults removed; the default posters are set up again this boot\n");
+		}
 	}
 	for (const struct var_skel *e = VAR_SKEL; e->path != NULL; e++) {
 		size_t n = strlen("/private/var") + strlen(e->path) + 1;

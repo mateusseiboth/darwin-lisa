@@ -84,7 +84,7 @@ keeps the volume consistent either way.
 | `ls_reset=1` | init26 | LaunchServices' stores, installd's markers and the MobileGestalt cache go; apps and extensions register again this boot |
 | `cc_reset=1` | init26 | `mobile/Library/ControlCenter/*` goes (ControlsIconState, ModuleConfiguration, ControlsMigrationSettings): a layout saved while no module or control was registered is empty and stays so; the default controls are laid out again |
 | `poster_reset=1` | init26 | `mobile/Library/Application Support/PRBPosterExtensionDataStore/*` and PosterBoard's defaults go; PosterBoard sets the default posters up again (PBFInitialPosterHelper) |
-| `poster_seed=1` | init26 | makes `PRBPosterExtensionDataStore/61/{Extensions,GalleryCache}` (mobile:mobile): PosterBoard 23F84 makes a fresh store at 59 and its 59 to 61 step fails on this volume, so the store never opens; found at 61 there is nothing to migrate. Use with `poster_reset=1` once |
+| `poster_seed=1` | init26 | **obsolete, do not use** (2026-11-12): makes `PRBPosterExtensionDataStore/61/{Extensions,GalleryCache}` and removes 59. A 61 without its SQLite file and without readable protection classes is never "viable" to PosterBoard, so it starts from 59 again; the real cause and fix are in section 5, "PosterBoard's data store" |
 
 The A line, added to the usual flash-root arguments:
 
@@ -335,11 +335,54 @@ boots, and it adds hard links, `exchangedata`, `F_FULLFSYNC`/`F_BARRIERFSYNC` (s
 | APFS snapshots (`fs_snapshot_*`) | ENOTSUP | softwareupdateservicesd/UpdateBrainService (OTA), backupd, mobile_obliterator | not on the boot path; logs only |
 | purgeable / space fsctls (`APFSIOC_*_PURGEABLE*`, `ATTR_CMNEXT_PRIVATESIZE`) | ENOTTY / 0 | deleted / CacheDelete, mediaanalysisd, nsurlsessiond, Settings storage | logs; "purgeable space" reads 0 |
 | `F_PUNCHHOLE` | not supported | logd (Persist/Special tracev3 files), corespotlightd | logd falls back to truncation. Watch for `logd` errors about `F_PUNCHHOLE` |
-| data protection: `F_SETPROTECTIONCLASS`, `open_dprotected_np`, `ATTR_CMN_DATA_PROTECT_FLAGS` | ENOTSUP (`CONFIG_PROTECT 0` in HFS, no AppleKeyStore) | securityd/keychain sqlite, every NSFileProtection user, keybagd | same as ramfs today |
+| data protection: `F_SETPROTECTIONCLASS`, `open_dprotected_np`, `ATTR_CMN_DATA_PROTECT_FLAGS` | ENOTSUP (`CONFIG_PROTECT 0` in HFS, no AppleKeyStore); `NSURLFileProtectionKey` reads **nil** | securityd/keychain sqlite, every NSFileProtection user, keybagd, **PosterBoard** | same as ramfs today, except PosterBoard: its data store never opened (no wallpaper, black lock screen and Notification Center) until libdlisa read nil as None there (below) |
 | `renamex_np(RENAME_SWAP)` | **was** ENOTSUP (`RENAME_EXCL` works); since `kernel/patches/hfs-rename-swap.patch` (2026-11-11) three renames under the VFS rename lock | Foundation's `replaceItemAtURL` and `_NSIRD` staging (lsd), usermanagerd's persona manifest and user session, containermanagerd's metadata | it did NOT fall back: usermanagerd never saved `/private/var/keybags/persona.kb` ("Failed to atomically swap writing file: [45]"), CoreServices' persona list was ENOENT, and MobileInstallation registered no app that needs a data container (25 of 252 on the home screen). Watch `Operation not supported` with `swap` in any daemon's log |
 | `UF_DATAVAULT` / `SF_DATALESS` flags | ignored or EINVAL | TCC/privacy directories, FileProvider | watch `chflags` errors in tccd/containermanagerd |
 | volume role / fstype checks (`statfs` `f_fstypename == "apfs"`, `APFSIOC_GET_VOLUME_ROLE`) | `hfs`, no role | MobileStorage, containermanagerd, lsd | today they see `ramfs` |
 | sparse files | none (HFS allocates) | sqlite WAL/shm, dyld caches in /var | space only; 4 GiB budget |
+
+### PosterBoard's data store (2026-11-12, found offline)
+
+Symptom: no wallpaper, and the lock screen and Notification Center black (no poster, no big clock). PosterBoard's log
+(host runs gpu-v2..v7, `dlisa_oslog=PosterBoard`), 5 times a boot:
+
+    Beginning migration to Version 59 (file:///var/mobile/Library/Application%20Support/)
+    Failed to migrate to Version 61 from 59 (file:///var/mobile/Library/Application%20Support/)
+    Successfuly setup data store @ baseURL '...'          <- printed because the NSError is nil
+    could not initialize data store: ... "Data store could not be created for an unknown reason which evades explanation."
+
+No syscall fails and there is no errno. The chain, from the 23F84 shared cache (`ipsw dyld disass`/`xref`):
+
+1. `+[PBFPosterExtensionDataStoreMigrator migrateDataStoreAtBaseURL:fromVersion:toVersion:...]` (0x21fb90574) loops
+   from the store version to 61. For each version v it makes `PRBPosterExtensionDataStore/v` and its `Extensions/`
+   and `GalleryCache/` if missing (attributes `PFFileProtectionNoneAttributes`), then calls
+   `_PBFDetermineDataStoreViabilityForVersionWithinBaseURL(base, v)` (0x21fb8c6c0). False with no error is the
+   "Failed to migrate to Version 61 from 59" line (0x21fb91cb0) and the success flag goes to NO.
+2. The viability check wants every store directory (and from 60 on, the SQLite file) to pass
+   `-[NSURL pbf_URLIsReachableAndConformToResourceValues:]` against PosterFoundation's
+   `PFPosterPathURLResourceValues` = `{NSURLIsReadableKey: YES, NSURLFileProtectionKey: NSURLFileProtectionNone}`,
+   key by key with `getResourceValue:forKey:error:` and `BSEqualObjects`.
+3. CoreServicesInternal's getter for `NSURLFileProtectionKey` (0x196d32a54) maps the attribute class 1..4 to
+   Complete, CompleteUnlessOpen, CompleteUntilFirstUserAuthentication, None, and anything else to **nil**. HFS here is
+   built with `CONFIG_PROTECT 0` (`bsd/hfs/kext-config.h`): `va_dataprotect_class` is never supported, the class is 0,
+   the value nil, and `nil != NSURLFileProtectionNone`. Apple's HFS answers the same on any unprotected volume.
+4. `_mostUpToDateValidDataStoreToMigrateFrom` uses the same check, so a directory made at 61 (`poster_seed=1`) is not
+   viable either and the migration always starts at 59.
+
+The fix (libdlisa, `userland/inject/file-protection.c`, `fixPosterBoard`): in PosterBoard only,
+`-[NSURL getResourceValue:forKey:error:]` and `-[NSURL resourceValuesForKeys:error:]` answer
+`NSURLFileProtectionNone` for `NSURLFileProtectionKey` when the original lookup succeeded with nil **and** the file's
+volume has no `MNT_CPROTECT`. That is the truth on this volume (no file has a class), the kernel stays as it is, and a
+protected volume keeps Apple's answer. Everything after the viability check works on HFS: the SQLite store is opened
+with `SQLITE_OPEN_FILEPROTECTION_NONE` (`guarded_open_dprotected_np`; the class is dropped on create, as for every
+other daemon here), the 59 to 60 to 61 copies are `copyItemAtURL` (copyfile falls back from clone), and
+`com.apple.runningboard.can-suspend-locked` is an ordinary xattr. A kernel change (HFS reporting class D on an
+unprotected volume) would also do it, but it changes what every daemon's `F_GETPROTECTIONCLASS` sees, so it was left
+out. `poster_seed` is obsolete.
+
+What the fixed boot should say: `dlisa[PosterBoard]: -[NSURL getResourceValue:forKey:error:] replaced`, a few
+`... read as NSURLFileProtectionNone`, then `Kicking off 60 migration`, `Kicking off 61 migration`, `Successfuly setup
+data store`, and no `Failed to migrate` or `could not initialize data store`.
 
 **HakiOS 16.5 shims.** None for any of these. Nothing in its `userland/src` (inject\*, tweaks) works around
 clonefile, snapshots, purgeable space or `F_PUNCHHOLE`. Its only `/private/var` handling was the HFS mount, the

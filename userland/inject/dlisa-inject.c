@@ -27,6 +27,12 @@
  *       SpringBoard wait on lsd. Told that personas are not supported, containermanagerd answers with the
  *       POSIX user's home (/var/mobile), as HakiOS did on iOS 16.5.
  *
+ *   PosterBoard
+ *       Its poster data store (wallpaper, lock screen and Notification Center clock) wants every store directory
+ *       to read NSURLFileProtectionKey = NSURLFileProtectionNone, and the HFSX data volume has no content
+ *       protection, so the key reads nil and the 59 to 61 migration never gets past 59 (file-protection.c). On a
+ *       volume without MNT_CPROTECT a nil class reads as NSURLFileProtectionNone.
+ *
  * Only Objective-C runtime calls: nothing here depends on addresses inside the dyld shared cache.
  */
 #include <CoreFoundation/CoreFoundation.h>
@@ -43,8 +49,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/mount.h>
 #include <sys/sysctl.h>
 #include <unistd.h>
+
+#include "file-protection.c"
+
+_Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
 
 extern const char *getprogname(void);
 
@@ -962,6 +973,91 @@ fixSpringBoard(void)
 	}
 }
 
+/* ---- PosterBoard ----------------------------------------------------------------------------------- */
+
+static bool (*origGetResourceValue)(id, SEL, id *, id, id *);
+static id (*origResourceValuesForKeys)(id, SEL, id, id *);
+
+/* statfs's f_flags of the volume holding a file URL; MNT_CPROTECT (left alone) when it cannot be told */
+static uint64_t
+readVolumeFlags(id url)
+{
+	struct statfs volume;
+	const char *path;
+
+	if (!((bool (*)(id, SEL))objc_msgSend)(url, sel_registerName("isFileURL"))) {
+		return MNT_CPROTECT;
+	}
+	path = ((const char *(*)(id, SEL))objc_msgSend)(url, sel_registerName("fileSystemRepresentation"));
+	if (path == NULL || statfs(path, &volume) != 0) {
+		return MNT_CPROTECT;
+	}
+	return volume.f_flags;
+}
+
+static bool
+isFileProtectionKey(id key)
+{
+	return key != nil && CFEqual((CFTypeRef)key, kCFURLFileProtectionKey);
+}
+
+static void
+sayProtectionNone(id url)
+{
+	static int said;
+
+	if (said++ < 4) {
+		say("dlisa[%s]: %s: no file protection class on this volume, read as NSURLFileProtectionNone\n", getprogname(),
+		    describe(url));
+	}
+}
+
+/* -[NSURL getResourceValue:forKey:error:]: PosterBoard's store viability check asks the key by key */
+static bool
+getResourceValueWithProtectionNone(id self, SEL selector, id *value, id key, id *error)
+{
+	bool succeeded = origGetResourceValue(self, selector, value, key, error);
+
+	if (value == NULL || !isFileProtectionKey(key)) {
+		return succeeded;
+	}
+	if (isProtectionNoneImplied(succeeded, *value == nil, readVolumeFlags(self))) {
+		*value = (id)kCFURLFileProtectionNone;
+		sayProtectionNone(self);
+	}
+	return succeeded;
+}
+
+/* -[NSURL resourceValuesForKeys:error:]: the same answer when the key comes in a set */
+static id
+resourceValuesWithProtectionNone(id self, SEL selector, id keys, id *error)
+{
+	id values = origResourceValuesForKeys(self, selector, keys, error);
+	id key = (id)kCFURLFileProtectionKey;
+	id copy;
+
+	if (values == nil || keys == nil || !((bool (*)(id, SEL, id))objc_msgSend)(keys, sel_registerName("containsObject:"), key)) {
+		return values;
+	}
+	if (!isProtectionNoneImplied(true, ((id (*)(id, SEL, id))objc_msgSend)(values, sel_registerName("objectForKey:"), key) == nil,
+	    readVolumeFlags(self))) {
+		return values;
+	}
+	copy = ((id (*)(id, SEL))objc_msgSend)(values, sel_registerName("mutableCopy"));
+	((void (*)(id, SEL, id, id))objc_msgSend)(copy, sel_registerName("setObject:forKey:"), (id)kCFURLFileProtectionNone, key);
+	sayProtectionNone(self);
+	return ((id (*)(id, SEL))objc_msgSend)(copy, sel_registerName("autorelease"));
+}
+
+static void
+fixPosterBoard(void)
+{
+	origGetResourceValue = (bool (*)(id, SEL, id *, id, id *))replaceMethod('-', "NSURL", "getResourceValue:forKey:error:",
+	    (IMP)getResourceValueWithProtectionNone);
+	origResourceValuesForKeys = (id (*)(id, SEL, id, id *))replaceMethod('-', "NSURL", "resourceValuesForKeys:error:",
+	    (IMP)resourceValuesWithProtectionNone);
+}
+
 /* ---- which program gets which fix ------------------------------------------------------------------ */
 
 static const struct {
@@ -974,6 +1070,7 @@ static const struct {
 	{ "backboardd", startTouchScreen },
 	{ "SpringBoard", fixSpringBoard },
 	{ "Preferences", withoutAsynchronousLayerHosts },
+	{ "PosterBoard", fixPosterBoard },
 };
 
 /*

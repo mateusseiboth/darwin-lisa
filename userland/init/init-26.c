@@ -677,6 +677,25 @@ mountVar(void)
 			unlink("/private/var/mobile/Library/Preferences/com.apple.PosterBoard.plist");
 			printf("init26: VAR poster_reset: PosterBoard's store and defaults removed; the default posters are set up again this boot\n");
 		}
+		/* poster_seed=1: the store's directory is made at the version PosterBoard 23F84 wants (61), with the two
+		 * directories a store holds, owned by mobile. PosterBoard makes a fresh store at version 59 and then steps it
+		 * to 61, and that step fails here ("Failed to migrate to Version 61 from 59"), so the store never opens and no
+		 * poster is ever set up; found at 61 there is nothing to migrate. (poster_reset=1 first clears the old 59.) */
+		if (bootArgNumber("poster_seed", 0) == 1) {
+			static const char *const dirs[] = { "/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore",
+				"/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/61",
+				"/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/61/Extensions",
+				"/private/var/mobile/Library/Application Support/PRBPosterExtensionDataStore/61/GalleryCache" };
+			int madeDirs = 0;
+
+			for (unsigned i = 0; i < sizeof(dirs) / sizeof(dirs[0]); i++) {
+				if (mkdir(dirs[i], 0755) == 0) {
+					madeDirs++;
+				}
+				chown(dirs[i], 501, 501);
+			}
+			printf("init26: VAR poster_seed: PosterBoard's store seeded at version 61 (%d directories made)\n", madeDirs);
+		}
 	}
 	for (const struct var_skel *e = VAR_SKEL; e->path != NULL; e++) {
 		size_t n = strlen("/private/var") + strlen(e->path) + 1;

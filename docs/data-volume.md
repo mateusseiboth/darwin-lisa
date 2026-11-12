@@ -84,6 +84,7 @@ keeps the volume consistent either way.
 | `ls_reset=1` | init26 | LaunchServices' stores, installd's markers and the MobileGestalt cache go; apps and extensions register again this boot |
 | `cc_reset=1` | init26 | `mobile/Library/ControlCenter/*` goes (ControlsIconState, ModuleConfiguration, ControlsMigrationSettings): a layout saved while no module or control was registered is empty and stays so; the default controls are laid out again |
 | `poster_reset=1` | init26 | `mobile/Library/Application Support/PRBPosterExtensionDataStore/*` and PosterBoard's defaults go; PosterBoard sets the default posters up again (PBFInitialPosterHelper) |
+| `poster_seed=1` | init26 | makes `PRBPosterExtensionDataStore/61/{Extensions,GalleryCache}` (mobile:mobile): PosterBoard 23F84 makes a fresh store at 59 and its 59 to 61 step fails on this volume, so the store never opens; found at 61 there is nothing to migrate. Use with `poster_reset=1` once |
 
 The A line, added to the usual flash-root arguments:
 

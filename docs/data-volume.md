@@ -410,6 +410,37 @@ keep Apple's call. Expected on the next boot: `dlisa[PosterBoard]: -[NSURL pbf_s
 `no purgeable state on this volume, unmark taken as done`, 0 `Error marking`, 0 `createNewStoreCoordinatorWithPath`
 errors, 0 `Failed to setup static descriptors`.
 
+**Confirmed on the phone** (poster-f2, root 8d63b36c, `logs/poster-f2-end.log`): 0 `Error marking`, 0 coordinator
+errors, the static descriptors of the extensions that have them are made, and 12 extensions' dynamic descriptors come
+back "Finished SUCCESSFULLY". Still no wallpaper, and the Notification Center black. What is left, in order:
+
+- `(updateExtensions/...) Failed to update static descriptors for <13 extensions>; error: (null)`: **not an error**.
+  `-_stateLock_updateDescriptorsFromStaticDescriptorsForExtensionBundleIdentifier:reason:error:` (0x21fb3a570) filters
+  the identifiers of the extension's Info.plist (`pbf_staticDescriptorIdentifiers`) by the roles PosterBoard supports;
+  when none is left it records the provider info (`kProactiveStaticPosterDescriptorOrdering`,
+  `StaticPersistentIdentifier`) and returns NO without an error (0x21fb3b110), and the caller logs that line
+  (0x21fb39418). Those extensions only have dynamic descriptors, which are then reloaded and succeed.
+- **CollectionsPoster dies at every start**, the extension of Apple's default wallpapers (pid 254, SIGABRT after
+  211 ms; PosterBoard's reload ends in NSCocoaErrorDomain 4099):
+
+      *** Terminating app due to uncaught exception 'NSInvalidArgumentException', reason:
+      'WKWallpaperRepresentingCollectionsManager: `Collections.plist` (path: '/Library/Wallpaper/Collections/Collections.plist')
+      does not contain valid value for keypath: 'order''
+
+  `-[WKWallpaperRepresentingCollectionsManager _loadSystemWallpaperCollections]` (WallpaperKit, 0x20cead2ec) builds
+  `Collections~<MGCopyAnswer("GSDeviceName") lowercased>.plist`, falls back to `Collections.plist`, and raises when
+  `order` is missing. `+[WKDefaultWallpaperManager defaultWallpaperLookupURL]` (0x20ceaaa04) reads
+  `DefaultWallpapers~<GSDeviceName>.plist` with no fallback. The 23F84 image is the iPad's: `/Library/Wallpaper` holds
+  only the `~ipad` files, and lisa answers as an iPhone. Fix (`userland/scripts/plist-tweaks.py`,
+  `saveIphoneWallpaperLookups`, run by every image build): `Collections~iphone.plist` and `Collections.plist` with the
+  collections a phone can show (folder without a device suffix, `supportedDeviceClasses` absent or with iPhone) in the
+  iPad file's order (Stripe `2939274C`, Bokeh `D4894D14`), and `DefaultWallpapers~iphone.plist` = Stripe, wallpaper
+  7365 (Green). Both are procedural (no image files), so the iPad-sized Lake and iPadOS 17 images are not offered.
+- The date "Wed 31 Dec" in the Notification Center is the system clock, not the poster: poster-f2's launchd lines are
+  stamped 1969-12-31 20:00 (epoch 0, UTC-4) although the host line had `epoch=`. Separate from the posters.
+- `dlisa[CollectionsPoster]: -[NSURL pbf_setPurgable:error:] not found; left alone` is expected: PosterBoard.framework
+  is not loaded there, only PosterFoundation's two methods are.
+
 **HakiOS 16.5 shims.** None for any of these. Nothing in its `userland/src` (inject\*, tweaks) works around
 clonefile, snapshots, purgeable space or `F_PUNCHHOLE`. Its only `/private/var` handling was the HFS mount, the
 skeleton and the logd markers, and its fixes were in the kernel (ramfs page-cache coherency, `cow_test.c`). On the

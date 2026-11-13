@@ -167,6 +167,62 @@ def saveLoggingPrivateData(sysroot):
     return path
 
 
+# WallpaperKit's system collections on a phone (2026-11-13, host run poster-f2). The 23F84 image is the iPad's: it ships
+# Collections~ipad.plist and DefaultWallpapers~ipad.plist only. -[WKWallpaperRepresentingCollectionsManager
+# _loadSystemWallpaperCollections] reads Collections~<GSDeviceName lowercased>.plist, else Collections.plist, and
+# raises when 'order' is missing; -[WKDefaultWallpaperManager defaultWallpaperLookupURL] reads
+# DefaultWallpapers~<GSDeviceName>.plist with no fallback. On lisa (an iPhone identity) the first is missing, so
+# CollectionsPoster, the extension of Apple's default wallpapers, died with an uncaught NSException ("Collections.plist
+# ... does not contain valid value for keypath: 'order'") at every start, and no poster was ever made.
+WALLPAPER = "Library/Wallpaper"
+WALLPAPER_COLLECTIONS = "Library/Wallpaper/Collections"
+WALLPAPER_IPAD_ORDER = "Collections~ipad.plist"
+WALLPAPER_DEVICE_CLASS = "iPhone"
+
+
+def readPhoneCollections(folder):
+    """(identifier, wallpaper order) of the collections a phone can show: a folder without a device suffix
+    (Lake~ipad, iPadOS_17~ipad hold iPad-sized images only) whose supportedDeviceClasses, when given, has iPhone."""
+    found = {}
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".wallpaperCollection") or "~" in name:
+            continue
+        with open(os.path.join(folder, name, "WallpaperCollection.plist"), "rb") as f:
+            metadata = plistlib.load(f)
+        classes = metadata.get("supportedDeviceClasses")
+        if classes is not None and WALLPAPER_DEVICE_CLASS not in classes:
+            continue
+        found[metadata["identifier"]] = metadata.get("order", [])
+    return found
+
+
+def saveIphoneWallpaperLookups(sysroot):
+    folder = os.path.join(sysroot, WALLPAPER_COLLECTIONS)
+    if not os.path.isdir(folder):
+        return []
+    phone = readPhoneCollections(folder)
+    with open(os.path.join(folder, WALLPAPER_IPAD_ORDER), "rb") as f:
+        ipadOrder = plistlib.load(f).get("order", [])
+    order = [identifier for identifier in ipadOrder if identifier in phone]
+    order += [identifier for identifier in phone if identifier not in order]
+    made = []
+    for name in ("Collections~iphone.plist", "Collections.plist"):
+        made.append(savePlist(os.path.join(folder, name), {"order": order}))
+    first = order[0]
+    default = {"default": {"collectionIdentifier": first, "wallpaperIdentifier": phone[first][0]}}
+    made.append(savePlist(os.path.join(sysroot, WALLPAPER, "DefaultWallpapers~iphone.plist"), default))
+    print(f"plist-tweaks: {WALLPAPER_COLLECTIONS}/Collections(~iphone).plist: {len(order)} collections; "
+          f"DefaultWallpapers~iphone.plist: {first} {phone[first][0]}")
+    return made
+
+
+def savePlist(path, value):
+    with open(path, "wb") as f:
+        plistlib.dump(value, f, fmt=plistlib.FMT_BINARY)
+    os.chmod(path, 0o644)
+    return path
+
+
 if __name__ == "__main__":
     for name, change in TWEAKS.items():
         tweak(name, change)
@@ -174,3 +230,4 @@ if __name__ == "__main__":
         saveDefaultTimingProfile(SYSROOT, board)
     saveLdGroups(SYSROOT, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lean-daemons.txt"))
     saveLoggingPrivateData(SYSROOT)
+    saveIphoneWallpaperLookups(SYSROOT)

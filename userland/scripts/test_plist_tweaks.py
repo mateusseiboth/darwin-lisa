@@ -102,5 +102,64 @@ class LdGroupsTest(unittest.TestCase):
         self.assertEqual(path, os.path.join(self.root, "private/etc/dlisa-ld-groups.conf"))
 
 
+class IphoneWallpaperLookupsTest(unittest.TestCase):
+    """The 23F84 iPad image ships only Collections~ipad.plist and DefaultWallpapers~ipad.plist; WallpaperKit on a phone
+    reads Collections~iphone.plist (else Collections.plist) and DefaultWallpapers~iphone.plist."""
+
+    STRIPE = "2939274C-F444-4AA8-806E-6E3FAFBA79B1"
+    BOKEH = "D4894D14-DB0F-4D04-AB02-07C39C5E5466"
+    LAKE = "B18891A2-4DB9-43A8-8C97-39C9CC7322AE"
+    IPADOS = "62879BFA-F700-4384-83E1-7AD1CC0D081E"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.wallpaper = os.path.join(self.root, "Library/Wallpaper")
+        self.collections = os.path.join(self.wallpaper, "Collections")
+        writePlist(os.path.join(self.collections, "Collections~ipad.plist"),
+                   {"order": [self.IPADOS, "A8434BA6-DDDE-4DCC-9F9A-21A9F8013B8F", self.LAKE, self.STRIPE, self.BOKEH]})
+        self.addCollection("iPadOS_17~ipad", {"identifier": self.IPADOS, "order": [7570]})
+        self.addCollection("Lake~ipad", {"identifier": self.LAKE, "order": [7560]})
+        self.addCollection("Stripe", {"identifier": self.STRIPE, "order": [7365, 7370]})
+        self.addCollection("Bokeh", {"identifier": self.BOKEH, "order": [5010, 5020],
+                                     "supportedDeviceClasses": ["iPhone"]})
+        self.addCollection("PadOnly", {"identifier": "11111111-0000-0000-0000-000000000000", "order": [1],
+                                       "supportedDeviceClasses": ["iPad"]})
+
+    def addCollection(self, name, metadata):
+        writePlist(os.path.join(self.collections, f"{name}.wallpaperCollection/WallpaperCollection.plist"), metadata)
+
+    def read(self, relative):
+        with open(os.path.join(self.wallpaper, relative), "rb") as f:
+            return plistlib.load(f)
+
+    def testOrderHasThePhoneCollectionsInTheIpadOrder(self):
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        self.assertEqual(self.read("Collections/Collections~iphone.plist"), {"order": [self.STRIPE, self.BOKEH]})
+
+    def testPlainCollectionsPlistIsTheSame(self):
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        self.assertEqual(self.read("Collections/Collections.plist"), self.read("Collections/Collections~iphone.plist"))
+
+    def testDefaultIsTheFirstWallpaperOfTheFirstCollection(self):
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        self.assertEqual(self.read("DefaultWallpapers~iphone.plist"),
+                         {"default": {"collectionIdentifier": self.STRIPE, "wallpaperIdentifier": 7365}})
+
+    def testIpadFilesAreLeftAlone(self):
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        self.assertEqual(self.read("Collections/Collections~ipad.plist")["order"][0], self.IPADOS)
+
+    def testRunTwiceIsTheSame(self):
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        first = self.read("Collections/Collections.plist")
+        tweaks.saveIphoneWallpaperLookups(self.root)
+        self.assertEqual(self.read("Collections/Collections.plist"), first)
+
+    def testNoWallpaperFolderMakesNothing(self):
+        empty = tempfile.mkdtemp()
+        self.assertEqual(tweaks.saveIphoneWallpaperLookups(empty), [])
+        self.assertFalse(os.path.exists(os.path.join(empty, "Library/Wallpaper")))
+
+
 if __name__ == "__main__":
     unittest.main()

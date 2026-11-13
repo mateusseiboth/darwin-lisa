@@ -31,6 +31,9 @@ export EXTRA_ARGS="$FEATURES${EXTRA_ARGS:+ $EXTRA_ARGS}"
 # the identity's own SoC and board (identity-soc.py), or the loader would still say t8015 / 0x8015 under an iPhone14,4
 grep -q '^#define IDENTITY_CHIP_ID' "$IDENTITY" || { echo "build-combined: $IDENTITY has no SoC block:" \
 	"darwin-lisa/loader/identity-soc.py ipsw/d16-dtree/DeviceTree.d16ap.bin $IDENTITY" >&2; exit 1; }
+# and its /buttons "home-button-type" (2 on the 13 mini), or MobileGestalt says "home button" (docs/home-button-type.md)
+grep -q '^#define IDENTITY_HOME_BUTTON_TYPE' "$IDENTITY" || { echo "build-combined: $IDENTITY has no home-button-type:" \
+	"darwin-lisa/loader/identity-soc.py ipsw/d16-dtree/DeviceTree.d16ap.bin $IDENTITY" >&2; exit 1; }
 "$M/darwin-lisa/loader/build-standalone.sh"
 line=$(cat "$M/out/$NAME-cmdline.txt")
 echo "build-combined: the boot-arg line is ${#line} characters of at most 460 (room for $((460 - ${#line})) more)"

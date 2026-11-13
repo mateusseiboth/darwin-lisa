@@ -13,6 +13,9 @@ appends #defines with the values that belong to the identity's own board, and th
   IDENTITY_CHIP_ID           /chosen "chip-id": 0xNNNN of that same tNNNN (Apple numbers its SoCs so: t8015 = 0x8015)
   IDENTITY_BOARD_ID          /chosen "board-id": the board's ApBoardID (BOARDS below)
   IDENTITY_REGULATORY_MODEL  root "regulatory-model-number" (BOARDS below)
+  IDENTITY_HOME_BUTTON_TYPE  /buttons "home-button-type" of the tree, when it has one (loader/identity-buttons.patch):
+                             MobileGestalt's HomeButtonType comes from there alone, and is 0 (a home button) without
+                             it; 2 is "no home button" (the iPhone X and later)
 
 Run it again on the same header: the block it wrote before is replaced. The header stays Apple data, out of git.
 """
@@ -49,6 +52,17 @@ def text(value):
     return value.split(b'\0')[0].decode()
 
 
+def child(root, name):
+    return next((c for c in root[1] if text(c[0].get('name', b'')) == name), None)
+
+
+def home_button_type(root):
+    """/buttons "home-button-type" (a 32-bit number), or None when the tree has neither"""
+    buttons = child(root, 'buttons')
+    value = buttons[0].get('home-button-type') if buttons else None
+    return struct.unpack('<I', value[:4])[0] if value and len(value) >= 4 else None
+
+
 def main():
     if len(sys.argv) != 3:
         sys.exit(__doc__)
@@ -56,7 +70,7 @@ def main():
     board = text(root[0]['target-sub-type'])
     if board not in BOARDS:
         sys.exit(f'identity-soc: no board table entry for {board}')
-    arm_io = next(c for c in root[1] if text(c[0].get('name', b'')) == 'arm-io')
+    arm_io = child(root, 'arm-io')
     m = re.fullmatch(r'arm-io,(t([0-9a-f]{4}))', text(arm_io[0]['compatible']))
     if m is None:
         sys.exit(f'identity-soc: /arm-io compatible {arm_io[0]["compatible"]!r} is not arm-io,tNNNN')
@@ -64,18 +78,20 @@ def main():
     if board.encode() + b'\0' not in _root_bytes(header):
         sys.exit(f'identity-soc: {sys.argv[2]} is not the identity of {board} (mkidentity.py of the same tree)')
     info = BOARDS[board]
-    block = '\n'.join([
+    buttons = home_button_type(root)
+    lines = [
         BEGIN,
         f'#define IDENTITY_PLATFORM_NAME     "{m.group(1)}"',
         f'#define IDENTITY_CHIP_ID           0x{m.group(2)}',
         f'#define IDENTITY_BOARD_ID          0x{info["board_id"]:02x}',
         f'#define IDENTITY_REGULATORY_MODEL  "{info["regulatory"]}"',
-        END,
-    ]) + '\n'
+    ]
+    lines += [f'#define IDENTITY_HOME_BUTTON_TYPE  {buttons}'] if buttons is not None else []
+    block = '\n'.join(lines + [END]) + '\n'
     header = re.sub(re.escape(BEGIN) + r'.*?' + re.escape(END) + r'\n', '', header, flags=re.S)
     open(sys.argv[2], 'w').write(header.rstrip('\n') + '\n\n' + block)
     print(f'{sys.argv[2]}: {board}: platform {m.group(1)}, chip-id 0x{m.group(2)}, board-id 0x{info["board_id"]:02x}, '
-          f'regulatory {info["regulatory"]}')
+          f'regulatory {info["regulatory"]}, home-button-type {buttons}')
 
 
 def _root_bytes(header):

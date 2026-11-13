@@ -1,0 +1,24 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -3675,6 +3675,21 @@
+ 	}
+ 	dt_end(&w);
+ 
++	/*
++	 * darwin-lisa (loader/identity-buttons.patch): the iPhone's /buttons as far as Darwin reads it for the
++	 * kind of home button. MobileGestalt's HomeButtonType is this "home-button-type" and nothing else, 0 (a
++	 * home button) when the node is missing; 2 is no home button. From it SpringBoard takes the screen type
++	 * (with 2 at 375x812@3 and artwork 2340, the iPhone 13 mini's own), the notch it hands to UIKit (the
++	 * split status bar) and the gestures (home indicator, Control Center from the top right). Only that
++	 * property: no compatible, so no driver matches the node, and MobileGestalt's other /buttons answers stay
++	 * as they were.
++	 */
++#ifdef IDENTITY_HOME_BUTTON_TYPE
++	dt_begin(&w, "buttons");
++	dt_prop_u32(&w, "home-button-type", IDENTITY_HOME_BUTTON_TYPE);
++	dt_end(&w);
++#endif
++
+ 	/* IOKit publishes its NVRAM object on this node; without it IOKit asserts. */
+ 	dt_begin(&w, "options");
+ 	dt_end(&w);

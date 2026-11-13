@@ -7,7 +7,13 @@
  *
  *   backboardd
  *       The HID event server. With no Apple multitouch driver it has no touch screen: a virtual HID service made
- *       from inside it turns the samples of /dev/hakios-touch into digitizer events (HakiOS 16.5's way).
+ *       from inside it turns the samples of /dev/hakios-touch into digitizer events (HakiOS 16.5's way). A lone
+ *       contact is always path 1 / identity 2, whatever its finger number (touch-slots.c). Boot-arg dlisa_scroll=SECS
+ *       drags a list up and down like a finger from SECS seconds of uptime (scroll-stroke.c).
+ *
+ *   Preferences, SpringBoard
+ *       Boot-arg dlisa_uiprobe=NAME,...: touches the app is handed, its main run loop, a display link of its own and
+ *       backtraces of a stuck main thread, every 2 s (startUiProbe()).
  *
  *   SpringBoard
  *       iOS 26 decides at start whether the Setup Assistant has to run (BYSetupAssistantNeedsToRun: nothing in a
@@ -45,10 +51,13 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <mach/mach.h>
+#include <mach/mach_time.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -56,10 +65,14 @@
 #include <string.h>
 #include <sys/mount.h>
 #include <sys/sysctl.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "file-protection.c"
+#include "name-list.c"
 #include "purgeable.c"
+#include "scroll-stroke.c"
+#include "touch-slots.c"
 
 _Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
 
@@ -376,7 +389,7 @@ findHidFunctions(void)
 #define FIELD_DIGITIZER_DISPLAY_INTEGRATED 0xb0019
 #define TOUCH_MODE_WAKE                 0xfe    /* "TouchDetectionMode": the display is off, a tap is to wake it */
 
-#define MAX_FINGERS     10
+#define MAX_FINGERS     TOUCH_FINGERS
 
 /*
  * A finger that lands this close to an edge (a fraction of the width or height) came in over that edge. Apple's
@@ -393,6 +406,10 @@ static struct {
 } fingers[MAX_FINGERS];
 
 static volatile int touchMode;
+
+/* the path slot of each contact (touch-slots.c); fingers[] and slots are the input thread's and dlisa_scroll's */
+static struct touchSlots slots;
+static pthread_mutex_t touchLock = PTHREAD_MUTEX_INITIALIZER;
 
 struct hidService {
 	CFMutableDictionaryRef properties;
@@ -552,6 +569,9 @@ sendTouch(IOHIDServiceClientRef screen, const struct hakiosTouch *t)
 	if (f >= MAX_FINGERS || (t->type != TOUCH_DOWN && !fingers[f].touching)) {
 		return;
 	}
+	if (t->type == TOUCH_DOWN) {
+		takeTouchSlot(&slots, f);
+	}
 	fingers[f].touching = t->type != TOUCH_UP;
 	fingers[f].x = t->x / 65535.0;
 	fingers[f].y = t->y / 65535.0;
@@ -570,7 +590,9 @@ sendTouch(IOHIDServiceClientRef screen, const struct hakiosTouch *t)
 		if (!fingers[i].touching && i != f) {
 			continue;
 		}
-		finger = hid.createFinger(NULL, t->time, i + 1, i + 2,
+		int slot = findTouchSlot(&slots, i);
+
+		finger = hid.createFinger(NULL, t->time, touchPathIndex(slot), touchPathIdentity(slot),
 		    (i == f ? change : 0) | (fingers[i].edge ? DIGITIZER_FROM_EDGE_TIP : 0), fingers[i].x, fingers[i].y, 0,
 		    fingers[i].touching ? 1.0 : 0.0, 0, fingers[i].touching, fingers[i].touching, 0);
 		hid.setInteger(finger, FIELD_DIGITIZER_DISPLAY_INTEGRATED, 1);
@@ -579,6 +601,17 @@ sendTouch(IOHIDServiceClientRef screen, const struct hakiosTouch *t)
 	}
 	hid.virtualDispatch(screen, hand);
 	CFRelease(hand);
+	if (t->type == TOUCH_UP) {
+		releaseTouchSlot(&slots, f);
+	}
+}
+
+static void
+sendTouchLocked(IOHIDServiceClientRef screen, const struct hakiosTouch *t)
+{
+	pthread_mutex_lock(&touchLock);
+	sendTouch(screen, t);
+	pthread_mutex_unlock(&touchLock);
 }
 
 static void
@@ -618,6 +651,75 @@ isWakingTap(IOHIDServiceClientRef buttons, const struct hakiosTouch *t, unsigned
 	return true;
 }
 
+static long bootArgNumber(const char *name);
+
+static uint64_t
+uptimeMillis(void)
+{
+	return clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1000000;
+}
+
+/*
+ * Boot-arg dlisa_scroll=SECS: from SECS seconds of uptime (the kernel log's clock), dlisa_scroll_n=N strokes (default
+ * 8, about 17 s) of a finger dragging the list in the middle of the screen up and down, at the panel's rate and held
+ * before each lift (scroll-stroke.c). Sent as finger 8 through the same service as the panel's samples, so it is a
+ * real finger to the event server; touch_synth (finger 9) and a hand on the glass should keep out of its window.
+ */
+#define SCROLL_FINGER   8
+#define SCROLL_PAUSE_MS 400
+
+static void
+sendStroke(IOHIDServiceClientRef screen, unsigned index)
+{
+	struct strokePlan plan = buildStrokePlan(index);
+	size_t count = strokeSampleCount(&plan);
+
+	for (size_t k = 0; k < count; k++) {
+		struct strokeSample s = strokeSampleAt(&plan, k);
+		struct hakiosTouch t = { .time = mach_absolute_time(), .type = s.type, .finger = SCROLL_FINGER, .x = s.x, .y = s.y };
+
+		sendTouchLocked(screen, &t);
+		usleep(STROKE_SAMPLE_MS * 1000);
+	}
+}
+
+static void *
+scrollThread(void *argument)
+{
+	IOHIDServiceClientRef screen = argument;
+	uint64_t start = (uint64_t)bootArgNumber("dlisa_scroll") * 1000, begun;
+	long strokes = bootArgNumber("dlisa_scroll_n");
+
+	pthread_setname_np("dlisa scroll");
+	strokes = strokes > 0 && strokes <= 200 ? strokes : 8;
+	while (uptimeMillis() < start) {
+		usleep(100000);
+	}
+	begun = uptimeMillis();
+	say("dlisa[%s]: scroll: %ld strokes from uptime %llu.%03llu s\n", getprogname(), strokes, begun / 1000, begun % 1000);
+	for (long i = 0; i < strokes; i++) {
+		sendStroke(screen, (unsigned)i);
+		usleep(SCROLL_PAUSE_MS * 1000);
+	}
+	say("dlisa[%s]: scroll: %ld strokes from uptime %llu.%03llu to %llu.%03llu s (%u moves %u ms apart, held %u ms, "
+	    "each)\n", getprogname(), strokes, begun / 1000, begun % 1000, uptimeMillis() / 1000, uptimeMillis() % 1000,
+	    STROKE_MOVES, STROKE_SAMPLE_MS, STROKE_HELD * STROKE_SAMPLE_MS);
+	return NULL;
+}
+
+static void
+startScriptedScroll(IOHIDServiceClientRef screen)
+{
+	pthread_t thread;
+
+	if (bootArgNumber("dlisa_scroll") <= 0) {
+		return;
+	}
+	if (pthread_create(&thread, NULL, scrollThread, (void *)screen) == 0) {
+		pthread_detach(thread);
+	}
+}
+
 static void *
 inputThread(__unused void *argument)
 {
@@ -629,6 +731,7 @@ inputThread(__unused void *argument)
 	int device;
 
 	pthread_setname_np("dlisa input");
+	initTouchSlots(&slots);         /* before any sample: a zeroed table would have every finger in slot 0 */
 	if (!findHidFunctions()) {
 		return NULL;
 	}
@@ -654,6 +757,7 @@ inputThread(__unused void *argument)
 	if (screen == NULL) {
 		return NULL;
 	}
+	startScriptedScroll(screen);
 	while (read(device, &t, sizeof(t)) == (ssize_t)sizeof(t)) {
 		if (count++ < 64) {
 			say("dlisa[%s]: input: sample %u type %u finger %u at %u %u (mode %#x)\n", getprogname(), count, t.type, t.finger,
@@ -666,7 +770,7 @@ inputThread(__unused void *argument)
 			continue;
 		}
 		if (!isWakingTap(buttons, &t, &waking)) {
-			sendTouch(screen, &t);
+			sendTouchLocked(screen, &t);
 		}
 	}
 	say("dlisa[%s]: input: %s: %s\n", getprogname(), TOUCH_DEVICE, strerror(errno));
@@ -1206,36 +1310,24 @@ sayBacktrace(void)
 	say("%s\n", line);
 }
 
-/* dlisa_oslog=all, or dlisa_oslog=NAME,NAME,...: is this program one of them? */
+/* KEY=all, KEY=1 or KEY=NAME,NAME,... (name-list.c): is this program one of them? */
 static bool
-isLogWanted(void)
+isNamedHere(const char *key)
 {
 	static char arguments[1024];
 	size_t size = sizeof(arguments) - 1;
-	const char *name = getprogname();
-	size_t length = strlen(name);
-	char *at;
 
 	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
 		return false;
 	}
 	arguments[size] = 0;
-	at = strstr(arguments, "dlisa_oslog=");
-	if (at == NULL) {
-		return false;
-	}
-	at += strlen("dlisa_oslog=");
-	if (strncmp(at, "all", 3) == 0 || strncmp(at, "1", 1) == 0) {
-		return true;
-	}
-	while (*at != 0 && *at != ' ') {
-		if (strncmp(at, name, length) == 0 && (at[length] == ',' || at[length] == ' ' || at[length] == 0)) {
-			return true;
-		}
-		at += strcspn(at, ", ");
-		at += *at == ',';
-	}
-	return false;
+	return isNamedByBootArg(arguments, key, getprogname());
+}
+
+static bool
+isLogWanted(void)
+{
+	return isNamedHere("dlisa_oslog");
 }
 
 static uint8_t logHookLevel;    /* 0 OS_LOG_TYPE_DEFAULT; 0x02 OS_LOG_TYPE_DEBUG, the lowest: every message */
@@ -1272,6 +1364,245 @@ copyLogToConsole(void)
 	});
 }
 
+/*
+ * Boot-arg dlisa_uiprobe=NAME,NAME,... (or all): inside those apps (Preferences and SpringBoard load this library),
+ * what the main thread does while the screen is touched, every 2 s that something happened:
+ *   dlisa[Preferences]: probe 2.0 s: touches 37 (began 1 moved 35 ended 1 cancelled 0), runloop 80 turns, busiest
+ *   14 ms; display link 61 calls in its 1 s
+ * - touches: what -[UIApplication sendEvent:] was handed (none while a finger moves: the event server does not
+ *   deliver to this app);
+ * - runloop: turns of the main run loop and the longest stretch between waking and waiting again;
+ * - display link: a CADisplayLink of ours on the main run loop, running 1 s in every 10 (about 60 calls when the app
+ *   gets its refresh callbacks; 0 when it does not), and the first callbacks' timestamp, targetTimestamp and duration;
+ * - "main thread stuck N ms": the main thread has not gone back to waiting for over 500 ms, and where it is (pc, lr
+ *   and the frame chain, unslid: `ipsw dsc a2s` names them).
+ */
+#define PROBE_EVERY_MS          2000
+#define PROBE_STUCK_MS          500
+#define PROBE_LINK_EVERY_S      10
+#define PROBE_FRAMES            14
+
+static struct {
+	_Atomic uint32_t phases[5];             /* UITouchPhase: began, moved, stationary, ended, cancelled */
+	_Atomic uint32_t touchEvents, turns, busiestMs, linkCalls, stuck;
+	_Atomic uint64_t busySince;             /* uptime ms the main run loop woke, 0 while it waits */
+	_Atomic bool waitedOnce;
+	thread_act_t mainThread;
+	id link;
+} probe;
+
+static void (*origSendEvent)(id, SEL, id);
+
+static void
+probeSendEvent(id self, SEL selector, id event)
+{
+	long type = ((long (*)(id, SEL))objc_msgSend)(event, sel_registerName("type"));
+
+	if (type == 0) {                        /* UIEventTypeTouches */
+		id touch = SEND0(id, SEND0(id, event, "allTouches"), "anyObject");
+		long phase = touch != nil ? ((long (*)(id, SEL))objc_msgSend)(touch, sel_registerName("phase")) : -1;
+
+		probe.touchEvents++;
+		if (phase >= 0 && phase < 5) {
+			probe.phases[phase]++;
+		}
+	}
+	origSendEvent(self, selector, event);
+}
+
+static void
+probeTick(__unused id self, __unused SEL selector, id link)
+{
+	static int said;
+	double timestamp = ((double (*)(id, SEL))objc_msgSend)(link, sel_registerName("timestamp"));
+	double target = ((double (*)(id, SEL))objc_msgSend)(link, sel_registerName("targetTimestamp"));
+	double duration = ((double (*)(id, SEL))objc_msgSend)(link, sel_registerName("duration"));
+
+	probe.linkCalls++;
+	if (said++ < 3) {
+		say("dlisa[%s]: probe: display link call: timestamp %.4f target %.4f duration %.4f (uptime %.4f)\n", getprogname(),
+		    timestamp, target, duration, clock_gettime_nsec_np(CLOCK_UPTIME_RAW) / 1e9);
+	}
+}
+
+static void
+watchMainRunLoop(void)
+{
+	CFRunLoopObserverRef observer = CFRunLoopObserverCreateWithHandler(NULL, kCFRunLoopAfterWaiting | kCFRunLoopBeforeWaiting,
+	    true, 0, ^(__unused CFRunLoopObserverRef o, CFRunLoopActivity activity) {
+		uint64_t now = uptimeMillis();
+
+		if (activity == kCFRunLoopAfterWaiting) {
+			probe.busySince = now;
+			return;
+		}
+		if (probe.busySince != 0 && now - probe.busySince > probe.busiestMs) {
+			probe.busiestMs = (uint32_t)(now - probe.busySince);
+		}
+		probe.busySince = 0;
+		probe.waitedOnce = true;
+		probe.turns++;
+	});
+
+	CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes);
+}
+
+/* on the main queue: a display link of ours, paused but for 1 s in every PROBE_LINK_EVERY_S */
+static void
+startProbeDisplayLink(void)
+{
+	Class targetClass = objc_allocateClassPair(objc_getClass("NSObject"), "DLisaProbeTarget", 0);
+	id target, runLoop;
+
+	if (targetClass == Nil || objc_getClass("CADisplayLink") == Nil) {
+		say("dlisa[%s]: probe: no display link\n", getprogname());
+		return;
+	}
+	class_addMethod(targetClass, sel_registerName("tick:"), (IMP)probeTick, "v@:@");
+	objc_registerClassPair(targetClass);
+	target = SEND0(id, SEND0(id, (id)targetClass, "alloc"), "init");
+	probe.link = ((id (*)(id, SEL, id, SEL))objc_msgSend)((id)objc_getClass("CADisplayLink"),
+	    sel_registerName("displayLinkWithTarget:selector:"), target, sel_registerName("tick:"));
+	runLoop = SEND0(id, (id)objc_getClass("NSRunLoop"), "mainRunLoop");
+	((void (*)(id, SEL, id, id))objc_msgSend)(probe.link, sel_registerName("addToRunLoop:forMode:"), runLoop,
+	    (id)kCFRunLoopCommonModes);
+	((void (*)(id, SEL, bool))objc_msgSend)(probe.link, sel_registerName("setPaused:"), true);
+}
+
+static void
+setProbeLinkPaused(bool paused)
+{
+	dispatch_async(dispatch_get_main_queue(), ^{
+		if (probe.link != nil) {
+			((void (*)(id, SEL, bool))objc_msgSend)(probe.link, sel_registerName("setPaused:"), paused);
+		}
+	});
+}
+
+/* the main thread's pc, lr and frame chain, read while it is suspended (vm_read_overwrite: a bad frame pointer
+ * ends the walk instead of faulting) */
+static void
+sayMainThreadStuck(uint64_t busyMs)
+{
+	arm_thread_state64_t state;
+	mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+	uint64_t frames[PROBE_FRAMES], fp, pair[2];
+	size_t length = 0;
+	uintptr_t slide = (uintptr_t)_dyld_get_shared_cache_range(&length) - 0x180000000UL;
+	int n = 0, used;
+	char line[600];
+
+	if (thread_suspend(probe.mainThread) != KERN_SUCCESS) {
+		return;
+	}
+	if (thread_get_state(probe.mainThread, ARM_THREAD_STATE64, (thread_state_t)&state, &count) == KERN_SUCCESS) {
+		frames[n++] = state.__pc;
+		frames[n++] = state.__lr;
+		for (fp = state.__fp; n < PROBE_FRAMES && fp != 0 && (fp & 7) == 0; fp = pair[0]) {
+			vm_size_t got = 0;
+
+			if (vm_read_overwrite(mach_task_self(), (vm_address_t)fp, sizeof(pair), (vm_address_t)pair, &got) !=
+			    KERN_SUCCESS || got != sizeof(pair) || pair[0] <= fp) {
+				break;
+			}
+			frames[n++] = pair[1];
+		}
+	}
+	thread_resume(probe.mainThread);
+	used = snprintf(line, sizeof(line), "dlisa[%s]: probe: main thread stuck %llu ms; pc, lr, frames (unslid):",
+	    getprogname(), busyMs);
+	for (int i = 0; i < n && used < (int)sizeof(line) - 20; i++) {
+		used += snprintf(line + used, sizeof(line) - (size_t)used, " %lx",
+		    (unsigned long)((frames[i] & 0x0000007fffffffffULL) - slide));
+	}
+	say("%s\n", line);
+}
+
+static void
+sayProbeWindow(uint64_t elapsedMs, bool linkWindow)
+{
+	say("dlisa[%s]: probe %llu.%llu s at uptime %llu s: touches %u (began %u moved %u ended %u cancelled %u), runloop %u "
+	    "turns, busiest %u ms%s; display link %u calls%s\n", getprogname(), elapsedMs / 1000, elapsedMs % 1000 / 100,
+	    uptimeMillis() / 1000, probe.touchEvents, probe.phases[0], probe.phases[1], probe.phases[3], probe.phases[4],
+	    probe.turns, probe.busiestMs, probe.stuck ? ", stuck" : "", probe.linkCalls,
+	    linkWindow ? " in its 1 s" : " (paused)");
+	probe.touchEvents = 0;
+	for (int i = 0; i < 5; i++) {
+		probe.phases[i] = 0;
+	}
+	probe.turns = 0;
+	probe.busiestMs = 0;
+	probe.linkCalls = 0;
+	probe.stuck = 0;
+}
+
+static void *
+probeThread(__unused void *argument)
+{
+	uint64_t windowStart = uptimeMillis(), linkUntil = 0, nextLink = uptimeMillis() + 5000, sampledSpan = 0;
+	int samples = 0, takenThisSpan = 0;
+	bool linkWindow = false;
+
+	pthread_setname_np("dlisa probe");
+	for (;;) {
+		uint64_t now, since, busy;
+
+		usleep(100000);
+		now = uptimeMillis();
+		since = probe.busySince;
+		busy = since != 0 ? now - since : 0;
+		takenThisSpan = since == sampledSpan ? takenThisSpan : 0;
+		/* a stuck stretch gets a backtrace after 0.5 s and another after 3.5 s; 40 in all */
+		if (probe.waitedOnce && samples < 40 && busy > PROBE_STUCK_MS + (uint64_t)takenThisSpan * 3000 &&
+		    takenThisSpan < 2) {
+			probe.stuck++;
+			sayMainThreadStuck(busy);
+			samples++;
+			takenThisSpan++;
+			sampledSpan = since;
+		}
+		if (now >= nextLink) {
+			setProbeLinkPaused(false);
+			linkWindow = true;
+			linkUntil = now + 1000;
+			nextLink = now + PROBE_LINK_EVERY_S * 1000;
+		}
+		if (linkUntil != 0 && now >= linkUntil) {
+			setProbeLinkPaused(true);
+			linkUntil = 0;
+		}
+		if (now - windowStart < PROBE_EVERY_MS) {
+			continue;
+		}
+		if (probe.touchEvents != 0 || probe.stuck != 0 || probe.linkCalls != 0 || linkWindow) {
+			sayProbeWindow(now - windowStart, linkWindow);
+		}
+		linkWindow = linkUntil != 0;
+		windowStart = now;
+	}
+	return NULL;
+}
+
+static void
+startUiProbe(void)
+{
+	pthread_t thread;
+
+	if (!isNamedHere("dlisa_uiprobe") || objc_getClass("UIApplication") == Nil) {
+		return;
+	}
+	probe.mainThread = mach_thread_self();  /* the constructor runs on the main thread */
+	origSendEvent = (void (*)(id, SEL, id))replaceMethod('-', "UIApplication", "sendEvent:", (IMP)probeSendEvent);
+	watchMainRunLoop();
+	dispatch_async(dispatch_get_main_queue(), ^{
+		startProbeDisplayLink();
+	});
+	if (pthread_create(&thread, NULL, probeThread, NULL) == 0) {
+		pthread_detach(thread);
+	}
+	say("dlisa[%s]: probe: on (touches, main run loop, display link, stuck main thread)\n", getprogname());
+}
+
 __attribute__((constructor)) static void
 dlisaInjectInit(void)
 {
@@ -1279,6 +1610,7 @@ dlisaInjectInit(void)
 
 	pointStderrAtConsole();
 	copyLogToConsole();
+	startUiProbe();
 
 	for (size_t i = 0; i < sizeof(FIXES) / sizeof(FIXES[0]); i++) {
 		if (strcmp(name, FIXES[i].program) == 0) {

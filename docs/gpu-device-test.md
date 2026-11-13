@@ -1,5 +1,103 @@
 # GPU on the phone: the run book (one session)
 
+## Session 11 (2026-11-13, host only): Settings "draws nothing while scrolled" is a run with no scroll in it
+
+Nothing was run on the phone. Question: why Settings stops making frames while a finger scrolls it (Session 10, S9-A/B).
+
+**No finger reached the panel in S9-A or S9-B.** Evidence, `research/hackios-xnu-kernel/logs/`:
+- The Goodix driver counts what the controller reports. Both runs, at uptime 131, 199 and 268 s and at the end:
+  `goodix: so far 3 reports in ... looks (0 bad), 0 finger positions` (3 reports = the probe at start). S8-A, same
+  evening, counted 489 positions when someone did touch (126.99-127.35 s and ~200 s).
+- The 51 backboardd `input: sample` lines of each run are all finger 9, touch_synth's: tap 2 (samples 1-2), `up`
+  22 (3-24), `cc` 27 (25-51). None is a panel finger (0 and up).
+- S9-A and S9-B screenshots q3-q6 differ only by the loader's console text (1148 pixels each), which two hands would
+  not do. S8-B, which ran `scr@215,scrd@230` into Settings, is the same picture as S9-A (no scroll) at q3-q6.
+
+So "2 submissions in 52.4 s" is an idle Settings, not a stall, and the 730 ms made-to-committed buffer belongs to
+the launch. Either nobody touched in the window or the controller reported nothing; the run below tells which.
+
+**The synthetic scroll has never acted inside Settings**: prof1, gov1 (11-11), v6, p1-p5, c1-c2, d1-d3, e1-e3, S8-A/B
+(S8-B = S9-A above; c2's "ended scrolled in one frame" is the shift below, which S9 has with no gesture at all). e1
+(`touch_lat=1`): the launch animation swaps until 211.67 s, then no swap until 239.98 s, across `scr` at 233.94-234.30.
+In SpringBoard the same finger 9 works (the icon tap, `up`, `cc`). A real finger in Settings drew 27 frames a
+second (planb-standalone, root 183d17b8). What libdlisa sends differs in one thing only: the path index and identity
+came from the finger number, so touch_synth's finger 9 was path 10 / identity 11 and the panel's lone finger path 1 /
+identity 2.
+
+**Settings by itself** (every run, no input needed): at the minute change (20:04:00 for this epoch) the app commits
+its first frame since the launch and the status bar's clock is drawn empty (`gpu-s9a-q4.png`); 10-30 s later the
+status bar is gone and the list sits ~190 px higher (`q5`, and c2's `q4`). Noted, not chased: it is the app's own
+status bar text and layout.
+
+**Display link.** No logged run has shown an app getting a touch, so nothing says yet whether apps get refresh
+callbacks; the probe below counts them.
+
+**Changes (libdlisa `ef2a85a2` = f61dbf9b + these; the toolchain rebuilds f61dbf9b from HEAD byte for byte):**
+- `userland/inject/touch-slots.c`: a contact takes the lowest path slot no other contact holds while it is down; a
+  lone finger, the panel's or touch_synth's, is path 1 / identity 2 (the panel's finger 0 is unchanged). The candidate
+  fix for the synthetic touches; the run says whether it was the cause.
+- `userland/inject/scroll-stroke.c`, boot-arg `dlisa_scroll=SECS` (`dlisa_scroll_n=N`, default 8): from SECS of
+  uptime, inside backboardd, a finger drags the middle of the screen up and down over 38 % of it: 150 moves 8 ms apart,
+  held 160 ms, lifted, 400 ms between strokes (~17 s). No fling, so every frame of a stroke is the finger's. Logs
+  `dlisa[backboardd]: scroll: N strokes from uptime A to B s`. It replaces the finger for the fps measurement.
+- `dlisa_uiprobe=NAME,...|1` (Preferences, SpringBoard, any libdlisa process with UIKit): every 2 s that something
+  happened, `dlisa[Preferences]: probe 2.0 s at uptime N s: touches T (began moved ended cancelled), runloop R turns,
+  busiest M ms; display link C calls in its 1 s`; a CADisplayLink of its own runs 1 s in every 10 (about 60 calls
+  when the app gets refresh callbacks) and logs its first timestamps; `probe: main thread stuck N ms; pc, lr, frames
+  (unslid)` when the main run loop has not gone back to waiting for 0.5 s (`ipsw dsc a2s` names the addresses).
+- `userland/inject/name-list.c`: the NAME list parsing (dlisa_oslog's, now shared).
+- `tools/scroll_window.py LOG`: frames a second from the timestamped `MiniIOMobileFramebuffer` 5 s windows inside the
+  scroll window, PASS when each is at least 15/s; the probe lines in it.
+- Host tests: `sh userland/inject/test/run-tests.sh` (5 files, 0 failures), `python3 -m unittest test_scroll_window`
+  in `tools/` (8 tests).
+
+**Root `userland-26/out/system-26.apfs.full-98ada8c8`** (4,999,610,368 B, 61209 files, 24194 directories, 821
+symlinks): `mkapfs.py -z` from a hard-link copy of `out/sysroot-26` (copy deleted after) with plug-in glass9
+(`HakiosMetal` 13ea2c9a, `Info.plist` 3769fa7f) and libdlisa ef2a85a2, and without the three wallpaper plists the
+poster work added to the sysroot at 00:44 (`Library/Wallpaper/DefaultWallpapers~iphone.plist`,
+`Collections/Collections~iphone.plist`, `Collections/Collections.plist`), which 8d63b36c does not have. Read back:
+the same 86225 paths as 8d63b36c; `metal_test` dd0bddc5, `dlisa-inject.conf` 86a53398, `dlisa-ld-groups.conf`
+820c3683 as there. So it is 8d63b36c with libdlisa changed. The shared sysroot is untouched (libdlisa f61dbf9b,
+glass7). The dylib alone: `userland-26/out/libdlisa-uiprobe/libdlisa.dylib`.
+
+### The run (one trip; root only, kernel rc3, vendor_boot untouched)
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-98ada8c8   # reads back 98ada8c8
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
+# S11-A (453 chars): tap Settings at 190 (uptime ~219), scripted scroll at uptime 255-272, the owner's finger after
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s11a "$B metal_fps=1 cpus=4 touch_seq=tap:56800:5600@190 dlisa_scroll=255 dlisa_uiprobe=1" "150 200 240 262 275 290 305 320"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+The owner, by the `### T0` clock (script seconds): at +150..+180 swipe the home screen pages with a finger (proves
+the panel reports in this boot); hands off from +185 to +275; at +280..+305 scroll Settings slowly up and down with a
+finger; hands off after.
+
+Read:
+- `python3 -I darwin-lisa/tools/scroll_window.py research/hackios-xnu-kernel/logs/gpu-s11a-end.log`: frames a second
+  inside the scripted strokes, and Preferences' probe lines in that window.
+- `grep -a "goodix: so far" ...end.log`: finger positions above 0 after +150 (the panel works), and growing again
+  after +280.
+- `grep -a "dlisa\[Preferences\]: probe" ...end.log`: touches, display link calls, stuck backtraces.
+- `gpu-s11a-q4.png` (+262, mid-strokes) against `q3` (+240): the list moved.
+
+| scripted scroll | probe in Preferences | meaning, next |
+|---|---|---|
+| PASS (every 5 s window at least 15 frames/s) | touches > 0 | the path index was the cause. The scroll is measurable on the host now: fps and GPU a buffer (`metal_fps`) are the 60 fps work |
+| FAIL, ~0 frames | touches > 0, `stuck` lines | the main thread is blocked: the backtraces say on what |
+| FAIL, ~0 frames | touches > 0, no stuck, display link 0 calls | the app gets no refresh callbacks and UIKit waits for them: the display link path from backboardd to apps |
+| FAIL, ~0 frames | touches 0 | the event server does not hand the app the touches (not the index): `dlisa_oslog=backboardd` around the strokes |
+
+And the finger part: if `goodix: so far` stays at 0 positions while the owner touches, the controller is not
+reporting in that boot (a touch driver problem, apart from everything above).
+
+Pass of the session: the scripted scroll draws continuously (every whole window at least 15 frames a second; the
+finger's 27 is the reference) and the probe shows Preferences getting the touches. Rollback: `tools/flash-root.sh
+userland-26/out/system-26.apfs.full-8d63b36c` (only libdlisa differs). Without the new boot-args ef2a85a2 changes one
+thing: the path index and identity of a contact (a lone finger is path 1 / identity 2, as the panel's finger always
+was).
+
 ## Session 9 (2026-11-12 evening, host only): where a heavy pass's time goes, and compressed offscreen targets
 
 Nothing was run on the phone. Goal: the Settings scroll (26-27 fps, 12.5-12.9 ms of GPU a command buffer) and the

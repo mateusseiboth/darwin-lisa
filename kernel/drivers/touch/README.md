@@ -51,7 +51,24 @@ function used is still exported by iOS 26's IOKit). See `userland/inject/dlisa-i
 - kernel: `touch_synth: swipe up #N posted ...`
 - backboardd: `dlisa[backboardd]: input: "darwin-lisa touch screen" opened by the event server (attempt N)`,
   `input: touch screen service 0x..., buttons 0x...`, `input: touch detection mode 0x1`, and the first 64 samples
-  `input: sample N type T finger F at X Y`.
+  `input: sample N type T finger F at X Y`. Finger 9 is touch_synth's; the panel's own fingers are 0 and up. Only the
+  `goodix: so far ... F finger positions` count says whether a hand touched the glass.
+
+## Path index and identity (libdlisa, 2026-11-13)
+
+A contact goes to the event server with the lowest path slot no other contact holds while it is down
+(`userland/inject/touch-slots.c`): a lone finger, the panel's or touch_synth's, is path index 1 / identity 2, as
+Apple's driver sends one finger. Before, the finger number chose them, so touch_synth's finger 9 was path 10 /
+identity 11, and inside apps (Settings) it never did anything while SpringBoard took it (docs/gpu-device-test.md,
+Session 11).
+
+## Scripted finger scroll (libdlisa, boot-arg `dlisa_scroll=SECS`)
+
+From SECS seconds of uptime (the kernel log's clock), `dlisa_scroll_n=N` strokes (default 8, about 17 s) down the
+middle of the screen, alternately up and down over 38 % of it: 150 moves 8 ms apart, held 160 ms, then lifted (no
+fling), 400 ms between strokes (`userland/inject/scroll-stroke.c`). Made inside backboardd as finger 8 of the same
+service, so it is a finger to the event server. backboardd logs `dlisa[backboardd]: scroll: N strokes from uptime A
+to B s`; `tools/scroll_window.py LOG` gives the frames a second inside that window.
 
 ## Hand test (the user, at the phone)
 

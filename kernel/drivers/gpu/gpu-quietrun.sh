@@ -24,6 +24,7 @@ timeout 60 fastboot stage run-payload.bin >/dev/null 2>&1
 timeout 20 fastboot oem clearscreen >/dev/null 2>&1
 timeout 20 fastboot oem run >/dev/null 2>&1
 T0=$(date +%s)
+echo "### T0 (oem run) $(date +%T -d @$T0)"
 n=0
 for t in $TIMES; do
 	n=$((n + 1))

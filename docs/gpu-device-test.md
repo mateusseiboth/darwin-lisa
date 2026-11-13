@@ -98,6 +98,77 @@ userland-26/out/system-26.apfs.full-8d63b36c` (only libdlisa differs). Without t
 thing: the path index and identity of a contact (a lone finger is path 1 / identity 2, as the panel's finger always
 was).
 
+## Session 10 (2026-11-12 23:49 to 2026-11-13 00:41, on the phone): S8-A/B, S9-A/B, posters
+
+One trip, phone in pmOS between runs, every run ended in pmOS (`tools/bootos.sh pmos`), 0 `no answer` lines, no
+hang, no panic. Logs in `research/hackios-xnu-kernel/logs/` (`gpu-s8a*`, `gpu-s8b*`, `gpu-s9a*`, `gpu-s9b*`,
+`poster-f1*`, `poster-f2*`); the host side of each run in `darwin-lisa/logs/run-*.out`. `gpu-quietrun.sh` now prints
+`### T0 (oem run) HH:MM:SS`, so a finger window can be given in wall-clock time. A condensed reader of an end log
+(framebuffer windows, GPU windows, backboardd's commits and draws by core) was a scratch script; its columns are the
+ones below.
+
+**S8-A/B (kernel `kernel-16k-s8-select.bak` 0270ca71, root e07b4390, c2's line).** The 5 s window of the boot's
+lock-to-home animation:
+
+| run | cpus | frames in 5 s | intervals <18 / 18-26 / 26-35 / longer | commits on time / late / stall | backboardd draws on the A55s | GPU a submission |
+|---|---|---|---|---|---|---|
+| S8-A | 7 | 171 (34/s) | 127 / 4 / 9 / 11 | 93 / 10 / 3 | 1 % (71 of 8194, cpu6) | 5.6 ms |
+| S8-B | 4 | 185 (37/s) | 140 / 0 / 18 / 10 | 97 / 10 / 2 | 0 | 6.1 ms |
+| c2 (Session 7, rc3) | 4 | 185 | 139 / 1 / 17 / 11 | 96 / 13 / 1 | 0 | 6.3 ms |
+| p6 / e3 (rc3, 7 cores) | 7 | 158 | 105 / 32 / 13; 112 / 16 / 7 | 69 / 35 / 1; 77 / 22 / 3 | 40-45 %; 21 % | |
+
+The select patch does what it was built for: the window server's draws stay on the A78s with all 7 cores (1 % on
+the A55s, against 21-45 % before), and 7 cores went from 158 to 171 frames. It still does not reach `cpus=4` (185):
+the criterion (S8-A at least S8-B) fails, so `vendor_boot-lisa-final18-sel7.img` was NOT written; vendor_boot_a stays
+final17-cpus4. S8-A's log also has backboardd `input: sample` lines (real touches) and two more windows of 180 and
+171 frames that S8-B lacks; someone touched the screen during S8-A, which does not change the boot window above.
+S8-C and S8-D were not run (S9 showed the Settings scroll problem directly; see below).
+
+**Root efed09de (glass9 + PosterBoard fix)** written at 00:05 (read back `efed09de4ccc...`, darwin_var unchanged).
+
+**poster-f1** (rc3, `cpus=4`, `poster_reset=1 dlisa_oslog=PosterBoard`): the store opens (`-[NSURL
+getResourceValue:forKey:error:] replaced`, 4 `read as NSURLFileProtectionNone`, `Kicking off 60/61 migration`,
+`Data store migration finished`, 0 `Failed to migrate`, 0 `could not initialize data store`), the screen still black:
+21 `createNewStoreCoordinatorWithPath` errors and 200+ `failed to correct purgability` / `Error marking ... as
+purgable: NO - [-1]` (the APFS purgeable fsctl). That boot was also the warm-up of glass9's shader cache.
+
+**S9-A / S9-B** (rc3, `cpus=4`, `metal_fps=1`, the owner asked to scroll Settings by finger in a 40 s window; Session 11
+found that the panel reported 0 finger positions in both runs, so no finger reached it):
+
+| | S9-A (UBWC targets off) | S9-B (`metal_ubwc_rt=1`) |
+|---|---|---|
+| boot window, frames in 5 s | 142 (28/s) | 160 (32/s) |
+| intervals <18 / 18-26 / 26-35 / longer | 102 / 1 / 13 / 9 | 116 / 2 / 10 / 10 |
+| commits on time / late / stall | 61 / 2 / 1 | 108 / 8 / 0 |
+| GPU a submission (boot window) | 3.9 ms | 4.6 ms |
+| Settings launch | not in a printed window | 67 buffers in 2 s, 14.6 ms of GPU each, heaviest pass 9 draws 6.9 ms |
+| scroll window (the 51 input samples are touch_synth's finger 9, Session 11) | 2 submissions in 52.4 s; just before, a buffer took 43.7 ms on average (730 at most) from made to committed | 82 frames in 21.3 s (~4/s), then 24 submissions in 7.4 s |
+| refusals | none for draws | 1 draw: `downsample_blur_vert_lph+variable_blur_downsample_frag_lph` reads 64 bytes of constant buffer 3, 32 bound |
+| Control Center (q7) | rounded tiles, round buttons with glass rims | square tiles and buttons, no rims (`gpu-s9b-q7.png`) |
+
+Verdict: **S9-B fails**. The scroll comparison cannot be made: no scroll reached Settings in either run (Session 11:
+`goodix: so far ... 0 finger positions`), so the window is an idle app, not a stall. The Control Center lost its rounded shapes
+with UBWC on: the SDF clip lives in memoryless attachments that `metal_ubwc_rt` compresses and the draws read them
+by framebuffer fetch, the first suspect. Sessions 7-8 saw that picture vary between runs too, so one screenshot is
+not proof, but it is the pass criterion. `metal_ubwc_rt` stays off; glass9 without it behaves as glass8. The boot
+windows differ within the run-to-run spread.
+
+**Root 8d63b36c (purgeable no-ops)** written at 00:31 (read back `8d63b36c33ae...`, darwin_var unchanged).
+
+**poster-f2** (same line as poster-f1): `Error marking` 0 (was 200+), `createNewStoreCoordinatorWithPath` 0 (was 21),
+`dlisa[PosterBoard]: -[NSURL pbf_setPurgable:error:] replaced`, no `Failed to setup static descriptors`. Not yet: no
+`unmark taken as done` line, `dlisa[CollectionsPoster]: -[NSURL pbf_setPurgable:error:] not found; left alone`, and 13
+`(updateExtensions/...) Failed to update static descriptors for <extension>; error: (null)` (CollectionsPoster, Pride,
+Weather, Unity, Extragalactic, LoadingPoster and others). Home still without a wallpaper (`poster-f2-q1.png`),
+Notification Center black with only the date (`poster-f2-q3.png`). New: the Calendar and Clock icons are live (the
+date, the hands). Next: why each extension's reloadDescriptors ends with a nil error
+(`dlisa_oslog=PosterBoard,CollectionsPoster`).
+
+**What this means for 60 fps.** The Settings scroll has not been measured on the host yet: the synthetic scroll never
+acts inside Settings and no panel finger reached the phone in S9. Session 11 (scripted finger-like strokes,
+`dlisa_scroll`, and the UI probe) is the next run; the GPU's 12.5 ms a buffer (planb-standalone, a real finger at 27
+frames a second) is the number to beat once the scroll draws on the host.
+
 ## Session 9 (2026-11-12 evening, host only): where a heavy pass's time goes, and compressed offscreen targets
 
 Nothing was run on the phone. Goal: the Settings scroll (26-27 fps, 12.5-12.9 ms of GPU a command buffer) and the

@@ -333,7 +333,7 @@ boots, and it adds hard links, `exchangedata`, `F_FULLFSYNC`/`F_BARRIERFSYNC` (s
 |---|---|---|---|
 | `clonefile`/`fclonefileat`/`copyfile(COPYFILE_CLONE)` | ENOTSUP (no VNOP_CLONEFILE) | installd/MobileInstallation (staging apps), containermanagerd (container templates), lsd, cfprefsd safe-save, backupd, assetsd | `COPYFILE_CLONE` falls back to a copy, so the step is slower. `COPYFILE_CLONE_FORCE` and plain `clonefile` callers log and may fail one operation |
 | APFS snapshots (`fs_snapshot_*`) | ENOTSUP | softwareupdateservicesd/UpdateBrainService (OTA), backupd, mobile_obliterator | not on the boot path; logs only |
-| purgeable / space fsctls (`APFSIOC_*_PURGEABLE*`, `ATTR_CMNEXT_PRIVATESIZE`) | ENOTTY / 0 | deleted / CacheDelete, mediaanalysisd, nsurlsessiond, Settings storage | logs; "purgeable space" reads 0 |
+| purgeable / space fsctls (`APFSIOC_*_PURGEABLE*`, `ATTR_CMNEXT_PRIVATESIZE`) | ENOTTY / 0 | deleted / CacheDelete, mediaanalysisd, nsurlsessiond, Settings storage, **PosterBoard** | logs; "purgeable space" reads 0. PosterBoard: fatal for every poster descriptor until libdlisa made the marks no-ops off APFS (below) |
 | `F_PUNCHHOLE` | not supported | logd (Persist/Special tracev3 files), corespotlightd | logd falls back to truncation. Watch for `logd` errors about `F_PUNCHHOLE` |
 | data protection: `F_SETPROTECTIONCLASS`, `open_dprotected_np`, `ATTR_CMN_DATA_PROTECT_FLAGS` | ENOTSUP (`CONFIG_PROTECT 0` in HFS, no AppleKeyStore); `NSURLFileProtectionKey` reads **nil** | securityd/keychain sqlite, every NSFileProtection user, keybagd, **PosterBoard** | same as ramfs today, except PosterBoard: its data store never opened (no wallpaper, black lock screen and Notification Center) until libdlisa read nil as None there (below) |
 | `renamex_np(RENAME_SWAP)` | **was** ENOTSUP (`RENAME_EXCL` works); since `kernel/patches/hfs-rename-swap.patch` (2026-11-11) three renames under the VFS rename lock | Foundation's `replaceItemAtURL` and `_NSIRD` staging (lsd), usermanagerd's persona manifest and user session, containermanagerd's metadata | it did NOT fall back: usermanagerd never saved `/private/var/keybags/persona.kb` ("Failed to atomically swap writing file: [45]"), CoreServices' persona list was ENOENT, and MobileInstallation registered no app that needs a data container (25 of 252 on the home screen). Watch `Operation not supported` with `swap` in any daemon's log |
@@ -383,6 +383,32 @@ out. `poster_seed` is obsolete.
 What the fixed boot should say: `dlisa[PosterBoard]: -[NSURL getResourceValue:forKey:error:] replaced`, a few
 `... read as NSURLFileProtectionNone`, then `Kicking off 60 migration`, `Kicking off 61 migration`, `Successfuly setup
 data store`, and no `Failed to migrate` or `could not initialize data store`.
+
+**Confirmed on the phone** (host run poster-f1, root efed09de, `research/hackios-xnu-kernel/logs/poster-f1-end.log`):
+the store opens, 60 and 61 migrated, 0 `Failed to migrate`. The screen stayed black for the next cause:
+
+    Error marking '.../staticdescriptors/<UUID>/com.apple.posterkit.provider.descriptor.identifier' as purgable: NO - [-1: ...]   (200x)
+    -[PBFPosterModelStoreCoordinator _accessQueue_correctPermissionsForInternalDirectories]> failed to correct file purgable ...   (63x)
+    +[PBFPosterModelStoreCoordinator createNewStoreCoordinatorWithPath:error:]> error: ... {errno=-1, NSErrorFailingURLStringKey=<that file>}   (21x)
+    Failed to setup static descriptors for <every poster extension> ... "Unable to create new static descriptor path"
+
+The chain (23F84 cache): `+createNewStoreCoordinatorWithPath:error:` (0x21fb59fac) writes the descriptor's identifier
+files, then `-ensureFileSystemIntegrity` (0x21fb5b0f0), which calls `_accessQueue_correctPermissionsForInternalDirectories:`
+(0x21fb5b6b8): file protection (fine now), then `-[NSURL pbf_setPurgable:NO error:]` (0x21fbbc004) for each file, which
+is `open` + `ffsctl(fd, 0xc0084a44 = APFSIOC_MARK_PURGEABLE, &flags, 0)`. HFS has no such fsctl, the call returns -1,
+the method returns that NSError (errno -1, the file's path), `-ensureFileSystemIntegrity` returns it, and the new
+coordinator is thrown away. With no static descriptor no poster exists, so nothing is drawn. The 133
+`PBFPosterExtensionStoreCoordinator ... failed to correct purgability` lines are the same call on the extension
+directories, logged and ignored. PosterFoundation has the same APFS-only calls (`pf_setPurgable:afterDate:error:`,
+`pf_unmarkAsPurgableWithError:`, fsctl 0x40184a03 / 0xc1104a71 / 0xc0304a6f / 0xc0084a44).
+
+Fix (libdlisa, `userland/inject/purgeable.c`, `withoutApfsPurgeable`, in PosterBoard and CollectionsPoster): those
+three NSURL methods return YES without calling down when the file's volume is not APFS (statfs `f_fstypename`). On a
+volume with no purgeable state a file is never purgeable: "unmark" is already true and "mark" has nothing to record
+(the poster caches are simply never purged by the system). A file that is missing (statfs fails) and APFS volumes
+keep Apple's call. Expected on the next boot: `dlisa[PosterBoard]: -[NSURL pbf_setPurgable:error:] replaced`, a few
+`no purgeable state on this volume, unmark taken as done`, 0 `Error marking`, 0 `createNewStoreCoordinatorWithPath`
+errors, 0 `Failed to setup static descriptors`.
 
 **HakiOS 16.5 shims.** None for any of these. Nothing in its `userland/src` (inject\*, tweaks) works around
 clonefile, snapshots, purgeable space or `F_PUNCHHOLE`. Its only `/private/var` handling was the HFS mount, the

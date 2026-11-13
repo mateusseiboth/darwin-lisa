@@ -31,7 +31,12 @@
  *       Its poster data store (wallpaper, lock screen and Notification Center clock) wants every store directory
  *       to read NSURLFileProtectionKey = NSURLFileProtectionNone, and the HFSX data volume has no content
  *       protection, so the key reads nil and the 59 to 61 migration never gets past 59 (file-protection.c). On a
- *       volume without MNT_CPROTECT a nil class reads as NSURLFileProtectionNone.
+ *       volume without MNT_CPROTECT a nil class reads as NSURLFileProtectionNone. Then every new poster
+ *       descriptor's store coordinator unmarks its files as purgeable, an APFS-only fsctl that fails on HFS, and
+ *       no descriptor is made (purgeable.c): on a volume that is not APFS the purgeable marks succeed as no-ops.
+ *
+ *   CollectionsPoster
+ *       The same purgeable marks (PosterFoundation's), as no-ops on a volume that is not APFS.
  *
  * Only Objective-C runtime calls: nothing here depends on addresses inside the dyld shared cache.
  */
@@ -54,6 +59,7 @@
 #include <unistd.h>
 
 #include "file-protection.c"
+#include "purgeable.c"
 
 _Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
 
@@ -1049,6 +1055,83 @@ resourceValuesWithProtectionNone(id self, SEL selector, id keys, id *error)
 	return ((id (*)(id, SEL))objc_msgSend)(copy, sel_registerName("autorelease"));
 }
 
+/* purgeable.c: the APFS purgeable marks, a no-op that succeeds on a volume that is not APFS */
+static bool (*origPbfSetPurgable)(id, SEL, bool, id *);
+static bool (*origPfSetPurgable)(id, SEL, bool, id, id *);
+static bool (*origPfUnmarkAsPurgable)(id, SEL, id *);
+
+/* true when the file's volume has no purgeable state; false (Apple's call) when it cannot be told */
+static bool
+isOnVolumeWithoutPurgeable(id url)
+{
+	struct statfs volume;
+	const char *path;
+
+	if (!((bool (*)(id, SEL))objc_msgSend)(url, sel_registerName("isFileURL"))) {
+		return false;
+	}
+	path = ((const char *(*)(id, SEL))objc_msgSend)(url, sel_registerName("fileSystemRepresentation"));
+	if (path == NULL || statfs(path, &volume) != 0) {
+		return false;
+	}
+	return isPurgeableUnsupported(volume.f_fstypename);
+}
+
+static void
+sayPurgeableSkipped(id url, bool purgeable)
+{
+	static int said;
+
+	if (said++ < 4) {
+		say("dlisa[%s]: %s: no purgeable state on this volume, %s taken as done\n", getprogname(), describe(url),
+		    purgeable ? "mark" : "unmark");
+	}
+}
+
+/* -[NSURL pbf_setPurgable:error:] (PosterBoard.framework, ffsctl APFSIOC_MARK_PURGEABLE) */
+static bool
+setPurgableWithoutApfs(id self, SEL selector, bool purgeable, id *error)
+{
+	if (isOnVolumeWithoutPurgeable(self)) {
+		sayPurgeableSkipped(self, purgeable);
+		return true;
+	}
+	return origPbfSetPurgable(self, selector, purgeable, error);
+}
+
+/* -[NSURL pf_setPurgable:afterDate:error:] (PosterFoundation; pf_markPurgableInOneHourWithError: comes here too) */
+static bool
+setPurgableAfterDateWithoutApfs(id self, SEL selector, bool purgeable, id date, id *error)
+{
+	if (isOnVolumeWithoutPurgeable(self)) {
+		sayPurgeableSkipped(self, purgeable);
+		return true;
+	}
+	return origPfSetPurgable(self, selector, purgeable, date, error);
+}
+
+/* -[NSURL pf_unmarkAsPurgableWithError:] (PosterFoundation) */
+static bool
+unmarkAsPurgableWithoutApfs(id self, SEL selector, id *error)
+{
+	if (isOnVolumeWithoutPurgeable(self)) {
+		sayPurgeableSkipped(self, false);
+		return true;
+	}
+	return origPfUnmarkAsPurgable(self, selector, error);
+}
+
+static void
+withoutApfsPurgeable(void)
+{
+	origPbfSetPurgable = (bool (*)(id, SEL, bool, id *))replaceMethod('-', "NSURL", "pbf_setPurgable:error:",
+	    (IMP)setPurgableWithoutApfs);
+	origPfSetPurgable = (bool (*)(id, SEL, bool, id, id *))replaceMethod('-', "NSURL", "pf_setPurgable:afterDate:error:",
+	    (IMP)setPurgableAfterDateWithoutApfs);
+	origPfUnmarkAsPurgable = (bool (*)(id, SEL, id *))replaceMethod('-', "NSURL", "pf_unmarkAsPurgableWithError:",
+	    (IMP)unmarkAsPurgableWithoutApfs);
+}
+
 static void
 fixPosterBoard(void)
 {
@@ -1056,6 +1139,7 @@ fixPosterBoard(void)
 	    (IMP)getResourceValueWithProtectionNone);
 	origResourceValuesForKeys = (id (*)(id, SEL, id, id *))replaceMethod('-', "NSURL", "resourceValuesForKeys:error:",
 	    (IMP)resourceValuesWithProtectionNone);
+	withoutApfsPurgeable();
 }
 
 /* ---- which program gets which fix ------------------------------------------------------------------ */
@@ -1071,6 +1155,7 @@ static const struct {
 	{ "SpringBoard", fixSpringBoard },
 	{ "Preferences", withoutAsynchronousLayerHosts },
 	{ "PosterBoard", fixPosterBoard },
+	{ "CollectionsPoster", withoutApfsPurgeable },
 };
 
 /*

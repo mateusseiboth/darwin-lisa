@@ -19,6 +19,9 @@ fastboot reboot >/dev/null 2>&1 || true
 for i in $(seq 1 30); do lsusb 2>/dev/null | grep -q 18d1:d00d || break; sleep 1; done
 for i in $(seq 1 60); do timeout 5 fastboot getvar product 2>&1 | grep -qi xnuloader && break; sleep 1; done
 timeout 6 fastboot getvar product 2>&1 | grep -qi xnuloader || { echo "loader not up"; exit 1; }
+# epoch= again now (ten digits, so the length checked above holds): init26 sets the calendar to it when no clock
+# did (no rtc=1), and the time bootos.sh took would otherwise be missing from the phone's clock
+ARGS=$(sed -E "s/(^| )epoch=[0-9]+/\1epoch=$(date +%s)/" <<<"$ARGS")
 xnuloader/mkpayload.py -o run-payload.bin kernel=hakios-kernel --cmdline "$ARGS" >/dev/null
 timeout 60 fastboot stage run-payload.bin >/dev/null 2>&1
 timeout 20 fastboot oem clearscreen >/dev/null 2>&1

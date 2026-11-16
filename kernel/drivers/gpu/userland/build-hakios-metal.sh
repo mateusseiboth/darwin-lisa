@@ -73,6 +73,9 @@ ca)    cp "$H/userland/src/HakiosMetalCA.m" "$WORK/HakiosMetalCA.m"
        # metal_ubwc_rt=1: private and memoryless offscreen render targets compressed (UBWC), with the core's
        # hakios-metal-x-ubwc-rt.patch; off unless asked (session 9, 2026-11-12: not yet drawn into on the phone)
        patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ubwc-rt.patch"
+       # metal_ubwc_fb=1: the display's framebuffer surfaces drawn compressed and laid into the surface at commit; with the
+       # core's hakios-metal-y-ubwc-fetch.patch (a fetch from a compressed target from a pass of its own). Session 13.
+       patch -s -d "$WORK" -p1 < "$HERE/HakiosMetalCA-ubwc-fb.patch"
        SOURCES="$WORK/HakiosMetalCA.m"; INC= ;;
 *)     echo "build-hakios-metal: PLUGIN=probe or PLUGIN=ca"; exit 1 ;;
 esac

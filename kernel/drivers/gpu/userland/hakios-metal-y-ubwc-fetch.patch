@@ -1,0 +1,77 @@
+A framebuffer fetch from a compressed (UBWC) attachment reads it from a pass of its own (2026-11-16, darwin-lisa
+session 13). Applies after hakios-metal-x-ubwc-rt.patch.
+
+S9-B (metal_ubwc_rt=1) drew the glass right from compressed offscreen targets read by later passes, and lost the
+Control Center's rounded corners: the clip CoreAnimation draws into a memoryless target and reads back by framebuffer
+fetch in the same pass read as if never drawn. A compressed target read after its pass's tail (colour cache flushed,
+CACHE_FLUSH_TS) is the one way the phone has shown it read right; mid-pass the fetch went through the in-pass barrier
+(colour cache flushed, CACHE_INVALIDATE) alone. So a fetching draw into a pass whose attachments include a compressed
+one does not join that pass: the pass is closed and the draw opens the next, with Load. A linear target keeps the
+barrier and its single pass.
+
+Measured on the host: render_test a_fetch_from_a_compressed_target_reads_it_from_a_pass_of_its_own (2 passes for
+compressed, 1 for linear); 267 tests, the same 14 pre-existing failed checks.
+
+diff --git a/src/render.cpp b/src/render.cpp
+index b2f44c4..30788d5 100644
+--- a/src/render.cpp
++++ b/src/render.cpp
+@@ -2878,6 +2878,14 @@ bool CommandBuffer::draw(const Program& program, const RenderPass& pass, const D
+         const ColorAttachment &a = pass.more[i], &b = open_->pass.more[i];
+         joins = a.texture == b.texture && a.level == b.level && a.store == b.store && (a.texture == nullptr || a.load != LoadAction::kClear);
+     }
++    // (darwin-lisa session 13) A framebuffer fetch from a compressed attachment reads it from a pass of its own: the pass so
++    // far closed -- its tail flushes the colour cache and the caches after it, as before any draw that samples what an
++    // earlier pass drew, the one way a compressed target has been read right on the phone -- and this draw opening the
++    // next. Mid-pass, after the fetch barrier, the Control Center's compressed clip read as if never drawn (S9-B).
++    for (uint32_t i = 0; joins && program.fs.fbRead && i < kMaxColorOutputs; i++) {
++        const Texture* t = i == 0 ? pass.color0 : pass.more[i - 1].texture;
++        joins = t == nullptr || !t->compressed();
++    }
+     // GMEM is decided as a pass opens, before its first draw is encoded (a draw in a tile is encoded for the tile:
+     // encodeInPass). A draw a tile cannot replay ends a GMEM pass and opens a sysmem one of its own.
+     std::string gmemWhy;
+diff --git a/tests/render_test.cpp b/tests/render_test.cpp
+index 7a20b07..c9ae116 100644
+--- a/tests/render_test.cpp
++++ b/tests/render_test.cpp
+@@ -3110,6 +3110,39 @@ TEST(a_compressed_render_target_is_cleared_drawn_sampled_and_copied_out_compress
+     }
+ }
+ 
++// darwin-lisa session 13: a framebuffer fetch from a compressed target reads it from a pass of its own -- the pass so far
++// closed (its tail: the colour cache flushed and the caches with it) and a new one begun for the fetching draw -- never
++// mid-pass through the in-pass barrier, after which the Control Center's clip (S9-B, a compressed memoryless target
++// fetched) read as if never drawn. A linear target keeps the barrier and its one pass.
++TEST(a_fetch_from_a_compressed_target_reads_it_from_a_pass_of_its_own) {
++    for (bool compressed : {false, true}) {
++        Rig r;
++        TextureDesc cd;
++        cd.format = PixelFormat::kBGRA8Unorm;
++        cd.width = 256;
++        cd.height = 256;
++        cd.usage = kTextureUsageRead | kTextureUsageRenderTarget;
++        cd.compressed = compressed;
++        std::string why;
++        auto ct = Texture::make(*r.gpu, cd, &why);
++        if (ct == nullptr && why.find("this build has none") != std::string::npos) return;
++        CHECK(ct != nullptr);
++        if (ct == nullptr) return;
++        const Program fb{kernels::tri_flat_vs_air, kernels::tri_fb_fs_air, Linkage{}, "tri_fb"};
++        RenderPass q;
++        q.color0 = ct.get();
++        auto cb = r.queue->commandBuffer();
++        CHECK(cb->draw(flatProgram(), clearPass(ct.get(), 0.25, 0.5, 0.75, 1.0), wholeDraw(3, 256, 256), Bindings{}, Bindings{}));
++        CHECK(cb->draw(fb, q, wholeDraw(6, 256, 256), Bindings{}, Bindings{}));
++        CHECK_EQ(cb->counts().passes, compressed ? 2u : 1u);
++        cb->commit();
++        cb->waitUntilCompleted();
++        CHECK(cb->status() == CommandBuffer::kCompleted);
++        CHECK_EQ(r.fake->stats().faults, 0u);
++        if (r.fake->stats().faults) std::printf("       %s\n", r.fake->stats().lastFault.c_str());
++    }
++}
++
+ // darwin-lisa: what a compressed texture may be: RGBA16Float only as a render target (its staged copy-in is RGBA8's
+ // alone), never one a kernel writes, and never more than one level
+ TEST(a_compressed_texture_is_refused_where_its_layout_is_not_served) {

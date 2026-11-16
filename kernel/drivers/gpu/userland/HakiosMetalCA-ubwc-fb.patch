@@ -1,0 +1,160 @@
+Boot-arg metal_ubwc_fb=1: CoreAnimation's framebuffer surfaces drawn compressed (UBWC), 2026-11-16, darwin-lisa session 13.
+Applies after HakiosMetalCA-ubwc-rt.patch; the core's hakios-metal-y-ubwc-fetch.patch goes with it.
+
+On this chip under freedreno (tools/glfill on pmOS, 1080x2400 RGBA8, 550 MHz, GPU timer) a full-screen blended draw
+costs 0.38 ms into a compressed target and 1.45 ms into an uncompressed one; opaque 0.30 against 0.67. Here every layer
+of the window server's frame is drawn into the linear IOSurface the display scans out (~0.9 ms a full-screen layer,
+session 9's probe). With the boot-arg, an IOSurface texture of a million pixels or more (the display's framebuffers),
+one plane, BGRA8 or RGBA8, a render target not written by a kernel and not rotated, is a compressed texture of its own
+that the passes draw into; the 2D engine lays it into the surface at the command buffer's commit, by the road a
+framebuffer with a rotation already takes (-hakiosTurnInto:, hakios_metal_cb_blit_rotated with rotation 0, reading the
+compressed copy). A pass that loads finds the last frame in the copy; the copy is filled from the surface first when it
+is new or the processor wrote the surface since (its seed moved). A Clear or DontCare pass fills nothing. The first 24
+such framebuffers are named ("compressed framebuffer N over IOSurface ..."): one per surface is the expected count,
+one per frame would mean a fill every frame.
+
+Lossless: the surface ends each command buffer with what was drawn, pixel for pixel. What it does not cover: another
+texture object over the same surface read inside the same command buffer before the commit would see the frame before.
+
+--- a/HakiosMetalCA.m	2026-11-16 14:44:17.978529203 -0400
++++ b/HakiosMetalCA.m	2026-11-16 14:44:17.979713546 -0400
+@@ -588,6 +588,9 @@
+ 	uint32_t _shadowSeed;
+ 	uint8_t *_shadowBase;               /* ... and, for a copy something writes, the surface's rows as the copy last took them */
+ 	hakios_metal_texture *_turnedSurface; /* a framebuffer with a rotation: the surface itself, upright, that _texture is turned into */
++	BOOL _fbCompressed;                 /* darwin-lisa, metal_ubwc_fb=1: _texture is a compressed copy of the surface the passes draw */
++	BOOL _fbCurrent;                    /* ... and holds what the surface holds (as of seed _fbSeed), so a Load finds it there */
++	uint32_t _fbSeed;
+ 	unsigned _turn;                     /* ... by this a6xx_rotation (the 2D engine's, probe "2D rotation") */
+ 	HakiosMetalTexture *_parent;        /* a view: _texture is the parent's and is freed with it, not with the view... */
+ 	BOOL _ownsView;                     /* ...unless the view names a level or slices of it: then _texture is the core's
+@@ -611,6 +614,8 @@
+ - (BOOL)hakiosIsTurned;
+ - (void)hakiosTurnInto:(hakios_metal_cb *)cb;
+ - (void)hakiosSetTurned:(hakios_metal_texture *)surface rotation:(unsigned)rotation;
++- (void)hakiosSetCompressedFramebuffer;
++- (void)hakiosFreshenFor:(MTLLoadAction)load in:(hakios_metal_cb *)cb;
+ - (void)hakiosWriteBackShadow;
+ static void hm_fps_shadow(BOOL in, double seconds);   /* metal_fps's count of the copies below */
+ static void hm_fps_encoded(double seconds, BOOL held);   /* metal_fps: a buffer's making to its commit */
+@@ -3820,6 +3825,35 @@
+ 	return on > 0;
+ }
+ 
++/*
++ * darwin-lisa session 13, boot-arg metal_ubwc_fb=1: CoreAnimation's framebuffer surfaces drawn compressed (UBWC). On this
++ * chip under freedreno (tools/glfill on pmOS, 1080x2400, 550 MHz) a full-screen blended draw takes 0.38 ms into a
++ * compressed target against 1.45 into an uncompressed one, and the window server here draws every layer of a frame
++ * into the linear surface the display scans out (0.9 ms a full-screen layer measured, session 9). The surface stays
++ * what the display and every other reader sees: the passes draw into a compressed copy of it and the 2D engine lays
++ * the copy into the surface at the command buffer's commit, as for a framebuffer with a rotation (-hakiosTurnInto:);
++ * a pass that loads finds the last frame in the copy, which is filled from the surface first when the processor wrote
++ * the surface since (its seed moved) or the copy is new. Only surfaces of a million pixels or more (the display's), one
++ * plane, BGRA8 or RGBA8, drawn into and not written by a kernel. Off unless asked.
++ */
++static BOOL
++hm_compress_fb_on(void)
++{
++	static int on = -1;
++
++	if (on < 0) {
++		char args[1024] = {0};
++		size_t size = sizeof(args) - 1;
++
++		on = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_ubwc_fb=1") != NULL && strstr(args, "metal_noubwc") == NULL;
++		if (on) {
++			HM_ONCE("metal_ubwc_fb=1: framebuffer surfaces of a million pixels or more are drawn compressed (UBWC) and laid into "
++				"their surfaces at commit\n");
++		}
++	}
++	return on > 0;
++}
++
+ static BOOL
+ hm_compress_rt(MTLTextureDescriptor *descriptor, MTLTextureUsage usage)
+ {
+@@ -4061,6 +4095,42 @@
+ 			}
+ 		}
+ 	}
++	/* darwin-lisa, metal_ubwc_fb=1: a framebuffer drawn compressed (hm_compress_fb_on) */
++	{
++		const NSUInteger rotation = [descriptor respondsToSelector:sel_getUid("rotation")] ?
++						    ((NSUInteger (*)(id, SEL))objc_msgSend)(descriptor, sel_getUid("rotation")) : 0;
++		const MTLPixelFormat f = [descriptor pixelFormat];
++
++		if (hm_compress_fb_on() && rotation == 0 && plane == 0 && IOSurfaceGetPlaneCount(surface) <= 1 &&
++		    (f == MTLPixelFormatBGRA8Unorm || f == MTLPixelFormatRGBA8Unorm) && (usage & MTLTextureUsageRenderTarget) != 0 &&
++		    (usage & MTLTextureUsageShaderWrite) == 0 && [descriptor width] == IOSurfaceGetWidth(surface) &&
++		    [descriptor height] == IOSurfaceGetHeight(surface) && [descriptor width] * [descriptor height] >= 1000000) {
++			hakios_metal_texture *upright = hakios_metal_texture_new_iosurface(_gpu, IOSurfaceGetID(surface), 0, (unsigned)f,
++											   (unsigned)[descriptor width], (unsigned)[descriptor height],
++											   (unsigned)(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget));
++			hakios_metal_texture *drawn = upright == NULL ? NULL :
++						      hakios_metal_texture_new_compressed(_gpu, (unsigned)f, (unsigned)[descriptor width],
++											  (unsigned)[descriptor height],
++											  (unsigned)(MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget));
++
++			if (drawn != NULL) {
++				static unsigned made;
++				if (made++ < 24) {
++					hm_print("compressed framebuffer %u over IOSurface %u (%lux%lu, format %lu)\n", made, IOSurfaceGetID(surface),
++						 (unsigned long)[descriptor width], (unsigned long)[descriptor height], (unsigned long)f);
++				}
++				t = [[HakiosMetalTexture alloc] initWithHakiosDevice:self texture:drawn descriptor:descriptor
++									       usage:MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget];
++				[t hakiosSetIOSurface:surface plane:0];
++				[t hakiosSetTurned:upright rotation:0];
++				[t hakiosSetCompressedFramebuffer];
++				return t;
++			}
++			if (upright != NULL) {
++				hakios_metal_texture_free(upright);
++			}
++		}
++	}
+ 	if (([descriptor pixelFormat] == 500 || [descriptor pixelFormat] == 540) && IOSurfaceGetPlaneCount(surface) == 2 && plane == 0) {
+ 		/* the private two-plane formats a decoded picture is sampled through, read and never drawn into: 500,
+ 		 * CoreAnimation's for a photo, sampled as RGB; and 540 (MTLPixelFormatRGB8_420_2P by the descriptor's own
+@@ -4644,6 +4714,32 @@
+ 	if (_turnedSurface != NULL && hakios_metal_cb_blit_rotated(cb, _texture, _turnedSurface, _turn) != 0) {
+ 		HM_ONCE("refused: a turned framebuffer's copy into its surface: %s\n", hakios_metal_error());
+ 	}
++	/* (the 2D engine's write does not move the surface's seed: a seed moved by the next pass is someone else's write) */
++	if (_fbCompressed && _iosurface != NULL) _fbSeed = IOSurfaceGetSeed(_iosurface);
++}
++
++/* darwin-lisa, metal_ubwc_fb=1: see hm_compress_fb_on */
++- (void)hakiosSetCompressedFramebuffer
++{
++	_fbCompressed = YES;
++	_fbCurrent = NO;
++}
++
++/* A pass is about to draw into the compressed copy: for a Load, the surface's pixels copied in first when the copy does
++ * not hold them yet (its first pass, or the surface written by the processor since: its seed moved). A Clear or a
++ * DontCare leaves nothing of the surface to keep. */
++- (void)hakiosFreshenFor:(MTLLoadAction)load in:(hakios_metal_cb *)cb
++{
++	if (!_fbCompressed || _turnedSurface == NULL) return;
++	const uint32_t seed = _iosurface != NULL ? IOSurfaceGetSeed(_iosurface) : 0;
++	if (load == MTLLoadActionLoad && (!_fbCurrent || seed != _fbSeed)) {
++		if (hakios_metal_cb_blit_rotated(cb, _turnedSurface, _texture, 0) != 0) {
++			HM_ONCE("refused: a compressed framebuffer's copy in from its surface: %s\n", hakios_metal_error());
++			return;
++		}
++	}
++	_fbCurrent = YES;
++	_fbSeed = seed;
+ }
+ 
+ /* A copy a kernel or a pass may have written: its rows back into the surface, the surface's seed moving as for any
+@@ -5857,6 +5953,8 @@
+ 		id t = [[[d colorAttachments] objectAtIndexedSubscript:i] texture];
+ 
+ 		if (t != nil && [t isKindOfClass:[HakiosMetalTexture class]] && [(HakiosMetalTexture *)t hakiosIsTurned]) {
++			[(HakiosMetalTexture *)t hakiosFreshenFor:[[[d colorAttachments] objectAtIndexedSubscript:i] loadAction]
++								in:[(HakiosMetalCommandBuffer *)cb hakiosCommandBuffer]];
+ 			[(HakiosMetalCommandBuffer *)cb hakiosTurnAtCommit:t];
+ 			continue;
+ 		}

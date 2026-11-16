@@ -8,6 +8,7 @@ run lines: [gpu-driver-rewrite.md](gpu-driver-rewrite.md) sections 7 and 9.
 | Piece | sha256 |
 | --- | --- |
 | root **int4** `userland-26/out/system-26.apfs.full-a7d9c8b9` (9a91ed47 + libdlisa c8b291b8 + libdlisa-motion 677f8faf + `AdrenoMetal.bundle`) | `a7d9c8b9f792189c5ff0fbb5cd2e8db960fc04c13ab80666928a5ef0ac070df2` |
+| root **int5** `userland-26/out/system-26.apfs.full-c93a8ec8`: int4 with libdlisa `fec154a7` (HEAD 37e0720: c8b291b8's bar and text probe + the virtual-BT fix; `out/libdlisa-37e0720`, build-inject.sh's recipe, which rebuilds c8b291b8 byte for byte from cca541f; run-tests.sh 11/0). Read back, census 61218 files, 0 bad | `c93a8ec87125465f8fc645a29cafc3fb7b53d8b642ee9c8c75ec09b1f1ab621f` |
 | `AdrenoMetal.bundle/AdrenoMetal` (plug-in + metal2vulkan bridge, arm64e label) | `287c85636a137ed7f62e741c7cac5af8a1167d347685d7ad0c71a4b00943f00e` |
 | `AdrenoMetal.bundle/libvulkan_freedreno.dylib` (turnip, Darwin backend over HakiosGPU) | `f13f1296d65419edb3caea8fd3c581944fbed0f26c6ff0177e6772b941f7d098` |
 | `userland-26/out/tu-capass/tu-capass` (T0, fixed, with `fetch1`/`fetchbar`) | `5535d43eacfcd36b57f4594830e52f60ec8abb47e04efea88a7b5edf7d10040a` |

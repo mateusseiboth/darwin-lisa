@@ -14,6 +14,12 @@
  *             fetch   the main pass with the blend done in the shader from [[color(0)]] (fc_framebuffer_fetch, every
  *                     draw of CoreAnimation's uber shader): an input attachment in rasterization order
  *                     (VK_EXT_rasterization_order_attachment_access), no fixed-function blend
+ *             fetch1  the fetch pass where only the last of the 8 layers reads [[color(0)]], the other 7 blending in fixed
+ *                     function with a pipeline without the rasterization-order flag (metal2vulkan sets it only on a
+ *                     pipeline whose fragment function reads a colour attachment): what CoreAnimation's mix costs
+ *             fetchbar  the fetch pass without rasterization order: the input attachment ordered by a subpass
+ *                     self-dependency and a by-region barrier between draws (metal2vulkan's fallback when the device
+ *                     has no rasterization-order access)
  *             blur    a backdrop pass: 4 draws into a 540x1200 RGBA16F target (Clear/Store), then 8 layers into the
  *                     framebuffer that sample it (Liquid Glass' downsample + composite, in two passes)
  * Prints the CPU time to record one command buffer (median of ITERATIONS, default 200) and per draw, the time of one
@@ -55,6 +61,7 @@ FN(vkCmdBindPipeline); FN(vkCmdBindDescriptorSets); FN(vkCmdBindVertexBuffers); 
 FN(vkCmdDraw); FN(vkCmdSetViewport); FN(vkCmdSetScissor); FN(vkCmdPipelineBarrier); FN(vkCreateFence);
 FN(vkQueueSubmit); FN(vkWaitForFences); FN(vkResetFences); FN(vkGetPhysicalDeviceFeatures2);
 FN(vkCreateQueryPool); FN(vkCmdResetQueryPool); FN(vkCmdWriteTimestamp); FN(vkGetQueryPoolResults);
+FN(vkMapMemory); FN(vkCmdBeginQuery); FN(vkCmdEndQuery);
 
 static void load_instance_functions(void) {
 #define I(name) name = (PFN_##name)gipa(instance, #name)
@@ -75,7 +82,7 @@ static void load_device_functions(void) {
     D(vkCmdBindPipeline); D(vkCmdBindDescriptorSets); D(vkCmdBindVertexBuffers); D(vkCmdPushConstants); D(vkCmdDraw);
     D(vkCmdSetViewport); D(vkCmdSetScissor); D(vkCmdPipelineBarrier); D(vkCreateFence); D(vkQueueSubmit);
     D(vkWaitForFences); D(vkResetFences); D(vkCreateQueryPool); D(vkCmdResetQueryPool); D(vkCmdWriteTimestamp);
-    D(vkGetQueryPoolResults);
+    D(vkGetQueryPoolResults); D(vkMapMemory); D(vkCmdBeginQuery); D(vkCmdEndQuery);
 #undef D
 }
 
@@ -126,29 +133,39 @@ typedef struct {
     VkRenderPass pass;
     VkFramebuffer framebuffer;
     VkPipeline pipeline;
+    VkPipeline plain;       /* fixed-function blend, no rasterization-order flag, for the same pass (fetch1) */
     uint32_t w, h;
 } Target;
+
+/* how the pass reads its colour attachment: not at all, in rasterization order, or ordered by barriers */
+enum { FETCH_NONE, FETCH_ORDER, FETCH_BARRIER };
 
 static VkPipelineLayout layout;
 static VkDescriptorSetLayout set_layout;
 static VkShaderModule vs, fs, fs_fetch;
 
-static VkRenderPass make_pass(VkFormat format, VkAttachmentLoadOp load, int fetch) {
+static VkRenderPass make_pass(VkFormat format, VkAttachmentLoadOp load, int fetch_mode) {
+    int fetch = fetch_mode != FETCH_NONE;
     VkImageLayout layout = fetch ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
     VkAttachmentDescription a = { 0, format, VK_SAMPLE_COUNT_1_BIT, load, VK_ATTACHMENT_STORE_OP_STORE,
         VK_ATTACHMENT_LOAD_OP_DONT_CARE, VK_ATTACHMENT_STORE_OP_DONT_CARE,
         load == VK_ATTACHMENT_LOAD_OP_LOAD ? layout : VK_IMAGE_LAYOUT_UNDEFINED, layout };
     VkAttachmentReference ref = { 0, layout };
     /* the attachment is also input attachment 0, read in rasterization order */
-    VkSubpassDescription sub = { fetch ? VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT : 0,
+    VkSubpassDescription sub = { fetch_mode == FETCH_ORDER ? VK_SUBPASS_DESCRIPTION_RASTERIZATION_ORDER_ATTACHMENT_COLOR_ACCESS_BIT_EXT : 0,
         VK_PIPELINE_BIND_POINT_GRAPHICS, fetch ? 1 : 0, fetch ? &ref : NULL, 1, &ref, NULL, NULL, 0, NULL };
-    VkRenderPassCreateInfo ci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, NULL, 0, 1, &a, 1, &sub, 0, NULL };
+    /* FETCH_BARRIER: a self-dependency, so that vkCmdPipelineBarrier may order one draw's writes before the next's reads */
+    VkSubpassDependency self = { 0, 0, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+        VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_ACCESS_INPUT_ATTACHMENT_READ_BIT, VK_DEPENDENCY_BY_REGION_BIT };
+    VkRenderPassCreateInfo ci = { VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO, NULL, 0, 1, &a, 1, &sub,
+        fetch_mode == FETCH_BARRIER ? 1 : 0, fetch_mode == FETCH_BARRIER ? &self : NULL };
     VkRenderPass pass;
     CHECK(vkCreateRenderPass(device, &ci, NULL, &pass));
     return pass;
 }
 
-static VkPipeline make_pipeline(VkRenderPass pass, int fetch) {
+/* fetch: the shader reads the attachment (no fixed-function blend); order: with the rasterization-order flag */
+static VkPipeline make_pipeline(VkRenderPass pass, int fetch, int order) {
     VkPipelineShaderStageCreateInfo stages[2] = {
         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_VERTEX_BIT, vs, "main", NULL },
         { VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO, NULL, 0, VK_SHADER_STAGE_FRAGMENT_BIT, fetch ? fs_fetch : fs,
@@ -171,7 +188,7 @@ static VkPipeline make_pipeline(VkRenderPass pass, int fetch) {
     VkPipelineColorBlendAttachmentState blend = { fetch ? VK_FALSE : VK_TRUE, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
         VK_BLEND_OP_ADD, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA, VK_BLEND_OP_ADD, 0xf };
     VkPipelineColorBlendStateCreateInfo cb = { VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO };
-    cb.flags = fetch ? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT : 0;
+    cb.flags = order ? VK_PIPELINE_COLOR_BLEND_STATE_CREATE_RASTERIZATION_ORDER_ATTACHMENT_ACCESS_BIT_EXT : 0;
     cb.attachmentCount = 1;
     cb.pAttachments = &blend;
     VkDynamicState dyn[] = { VK_DYNAMIC_STATE_VIEWPORT, VK_DYNAMIC_STATE_SCISSOR };
@@ -193,11 +210,12 @@ static VkPipeline make_pipeline(VkRenderPass pass, int fetch) {
     return p;
 }
 
-static Target make_target(Image img, uint32_t w, uint32_t h, VkFormat format, VkAttachmentLoadOp load, int fetch) {
-    Target t = { make_pass(format, load, fetch), VK_NULL_HANDLE, VK_NULL_HANDLE, w, h };
+static Target make_target(Image img, uint32_t w, uint32_t h, VkFormat format, VkAttachmentLoadOp load, int fetch_mode) {
+    Target t = { make_pass(format, load, fetch_mode), VK_NULL_HANDLE, VK_NULL_HANDLE, VK_NULL_HANDLE, w, h };
     VkFramebufferCreateInfo ci = { VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO, NULL, 0, t.pass, 1, &img.view, w, h, 1 };
     CHECK(vkCreateFramebuffer(device, &ci, NULL, &t.framebuffer));
-    t.pipeline = make_pipeline(t.pass, fetch);
+    t.pipeline = make_pipeline(t.pass, fetch_mode != FETCH_NONE, fetch_mode == FETCH_ORDER);
+    t.plain = fetch_mode == FETCH_NONE ? t.pipeline : make_pipeline(t.pass, 0, 0);
     return t;
 }
 
@@ -246,6 +264,12 @@ static void begin(VkCommandBuffer cb, const Target* t, VkBuffer vb) {
     vkCmdBindVertexBuffers(cb, 0, 1, &vb, &zero);
 }
 
+/* a quad as a 4-vertex strip, clip-space corners (x0,y0)-(x1,y1) */
+static void write_quad(float* v, float x0, float y0, float x1, float y1) {
+    const float q[8] = { x0, y0, x1, y0, x0, y1, x1, y1 };
+    memcpy(v, q, sizeof(q));
+}
+
 static double now_us(void) {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -259,7 +283,7 @@ static int by_value(const void* a, const void* b) {
 
 int main(int argc, char** argv) {
     if (argc < 3) {
-        fprintf(stderr, "usage: %s libvulkan_freedreno.so caps|main|linear|home|fetch|blur [iterations]\n", argv[0]);
+        fprintf(stderr, "usage: %s libvulkan_freedreno.so caps|main|linear|home|fetch|fetch1|fetchbar|blur [iterations]\n", argv[0]);
         return 2;
     }
     const char* scenario = argv[2];
@@ -330,15 +354,27 @@ int main(int argc, char** argv) {
     VkMemoryRequirements req;
     vkGetBufferMemoryRequirements(device, vb, &req);
     VkMemoryAllocateInfo mai = { VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, NULL, req.size,
-        memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) };
+        memory_type(req.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT) };
     VkDeviceMemory vbm;
     CHECK(vkAllocateMemory(device, &mai, NULL, &vbm));
     CHECK(vkBindBufferMemory(device, vb, vbm, 0));
+    /* Until 2026-11-16 this buffer was never written: every quad was four vertices at (0,0), nothing was rasterised,
+     * and the GPU column of the first T0 run on lisa (main 9.4 us) measured only the command processor. */
+    float* v;
+    CHECK(vkMapMemory(device, vbm, 0, VK_WHOLE_SIZE, 0, (void**)&v));
+    write_quad(v, -1, -1, 1, 1);
+    for (uint32_t i = 1; i <= 80; i++) {
+        /* 4 columns with a pitch of 270 px, 20 rows with a pitch of 120 px: 80 icons of 180x180 covering ~1.1 screens */
+        float x = 45 + 270 * ((i - 1) % 4), y = 0 + 120 * ((i - 1) / 4);
+        write_quad(v + 8 * i, 2 * x / W - 1, 2 * y / H - 1, 2 * (x + 180) / W - 1, 2 * (y + 180) / H - 1);
+    }
 
     const VkImageUsageFlags rt = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     int linear = strcmp(scenario, "linear") == 0;
-    int fetch = strcmp(scenario, "fetch") == 0;
+    int fetch_mode = strcmp(scenario, "fetch") == 0 || strcmp(scenario, "fetch1") == 0 ? FETCH_ORDER
+                   : strcmp(scenario, "fetchbar") == 0 ? FETCH_BARRIER : FETCH_NONE;
+    int fetch = fetch_mode != FETCH_NONE;
     if (linear) {
         VkFormatProperties fp;
         vkGetPhysicalDeviceFormatProperties(physical, VK_FORMAT_B8G8R8A8_UNORM, &fp);
@@ -361,7 +397,7 @@ int main(int argc, char** argv) {
         icon_set[i] = make_set(sampler, icons[i].view, VK_NULL_HANDLE);
     }
     VkDescriptorSet backdrop_set = make_set(sampler, backdrop.view, VK_NULL_HANDLE);
-    Target main_target = make_target(fb, W, H, VK_FORMAT_B8G8R8A8_UNORM, VK_ATTACHMENT_LOAD_OP_LOAD, fetch);
+    Target main_target = make_target(fb, W, H, VK_FORMAT_B8G8R8A8_UNORM, VK_ATTACHMENT_LOAD_OP_LOAD, fetch_mode);
     Target blur_target = make_target(backdrop, W / 2, H / 2, VK_FORMAT_R16G16B16A16_SFLOAT, VK_ATTACHMENT_LOAD_OP_CLEAR, 0);
 
     VkCommandPoolCreateInfo cpi = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, NULL, 0, 0 };
@@ -378,6 +414,10 @@ int main(int argc, char** argv) {
     VkQueryPoolCreateInfo qpi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_TIMESTAMP, 2 };
     VkQueryPool queries;
     CHECK(vkCreateQueryPool(device, &qpi, NULL, &queries));
+    /* samples the main pass shaded (one occlusion query, first iteration only): proof that the quads cover the screen */
+    VkQueryPoolCreateInfo oqi = { VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO, NULL, 0, VK_QUERY_TYPE_OCCLUSION, 1 };
+    VkQueryPool samples_query;
+    CHECK(vkCreateQueryPool(device, &oqi, NULL, &samples_query));
     double* gpu = calloc(iterations, sizeof(double));
     double* record = calloc(iterations, sizeof(double));
     double* submit = calloc(iterations, sizeof(double));
@@ -390,6 +430,9 @@ int main(int argc, char** argv) {
         CHECK(vkBeginCommandBuffer(cb, &cbi));
         draws = 0;
         vkCmdResetQueryPool(cb, queries, 0, 2);
+        if (it == 0) {
+            vkCmdResetQueryPool(cb, samples_query, 0, 1);
+        }
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, queries, 0);
         if (strcmp(scenario, "blur") == 0) {
             begin(cb, &blur_target, vb);
@@ -405,6 +448,9 @@ int main(int argc, char** argv) {
                                  0, NULL, 0, NULL, 1, &ib);
         }
         begin(cb, &main_target, vb);
+        if (it == 0) {
+            vkCmdBeginQuery(cb, samples_query, 0, 0);
+        }
         if (strcmp(scenario, "home") == 0) {
             layer(cb, layer_set[0], 0, 1.0f);
             draws++;
@@ -413,8 +459,21 @@ int main(int argc, char** argv) {
             }
         } else {
             for (int i = 0; i < 8; i++, draws++) {
+                if (fetch_mode == FETCH_BARRIER && i > 0) {
+                    /* the previous draw's colour writes before this draw's input-attachment reads, per region */
+                    VkMemoryBarrier mb = { VK_STRUCTURE_TYPE_MEMORY_BARRIER, NULL, VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+                        VK_ACCESS_INPUT_ATTACHMENT_READ_BIT };
+                    vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                                         VK_DEPENDENCY_BY_REGION_BIT, 1, &mb, 0, NULL, 0, NULL);
+                }
+                if (strcmp(scenario, "fetch1") == 0) {
+                    vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, i < 7 ? main_target.plain : main_target.pipeline);
+                }
                 layer(cb, strcmp(scenario, "blur") == 0 && i == 0 ? backdrop_set : layer_set[i & 1], 0, 0.5f);
             }
+        }
+        if (it == 0) {
+            vkCmdEndQuery(cb, samples_query, 0);
         }
         vkCmdEndRenderPass(cb);
         vkCmdWriteTimestamp(cb, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, queries, 1);
@@ -429,6 +488,14 @@ int main(int argc, char** argv) {
         vkGetQueryPoolResults(device, queries, 0, 2, sizeof(ts), ts, sizeof(uint64_t), VK_QUERY_RESULT_64_BIT);
         gpu[it] = (ts[1] - ts[0]) * props.limits.timestampPeriod / 1000.0;
         record[it] = t1 - t0;
+        if (it == 0) {
+            uint64_t shaded = 0;
+            vkGetQueryPoolResults(device, samples_query, 0, 1, sizeof(shaded), &shaded, sizeof(uint64_t),
+                                  VK_QUERY_RESULT_64_BIT);
+            /* main/linear/fetch/blur: 8 full screens = 20736000; home: 1 screen + 76 x 32400 + the last row clipped to
+             * 120 lines (4 x 21600) = 5140800 */
+            printf("samples shaded in the main pass: %llu\n", (unsigned long long)shaded);
+        }
     }
     qsort(record, iterations, sizeof(double), by_value);
     qsort(submit, iterations, sizeof(double), by_value);

@@ -1,0 +1,421 @@
+render	accumulator_gradient_vertex	accumulator_gradient_fragment	115	-	-	-	-	-	21	ok	16.8	RenderBox.framework
+render	accumulator_gradient_vertex	accumulator_gradient_fragment	115	65	115	-	0=8703246355	-	332	ok	9.9	RenderBox.framework
+render	alpha_effect_vertex	alpha_effect_fragment	115	-	-	0=81604378916	0=81604378916	-	68	ok	9.0	RenderBox.framework
+render	alpha_effect_vertex	alpha_effect_fragment	90	-	-	0=81665196580	0=81665196580	-	36	ok	9.6	RenderBox.framework
+render	compSphereVert	compositeSphere	80	0	0	-	-	-	303	ok	12.7	SiriUICore.framework
+render	downsample_blur_vert_lph	downsample_4_frag_lph	115	115	0	-	-	31:0:1	149	ok	8.6	QuartzCore.framework
+render	downsample_blur_vert_lph	downsample_4_frag_lph	80	-	-	-	-	31:0:1	19	ok	8.6	QuartzCore.framework
+render	downsample_blur_vert_lph	downsample_8_frag_lph	115	115	0	-	-	31:0:1	174	ok	7.8	QuartzCore.framework
+render	downsample_blur_vert_lph	downsample_8_frag_lph	80	115	0	-	-	31:0:1	173	ok	9.9	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_11_frag_lph	115	115	0	-	-	31:0:1	74	ok	5.8	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_11_frag_lph	80	-	-	-	-	31:0:1	12	ok	5.8	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_15_frag_lph	115	115	0	-	-	31:0:1	73	ok	6.6	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_15_frag_lph	80	-	-	-	-	31:0:1	12	ok	6.6	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_19_frag_lph	115	115	0	-	-	31:0:1	184	ok	7.5	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_19_frag_lph	80	115	0	-	-	31:0:1	156	ok	6.7	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_23_frag_lph	115	115	0	-	-	31:0:1	40	ok	8.3	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_23_frag_lph	80	115	0	-	-	31:0:1	29	ok	7.5	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_27_frag_lph	115	115	0	-	-	31:0:1	14	ok	9.4	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_7_frag_lph	115	115	0	-	-	31:0:1	62	ok	4.9	QuartzCore.framework
+render	downsample_blur_vert_lph	narrow_blur_7_frag_lph	80	-	-	-	-	31:0:1	18	ok	4.9	QuartzCore.framework
+render	downsample_blur_vert_lph	single_pass_blur_3_lph	115	-	-	-	-	31:0:1	36	ok	8.7	QuartzCore.framework
+render	downsample_blur_vert_lph	single_pass_blur_3_lph	80	-	-	-	-	31:0:1	12	ok	4.8	QuartzCore.framework
+render	downsample_blur_vert_lph	variable_blur_downsample_frag_lph	80	115	0	-	-	31:0:1	221	ok	8.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	-	-	31:0:1	10	ok	11.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 39=1 47=20 53=1	31:0:1	154	ok	12.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 39=1 47=21 53=1	31:0:1	154	ok	10.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	31:0:1	184	ok	11.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	3=1	4=1 5=2 28=3 29=62 32=1 35=1 39=1 47=42	31:0:1	56	ok	10.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 28=3 29=62 32=1 47=23	4=1 5=2 28=3 29=62 32=1 47=23	31:0:1	1	ok	5.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 29=62 39=1	31:0:1	183	ok	8.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 47=46 51=1 53=1	31:0:1	46	ok	11.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 51=1 53=1	31:0:1	221	ok	11.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	31:0:1	1	ok	14.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	31:0:1	1	ok	11.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	-	31:0:1	53	ok	7.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	3=1 4=1 5=2 28=13 29=62	31:0:1	185	ok	5.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	3=1 4=1 5=2 28=13 29=62 34=1 39=1	31:0:1	140	ok	5.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=1 29=42 32=1 35=1 47=11 53=1	4=1 5=2 28=1 29=42 32=1 35=1 47=11 53=1	31:0:1	40	ok	20.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=1 29=43 32=1 35=1 47=11 53=1	31:0:1	78	ok	15.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 34=1 39=1 47=20 53=1	31:0:1	175	ok	12.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 34=1 39=1 47=21 53=1	31:0:1	175	ok	10.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=1 29=62 32=1 47=10 53=1	31:0:1	191	ok	10.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 47=11 53=1	31:0:1	211	ok	7.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=20 29=62 32=1 34=1 35=1 39=1 47=42	31:0:1	69	ok	11.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	31:0:1	55	ok	11.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 28=20 29=62 32=1 35=1 47=42	31:0:1	149	ok	10.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=21 29=62 32=1 35=1 47=42	4=1 5=2 28=21 29=62 32=1 35=1 47=42	31:0:1	7	ok	8.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=22 29=62 32=1 34=1 35=1 39=1 47=42	31:0:1	191	ok	9.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=3 29=26 32=1 35=1 47=11 53=1	4=1 5=2 28=3 29=26 32=1 35=1 47=11 53=1	31:0:1	128	ok	12.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=43 32=1 35=1 47=11 53=1	31:0:1	10	ok	12.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 34=1 39=1 47=10 53=1	31:0:1	200	ok	7.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=3 29=62 32=1 34=1 39=1 47=11 53=1	31:0:1	138	ok	8.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 35=1 39=1 47=42	31:0:1	39	ok	9.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=3 29=62 32=1 35=1 47=42	4=1 5=2 28=3 29=62 32=1 35=1 47=42	31:0:1	12	ok	9.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=10 53=1	31:0:1	138	ok	6.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=11 53=1	31:0:1	140	ok	8.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=23	31:0:1	18	ok	5.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=59 29=62 32=1 47=20 53=1	4=1 5=2 28=59 29=62 32=1 47=20 53=1	31:0:1	8	ok	11.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=59 29=62 32=1 47=21 53=1	4=1 5=2 28=59 29=62 32=1 47=21 53=1	31:0:1	8	ok	10.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=66 29=43 32=1 35=1 47=20 53=1	31:0:1	219	ok	15.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=66 29=43 32=1 35=1 47=21 53=1	31:0:1	219	ok	18.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=66 29=43 32=1 35=1 47=23	4=1 5=2 28=66 29=43 32=1 35=1 47=23	31:0:1	1	ok	9.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=7 29=62 32=2 47=23 48=23	4=1 5=2 28=7 29=62 32=2 47=23 48=23	31:0:1	8	ok	9.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 29=26 35=1	4=1 5=2 29=26 35=1	31:0:1	71	ok	6.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 29=42 35=1	4=1 5=2 29=42 35=1	31:0:1	40	ok	16.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 29=43 35=1	31:0:1	73	ok	9.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	-	4=1 5=2 29=62	31:0:1	258	ok	5.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 29=62 34=1 39=1	31:0:1	391	ok	5.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 16=1 28=5 29=43 32=2 35=1 51=1 52=1 53=1 54=1	31:0:1	10	ok	16.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 47=1 48=35 51=1 52=1 53=1 54=1	31:0:1	131	ok	12.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 48=35 49=5 51=1 52=1 53=1 54=1	31:0:1	37	ok	12.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1	31:0:1	8	ok	12.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 16=1 28=60 29=42 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 16=1 28=60 29=42 32=1 35=1 51=1 53=1	31:0:1	20	ok	20.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=60 29=43 32=1 35=1 51=1 53=1	31:0:1	56	ok	15.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 16=1 28=7 29=62 32=2 51=1 52=1 53=1 54=1	31:0:1	34	ok	8.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 23=1 28=1 29=62 32=1 47=1 51=1 53=1 57=3 59=393477	31:0:1	72	ok	24.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=24 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=24 51=1 53=1	31:0:1	16	ok	19.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=25 51=1 53=1	31:0:1	23	ok	16.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=38 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=38 51=1 53=1	31:0:1	16	ok	16.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=24 51=1 53=1	31:0:1	88	ok	14.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=25 51=1 53=1	31:0:1	245	ok	10.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=38 51=1 53=1	31:0:1	92	ok	10.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 51=1 53=1	31:0:1	69	ok	10.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=50 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=50 32=1 35=1 47=25 51=1 53=1	31:0:1	399	ok	10.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 47=25 51=1 53=1	31:0:1	197	ok	11.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 47=46 51=1 53=1	31:0:1	56	ok	11.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 49=5 51=1 53=1	31:0:1	48	ok	9.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 51=1 53=1	31:0:1	169	ok	7.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 51=1 53=1	31:0:1	46	ok	6.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 46=1 51=1 53=1	31:0:1	92	ok	10.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=1 51=1 53=1	31:0:1	214	ok	6.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=24 51=1 53=1	31:0:1	109	ok	6.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 49=5 51=1 53=1	31:0:1	455	ok	10.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 51=1 53=1	31:0:1	248	ok	6.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 49=5 51=1 53=1	31:0:1	44	ok	6.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 51=1 53=1	31:0:1	6	ok	10.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 49=5 51=1 53=1	31:0:1	213	ok	7.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 51=1 53=1	31:0:1	228	ok	7.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=12 32=1 34=1 35=1 39=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=12 32=1 34=1 35=1 39=1 47=25 51=1 53=1	31:0:1	19	ok	16.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=42 32=1 35=1 47=24 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=42 32=1 35=1 47=24 51=1 53=1	31:0:1	1	ok	16.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=43 32=1 35=1 47=25 51=1 53=1	31:0:1	111	ok	10.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=3 29=43 32=1 35=1 51=1 53=1	31:0:1	10	ok	10.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=50 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=50 32=1 35=1 47=25 51=1 53=1	31:0:1	5	ok	7.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 34=1 39=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 34=1 39=1 47=25 51=1 53=1	31:0:1	21	ok	9.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=1 51=1 53=1	31:0:1	158	ok	7.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=24 51=1 53=1	31:0:1	189	ok	7.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 49=5 51=1 53=1	31:0:1	345	ok	7.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 51=1 53=1	31:0:1	302	ok	7.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=35 51=1 53=1	31:0:1	91	ok	7.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=38 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=38 49=5 51=1 53=1	31:0:1	44	ok	7.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 49=5 51=1 53=1	31:0:1	98	ok	7.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 51=1 53=1	31:0:1	179	ok	7.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=24 48=9 51=1 53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=24 48=9 51=1 53=1 54=1	31:0:1	2	ok	22.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=38 48=9 51=1 53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=38 48=9 51=1 53=1 54=1	31:0:1	1	ok	18.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=43 32=2 35=1 47=24 48=9 51=1 53=1 54=1	31:0:1	70	ok	15.9	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=43 32=2 35=1 51=1 52=1 53=1 54=1 56=2	31:0:1	69	ok	15.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 47=24 48=9 51=1 53=1 54=1	31:0:1	181	ok	12.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 48=9 49=5 51=1 53=1 54=1	31:0:1	77	ok	12.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 48=9 51=1 53=1 54=1	31:0:1	192	ok	8.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1 56=2	31:0:1	197	ok	12.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	31:0:1	121	ok	13.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=66 29=43 32=1 35=1 51=1 53=1	31:0:1	164	ok	14.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1	31:0:1	6	ok	12.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=11 49=5 52=1 53=1 54=1	31:0:1	137	ok	14.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=11 52=1 53=1 54=1	31:0:1	80	ok	9.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=1 29=62 32=1 34=1 39=1 51=1 53=1 55=1	31:0:1	189	ok	10.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1 56=2	31:0:1	89	ok	12.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=11 49=5 52=1 53=1 54=1 56=2	31:0:1	89	ok	13.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=11 52=1 53=1 54=1 56=2	31:0:1	184	ok	9.5	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=18 29=62 32=1 51=1 53=1 55=2	31:0:1	74	ok	11.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=20 29=62 32=1 51=1 53=1 55=2	31:0:1	70	ok	8.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 28=21 29=62 32=1 51=1 53=1 55=2	4=1 5=2 7=1 28=21 29=62 32=1 51=1 53=1 55=2	31:0:1	24	ok	18.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 28=3 29=26 32=1 35=1 51=1 53=1 55=2	4=1 5=2 7=1 28=3 29=26 32=1 35=1 51=1 53=1 55=2	31:0:1	169	ok	15.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=3 29=62 32=1 51=1 53=1 55=2	31:0:1	205	ok	10.3	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=5 29=62 32=2 48=11 51=1 53=1 54=1 55=2	31:0:1	69	ok	13.6	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=52 29=62 32=1 35=1 51=1 53=1 55=2	31:0:1	197	ok	13.7	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=66 29=43 32=1 35=1 51=1 53=1 55=2	31:0:1	193	ok	14.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 23=1 28=5 29=62 32=2 34=1 36=32 39=1 48=9 51=1 53=1 54=1 57=3 59=393477	4=1 5=2 7=1 8=1 15=1 21=1 23=1 28=5 29=62 32=2 34=1 36=32 39=1 48=9 51=1 53=1 54=1 57=3 59=393477	31:0:1	40	ok	13.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 47=25 51=1 53=1	31:0:1	2	ok	15.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 51=1 53=1	31:0:1	234	ok	15.1	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=50 32=1 35=1 36=32 51=1 53=1	31:0:1	220	ok	12.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 34=1 36=32 39=1 49=1 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 34=1 36=32 39=1 49=1 51=1 53=1	31:0:1	397	ok	10.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 36=32 49=5 51=1 53=1	31:0:1	108	ok	11.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 36=32 51=1 53=1	31:0:1	183	ok	12.0	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=43 32=1 35=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=43 32=1 35=1 36=32 47=25 51=1 53=1	31:0:1	11	ok	11.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 34=1 36=32 39=1 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 34=1 36=32 39=1 47=25 51=1 53=1	31:0:1	16	ok	6.8	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	31:0:1	287	ok	8.4	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 51=1 53=1	31:0:1	177	ok	8.2	QuartzCore.framework
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=5 29=62 32=2 36=32 48=9 51=1 53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=5 29=62 32=2 36=32 48=9 51=1 53=1 54=1	31:0:1	14	ok	13.9	QuartzCore.framework
+render	mask__vertex	mask_accumulate_fragment	80	65	80	-	0=64424509449	-	344	ok	5.8	RenderBox.framework
+render	mask__vertex	mask_accumulate_fragment	80	-	-	0=64424640521	0=64424640521	-	22	ok	4.5	RenderBox.framework
+render	path_blit_vert_lph	attachment_clear_frag_lph	80	115	0	-	-	31:0:1	218	ok	3.2	QuartzCore.framework
+render	path_distance_vertex	path_distance_fragment	115	65	115	0=64424509466	-	-	354	ok	14.0	RenderBox.framework
+render	path_distance_vertex	path_distance_fragment	25	65	115	0=64424509466	-	-	57	ok	12.8	RenderBox.framework
+render	path_exterior_vertex	path_exterior_fragment	115	65	115	0=47244771353	-	-	455	ok	13.7	RenderBox.framework
+render	path_exterior_vertex	path_exterior_fragment	25	-	-	-	-	-	7	ok	12.4	RenderBox.framework
+render	path_interior_vertex	path_interior_fragment	115	65	115	0=47244640280	-	-	353	ok	10.0	RenderBox.framework
+render	path_interior_vertex	path_interior_fragment	25	65	115	0=47244640280	-	-	57	ok	8.9	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	115	-	-	-	-	-	16	ok	10.9	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=107374182482	0=107374182482	-	8	ok	8.2	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=111669149778	0=111669149778	-	8	ok	6.3	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=8589934674	0=8589934674	-	69	ok	6.3	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	115	65	115	-	0=8590000146	-	328	ok	6.0	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	25	65	115	-	0=184683594130	-	57	ok	6.4	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	25	65	115	-	0=8589934738	-	57	ok	4.0	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	25	-	-	0=8589935698	0=8589935698	-	7	ok	7.9	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	80	65	80	-	0=8589934610	-	342	ok	5.9	RenderBox.framework
+render	plane__vertex	accumulator_color_fragment	80	-	-	0=8590065682	0=8590065682	-	22	ok	8.9	RenderBox.framework
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	-	-	-	9	ok	5.8	RenderBox.framework
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	0=81604378705	0=81604378705	-	116	ok	3.7	RenderBox.framework
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	0=81604379729	0=81604379729	-	12	ok	4.0	RenderBox.framework
+render	plane__vertex	accumulator_coverage_fragment	115	65	115	-	0=90194313361	-	354	ok	4.1	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252444702	0=252444702	-	40	ok	13.4	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252706846	0=252706846	-	20	ok	10.9	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252968990	0=252968990	-	16	ok	10.7	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=256639006	0=256639006	-	40	ok	10.7	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=256901150	0=256901150	-	20	ok	10.7	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	115	-	-	0=257163294	0=257163294	-	16	ok	10.7	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	65	65	115	-	0=135266334	-	394	ok	12.9	RenderBox.framework
+render	plane__vertex	filter_blur_fragment	80	65	80	-	0=252706846	-	394	ok	13.0	RenderBox.framework
+render	plane__vertex	filter_color_fragment	80	-	-	-	-	-	27	ok	6.2	RenderBox.framework
+render	plane__vertex	filter_color_fragment	80	65	80	-	0=28	-	352	ok	6.4	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	115	-	-	-	-	-	9	ok	5.3	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	115	65	115	-	0=2359327	-	386	ok	7.9	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	65	-	-	-	-	-	22	ok	4.9	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=1048607	-	395	ok	10.7	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=1572895	-	395	ok	5.7	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=524319	-	388	ok	7.7	RenderBox.framework
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=786463	-	395	ok	7.2	RenderBox.framework
+render	plane__vertex	plane_color_fragment	115	-	-	-	-	-	10	ok	4.7	RenderBox.framework
+render	plane__vertex	plane_color_fragment	115	65	115	-	0=2	-	385	ok	4.9	RenderBox.framework
+render	plane__vertex	plane_color_fragment	25	-	-	-	-	-	10	ok	4.4	RenderBox.framework
+render	plane__vertex	plane_color_fragment	25	65	115	-	0=2	-	44	ok	4.6	RenderBox.framework
+render	plane__vertex	plane_color_fragment	80	-	-	-	-	-	17	ok	4.4	RenderBox.framework
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=2	-	395	ok	4.5	RenderBox.framework
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=66	-	349	ok	1.1	RenderBox.framework
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=8589934658	-	356	ok	1.1	RenderBox.framework
+render	plane__vertex	spill_fragment	80	-	-	0=8589934627	0=8589934627	-	13	ok	6.9	RenderBox.framework
+render	plane_image_stretch_vertex	plane_image_stretch_fragment	115	-	-	0=8594128963	0=8594128963	-	68	ok	6.4	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	115	65	115	-	0=65605	-	395	ok	8.7	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	115	-	-	0=8590000197	0=8590000197	-	20	ok	14.1	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	115	-	-	0=8590000261	0=8590000261	-	116	ok	11.4	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=69	0=69	-	22	ok	8.1	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=8589934661	0=8589934661	-	22	ok	2.3	RenderBox.framework
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=8589934725	0=8589934725	-	22	ok	5.0	RenderBox.framework
+render	primitive__vertex	primitive_coverage_fragment	115	-	-	0=81604378756	0=81604378756	-	5	ok	5.9	RenderBox.framework
+render	primitive__vertex	primitive_coverage_fragment	115	-	-	0=85899346052	0=85899346052	-	68	ok	1.7	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	65	115	-	0=131142	-	326	ok	12.1	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=184918540358	0=184918540358	-	8	ok	17.2	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=184918540422	0=184918540422	-	8	ok	13.7	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=234946630	0=234946630	-	29	ok	9.1	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=70	0=70	-	68	ok	10.2	RenderBox.framework
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=8824881286	0=8824881286	-	29	ok	9.6	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	10	-	-	-	-	-	10	ok	10.0	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	10	65	80	0=8594392135	0=8594392135	-	353	ok	9.9	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	-	-	-	10	ok	7.5	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=107378639943	0=107378639943	-	8	ok	4.8	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=184688051271	0=184688051271	-	8	ok	3.0	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=184956223559	0=184956223559	-	7	ok	4.9	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=189251190855	0=189251190855	-	68	ok	3.0	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	65	115	0=189251321927	0=189251321927	-	326	ok	10.1	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=4457543	0=4457543	-	52	ok	3.0	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=6554695	0=6554695	-	16	ok	11.4	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	65	115	0=81608573063	0=81608573063	-	286	ok	5.3	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=81608836167	0=81608836167	-	7	ok	3.0	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8594392135	0=8594392135	-	44	ok	2.5	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8594457671	0=8594457671	-	68	ok	16.2	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8596554823	0=8596554823	-	16	ok	18.4	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	80	-	-	-	-	-	31	ok	7.5	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	80	65	80	0=8594128967	0=8594128967	-	395	ok	9.5	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	80	65	80	0=8594129031	0=8594129031	-	385	ok	5.3	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	80	-	-	0=8594392135	0=8594392135	-	37	ok	3.8	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	90	-	-	-	-	-	17	ok	8.1	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	90	65	115	0=8594392135	0=8594392135	-	378	ok	9.3	RenderBox.framework
+render	primitive_image_vertex	primitive_image_fragment	90	-	-	0=8594457671	0=8594457671	-	36	ok	16.2	RenderBox.framework
+render	quadGen	blitNearest	80	0	0	-	-	-	303	ok	5.0	SiriUICore.framework
+render	sdf_filter_vert_lph	glass_background_sdf_no_bleed_lph	80	115	0	-	-	31:0:1	307	ok	64.3	QuartzCore.framework
+render	sdf_filter_vert_lph	glass_foreground_sdf_lph	80	115	0	-	-	31:0:1	192	ok	35.3	QuartzCore.framework
+render	shadowGenVert	shadowFrag	80	0	0	-	-	-	303	ok	8.2	SiriUICore.framework
+render	siriChipVert	siriChipFrag	80	0	0	0=1	-	-	606	ok	16.4	SiriUICore.framework
+render	sphereVert	sphereFrag	10	0	0	-	-	-	303	ok	7.9	SiriUICore.framework
+render	std_vert1_lph	home_affordance_base_lph	115	115	0	-	-	31:0:1	39	ok	7.7	QuartzCore.framework
+render	std_vert1_lph	home_affordance_base_lph	80	115	0	-	-	31:0:1	28	ok	6.9	QuartzCore.framework
+render	std_vert1_lph	luma_boost_lph	80	115	0	-	-	31:0:1	213	ok	6.5	QuartzCore.framework
+render	stroke_lines_vertex	stroke_lines_fragment	115	-	-	-	-	-	4	ok	11.9	RenderBox.framework
+render	stroke_lines_vertex	stroke_lines_fragment	115	65	115	0=64424509966	0=64424509966	-	350	ok	13.0	RenderBox.framework
+render	stroke_lines_vertex	stroke_lines_fragment	115	-	-	0=64424641038	0=64424641038	-	24	ok	11.5	RenderBox.framework
+render	variable_blur_vert_lph	glass_background_lph	80	115	0	-	-	31:0:1	56	ok	29.2	QuartzCore.framework
+render	variable_blur_vert_lph	glass_background_no_bleed_lph	80	115	0	-	-	31:0:1	197	ok	20.9	QuartzCore.framework
+render	variable_blur_vert_lph	variable_blur_frag_lph	115	-	-	-	-	31:0:1	15	ok	9.8	QuartzCore.framework
+render	variable_blur_vert_lph	variable_blur_frag_lph	80	-	-	-	-	31:0:1	1	ok	9.2	QuartzCore.framework
+vertex	fixed_vert_lph_spc	-	0	0	0	-	-	-	0	ok	4.1	QuartzCore.framework
+vertex	fixed_vert_lph_gen	-	0	0	0	-	-	-	0	ok	8.8	QuartzCore.framework
+vertex	fixed_vert_lpf_spc	-	0	0	0	-	-	-	0	ok	4.3	QuartzCore.framework
+vertex	fixed_vert_lpf_gen	-	0	0	0	-	-	-	0	ok	8.6	QuartzCore.framework
+fragment	fixed_vert_lph_spc (of 1)	fixed_frag_lph_cpf	80	0	0	-	-	-	0	ok	8.2	QuartzCore.framework
+kernel	dynamic_system_ootf_decimate	-	0	0	0	-	-	-	0	ok	0.6	QuartzCore.framework
+vertex	std_vert0_lpf	-	0	0	0	-	-	-	0	ok	3.7	QuartzCore.framework
+vertex	std_vert1_lpf	-	0	0	0	-	-	-	0	ok	4.3	QuartzCore.framework
+vertex	std_vert2_lpf	-	0	0	0	-	-	-	0	ok	3.7	QuartzCore.framework
+vertex	upsample_vert_lpf	-	0	0	0	-	-	-	0	ok	4.7	QuartzCore.framework
+vertex	downsample_blur_vert_lpf	-	0	0	0	-	-	-	0	ok	4.2	QuartzCore.framework
+vertex	asg_vert_lpf	-	0	0	0	-	-	-	0	ok	4.3	QuartzCore.framework
+vertex	variable_blur_vert_lpf	-	0	0	0	-	-	-	0	ok	4.7	QuartzCore.framework
+vertex	sdf_filter_vert_lpf	-	0	0	0	-	-	-	0	ok	3.7	QuartzCore.framework
+vertex	path_cubic_vert_0_lpf	-	0	0	0	-	-	-	0	ok	7.5	QuartzCore.framework
+vertex	path_cubic_vert_1_lpf	-	0	0	0	-	-	-	0	ok	7.5	QuartzCore.framework
+vertex	path_rect_vert_lpf	-	0	0	0	-	-	-	0	ok	4.5	QuartzCore.framework
+vertex	path_stroke_curve_vert_lpf	-	0	0	0	-	-	-	0	ok	27.9	QuartzCore.framework
+vertex	path_blit_vert_lpf	-	0	0	0	-	-	-	0	ok	2.8	QuartzCore.framework
+vertex	buffer_image_blit_vert_lpf	-	0	0	0	-	-	-	0	ok	3.3	QuartzCore.framework
+vertex	stroke_line_vert_lpf	-	0	0	0	-	-	-	0	ok	5.0	QuartzCore.framework
+vertex	image_rect_blit_vert_lpf	-	0	0	0	-	-	-	0	ok	10.4	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	upsample_frag_lpf	80	0	0	-	-	-	0	ok	13.9	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	resolve_blur_weight_frag_lpf	80	0	0	-	-	-	0	ok	7.4	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	downsample_4_frag_lpf	80	0	0	-	-	-	0	ok	7.5	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	downsample_8_frag_lpf	80	0	0	-	-	-	0	ok	14.8	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	downsample_6_frag_lpf	80	0	0	-	-	-	0	ok	13.5	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	asg_frag_lpf	80	0	0	-	-	-	0	ok	37.0	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	asg_75_frag_lpf	80	0	0	-	-	-	0	ok	14.4	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	asg_50_frag_lpf	80	0	0	-	-	-	0	ok	17.5	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	downsample_blur_2_frag_lpf	80	0	0	-	-	-	0	ok	11.1	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	downsample_blur_4_frag_lpf	80	0	0	-	-	-	0	ok	16.3	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_7_frag_lpf	80	0	0	-	-	-	0	ok	7.5	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_11_frag_lpf	80	0	0	-	-	-	0	ok	9.0	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_15_frag_lpf	80	0	0	-	-	-	0	ok	10.4	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_19_frag_lpf	80	0	0	-	-	-	0	ok	12.1	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_23_frag_lpf	80	0	0	-	-	-	0	ok	13.8	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	narrow_blur_27_frag_lpf	80	0	0	-	-	-	0	ok	15.8	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	single_pass_blur_3_lpf	80	0	0	-	-	-	0	ok	7.6	QuartzCore.framework
+fragment	downsample_blur_vert_lpf (of 1)	variable_blur_downsample_frag_lpf	80	0	0	-	-	-	0	ok	14.2	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	variable_blur_clamp_downsample_frag_lpf	80	0	0	-	-	-	0	ok	16.6	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 1)	variable_blur_frag_lpf	80	0	0	-	-	-	0	ok	9.0	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	axial_shading_frag_lpf	80	0	0	-	-	-	0	ok	7.3	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	radial_shading_frag_lpf	80	0	0	-	-	-	0	ok	8.8	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	radial_complex_shading_frag_lpf	80	0	0	-	-	-	0	ok	8.9	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	conic_shading_frag_lpf	80	0	0	-	-	-	0	ok	5.9	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	chromatic_aberration_lpf	80	0	0	-	-	-	0	ok	10.1	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 7)	displacement_map_lpf	80	0	0	-	-	-	0	ok	12.4	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 7)	chromatic_aberration_map_lpf	80	0	0	-	-	-	0	ok	8.7	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	alpha_smooth_threshold_lpf	80	0	0	-	-	-	0	ok	9.7	QuartzCore.framework
+fragment	upsample_vert_lpf (of 4)	alpha_threshold_lpf	80	0	0	-	-	-	0	ok	9.5	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	p3_clamp_lpf	80	0	0	-	-	-	0	ok	9.5	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	edr_clamp_lpf	80	0	0	-	-	-	0	ok	11.3	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	color_edr_lpf	80	0	0	-	-	-	0	ok	6.8	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	alpha_linear_premultiply_lpf	80	0	0	-	-	-	0	ok	5.4	QuartzCore.framework
+fragment	std_vert1_lpf (of 1)	home_affordance_base_lpf	80	0	0	-	-	-	0	ok	10.5	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	simple_rim_lpf	80	0	0	-	-	-	0	ok	6.8	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	brim_init_lpf	80	0	0	-	-	-	0	refused	1.1	Compile(InvalidDescriptor(ColorAttachment { index: 0 }))
+fragment	variable_blur_vert_lpf (of 7)	brim_jump_lpf	80	0	0	-	-	-	0	refused	4.8	Compile(InvalidDescriptor(ColorAttachment { index: 0 }))
+fragment	std_vert0_lpf (of 1)	sdf_gen_field_lpf	80	0	0	-	-	-	0	ok	5.9	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	sdf_gen_gradients_lpf	80	0	0	-	-	-	0	ok	4.2	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 7)	brim_outline_lpf	80	0	0	-	-	-	0	ok	17.9	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 7)	rim_outline_lpf	80	0	0	-	-	-	0	ok	14.6	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	edr_scale_lpf	80	0	0	-	-	-	0	ok	9.9	QuartzCore.framework
+fragment	std_vert1_lpf (of 1)	luma_boost_lpf	80	0	0	-	-	-	0	ok	7.9	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 1)	glass_background_lpf	80	0	0	-	-	-	0	ok	37.7	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 1)	glass_background_no_bleed_lpf	80	0	0	-	-	-	0	ok	27.0	QuartzCore.framework
+fragment	sdf_filter_vert_lpf (of 8)	glass_background_sdf_lpf	80	0	0	-	-	-	0	ok	93.9	QuartzCore.framework
+fragment	sdf_filter_vert_lpf (of 1)	glass_background_sdf_no_bleed_lpf	80	0	0	-	-	-	0	ok	66.8	QuartzCore.framework
+fragment	variable_blur_vert_lpf (of 7)	glass_foreground_lpf	80	0	0	-	-	-	0	ok	21.8	QuartzCore.framework
+fragment	sdf_filter_vert_lpf (of 1)	glass_foreground_sdf_lpf	80	0	0	-	-	-	0	ok	37.7	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	path_cubic_frag_lpf	80	0	0	-	-	-	0	ok	4.2	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	path_rect_frag_lpf	80	0	0	-	-	-	0	ok	1.1	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	path_stroke_curve_frag_lpf	80	0	0	-	-	-	0	ok	1.2	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	path_clear_frag_lpf	80	0	0	-	-	-	0	ok	1.0	QuartzCore.framework
+fragment	path_blit_vert_lpf (of 13)	path_blit_frag_lpf	80	0	0	-	-	-	0	refused	6.4	Compile(InvalidDescriptor(ColorAttachment { index: 2 }))
+fragment	path_blit_vert_lpf (of 13)	path_blit_frag_eo_lpf	80	0	0	-	-	-	0	refused	6.5	Compile(InvalidDescriptor(ColorAttachment { index: 2 }))
+fragment	buffer_image_blit_vert_lpf (of 14)	buffer_image_blit_frag_lpf	80	0	0	-	-	-	0	ok	12.9	QuartzCore.framework
+fragment	path_blit_vert_lpf (of 1)	attachment_clear_frag_lpf	80	0	0	-	-	-	0	ok	2.9	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	inplace_copy_lpf	80	0	0	-	-	-	0	refused	0.7	Unsupported(Unsupported { feature: RasterOrderGroups, needs: AnyOf([[Feature(FragmentShaderPixelInterlock)]]), location: None, symbol: None })
+fragment	stroke_line_vert_lpf (of 15)	stroke_line_frag_lpf	80	0	0	-	-	-	0	ok	14.0	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	stroke_arc_frag_lpf	80	0	0	-	-	-	0	ok	8.1	QuartzCore.framework
+fragment	std_vert0_lpf (of 1)	apply_apl_dimming_lpf	80	0	0	-	-	-	0	ok	7.3	QuartzCore.framework
+fragment	image_rect_blit_vert_lpf (of 16)	image_rect_blit_frag_lpf	80	0	0	-	-	-	0	ok	20.9	QuartzCore.framework
+kernel	variable_blur_copy_base_mip_compute	-	0	0	0	-	-	-	0	ok	1.8	QuartzCore.framework
+kernel	variable_blur_downsample_compute	-	0	0	0	-	-	-	0	ok	2.2	QuartzCore.framework
+kernel	variable_blur_downsample_compute_agx2	-	0	0	0	-	-	-	0	ok	3.4	QuartzCore.framework
+kernel	read_write_surf_compute	-	0	0	0	-	-	-	0	ok	0.6	QuartzCore.framework
+kernel	compute_apl	-	0	0	0	-	-	-	0	ok	1.3	QuartzCore.framework
+kernel	compute_apl_fast	-	0	0	0	-	-	-	0	ok	1.2	QuartzCore.framework
+kernel	sum_apl_and_compute_dimming_factor	-	0	0	0	-	-	-	0	ok	1.3	QuartzCore.framework
+kernel	rgb_to_420f	-	0	0	0	-	-	-	0	ok	0.8	QuartzCore.framework
+kernel	compute_average_luma	-	0	0	0	-	-	-	0	ok	1.0	QuartzCore.framework
+kernel	compute_sum_luma	-	0	0	0	-	-	-	0	ok	0.8	QuartzCore.framework
+kernel	tile_downsample_1	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_downsample_2	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_downsample_4	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_downsample_8	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_27	-	0	0	0	-	-	-	0	refused	0.4	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_23	-	0	0	0	-	-	-	0	refused	0.4	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_19	-	0	0	0	-	-	-	0	refused	0.4	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_15	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_11	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_7	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_simd_blur_5	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_average_luma	-	0	0	0	-	-	-	0	refused	0.3	Compile(NeedsInput(TileAttachments))
+kernel	tile_average_luma_quad	-	0	0	0	-	-	-	0	refused	0.5	Compile(NeedsInput(TileAttachments))
+vertex	std_vert0_lph	-	0	0	0	-	-	-	0	ok	3.8	QuartzCore.framework
+vertex	std_vert1_lph	-	0	0	0	-	-	-	0	ok	4.1	QuartzCore.framework
+vertex	std_vert2_lph	-	0	0	0	-	-	-	0	ok	3.8	QuartzCore.framework
+vertex	upsample_vert_lph	-	0	0	0	-	-	-	0	ok	1.0	QuartzCore.framework
+vertex	downsample_blur_vert_lph	-	0	0	0	-	-	-	0	ok	0.6	QuartzCore.framework
+vertex	asg_vert_lph	-	0	0	0	-	-	-	0	ok	0.9	QuartzCore.framework
+vertex	variable_blur_vert_lph	-	0	0	0	-	-	-	0	ok	0.6	QuartzCore.framework
+vertex	sdf_filter_vert_lph	-	0	0	0	-	-	-	0	ok	0.6	QuartzCore.framework
+vertex	path_cubic_vert_0_lph	-	0	0	0	-	-	-	0	ok	1.3	QuartzCore.framework
+vertex	path_cubic_vert_1_lph	-	0	0	0	-	-	-	0	ok	1.3	QuartzCore.framework
+vertex	path_rect_vert_lph	-	0	0	0	-	-	-	0	ok	1.0	QuartzCore.framework
+vertex	path_stroke_curve_vert_lph	-	0	0	0	-	-	-	0	ok	3.4	QuartzCore.framework
+vertex	path_blit_vert_lph	-	0	0	0	-	-	-	0	ok	0.5	QuartzCore.framework
+vertex	buffer_image_blit_vert_lph	-	0	0	0	-	-	-	0	ok	0.9	QuartzCore.framework
+vertex	stroke_line_vert_lph	-	0	0	0	-	-	-	0	ok	4.9	QuartzCore.framework
+vertex	image_rect_blit_vert_lph	-	0	0	0	-	-	-	0	ok	1.5	QuartzCore.framework
+vertex	read_surf_vert	-	0	0	0	-	-	-	0	ok	0.8	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	upsample_frag_lph	80	0	0	-	-	-	0	ok	7.9	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	resolve_blur_weight_frag_lph	80	0	0	-	-	-	0	ok	6.2	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	downsample_6_frag_lph	80	0	0	-	-	-	0	ok	6.7	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	asg_frag_lph	80	0	0	-	-	-	0	ok	22.1	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	asg_75_frag_lph	80	0	0	-	-	-	0	ok	9.2	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	asg_50_frag_lph	80	0	0	-	-	-	0	ok	10.4	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	downsample_blur_2_frag_lph	80	0	0	-	-	-	0	ok	7.0	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	downsample_blur_4_frag_lph	80	0	0	-	-	-	0	ok	9.8	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	variable_blur_clamp_downsample_frag_lph	80	0	0	-	-	-	0	ok	7.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	axial_shading_frag_lph	80	0	0	-	-	-	0	ok	6.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	radial_shading_frag_lph	80	0	0	-	-	-	0	ok	7.3	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	radial_complex_shading_frag_lph	80	0	0	-	-	-	0	ok	7.5	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	conic_shading_frag_lph	80	0	0	-	-	-	0	ok	4.2	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	chromatic_aberration_lph	80	0	0	-	-	-	0	ok	8.2	QuartzCore.framework
+fragment	variable_blur_vert_lph (of 7)	displacement_map_lph	80	0	0	-	-	-	0	ok	7.1	QuartzCore.framework
+fragment	variable_blur_vert_lph (of 7)	chromatic_aberration_map_lph	80	0	0	-	-	-	0	ok	7.6	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	alpha_smooth_threshold_lph	80	0	0	-	-	-	0	ok	5.0	QuartzCore.framework
+fragment	upsample_vert_lph (of 4)	alpha_threshold_lph	80	0	0	-	-	-	0	ok	7.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	p3_clamp_lph	80	0	0	-	-	-	0	ok	7.6	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	edr_clamp_lph	80	0	0	-	-	-	0	ok	8.6	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	color_edr_lph	80	0	0	-	-	-	0	ok	5.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	alpha_linear_premultiply_lph	80	0	0	-	-	-	0	ok	4.2	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	simple_rim_lph	80	0	0	-	-	-	0	ok	5.5	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	brim_init_lph	80	0	0	-	-	-	0	refused	1.1	Compile(InvalidDescriptor(ColorAttachment { index: 0 }))
+fragment	variable_blur_vert_lph (of 7)	brim_jump_lph	80	0	0	-	-	-	0	refused	4.9	Compile(InvalidDescriptor(ColorAttachment { index: 0 }))
+fragment	std_vert0_lph (of 1)	sdf_gen_field_lph	80	0	0	-	-	-	0	ok	5.6	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	sdf_gen_gradients_lph	80	0	0	-	-	-	0	ok	3.1	QuartzCore.framework
+fragment	variable_blur_vert_lph (of 7)	brim_outline_lph	80	0	0	-	-	-	0	ok	12.1	QuartzCore.framework
+fragment	variable_blur_vert_lph (of 7)	rim_outline_lph	80	0	0	-	-	-	0	ok	9.4	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	edr_scale_lph	80	0	0	-	-	-	0	ok	7.9	QuartzCore.framework
+fragment	sdf_filter_vert_lph (of 8)	glass_background_sdf_lph	80	0	0	-	-	-	0	ok	81.8	QuartzCore.framework
+fragment	variable_blur_vert_lph (of 7)	glass_foreground_lph	80	0	0	-	-	-	0	ok	15.8	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	path_cubic_frag_lph	80	0	0	-	-	-	0	ok	4.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	path_rect_frag_lph	80	0	0	-	-	-	0	ok	1.1	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	path_stroke_curve_frag_lph	80	0	0	-	-	-	0	ok	1.2	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	path_clear_frag_lph	80	0	0	-	-	-	0	ok	0.9	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	path_blit_frag_lph	80	0	0	-	-	-	0	refused	0.9	Compile(InvalidDescriptor(ColorAttachment { index: 2 }))
+fragment	std_vert0_lph (of 1)	path_blit_frag_eo_lph	80	0	0	-	-	-	0	refused	0.9	Compile(InvalidDescriptor(ColorAttachment { index: 2 }))
+fragment	buffer_image_blit_vert_lph (of 14)	buffer_image_blit_frag_lph	80	0	0	-	-	-	0	ok	9.7	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	inplace_copy_lph	80	0	0	-	-	-	0	refused	0.7	Unsupported(Unsupported { feature: RasterOrderGroups, needs: AnyOf([[Feature(FragmentShaderPixelInterlock)]]), location: None, symbol: None })
+fragment	stroke_line_vert_lph (of 15)	stroke_line_frag_lph	80	0	0	-	-	-	0	ok	12.8	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	stroke_arc_frag_lph	80	0	0	-	-	-	0	ok	6.7	QuartzCore.framework
+fragment	std_vert0_lph (of 1)	apply_apl_dimming_lph	80	0	0	-	-	-	0	ok	5.9	QuartzCore.framework
+fragment	image_rect_blit_vert_lph (of 16)	image_rect_blit_frag_lph	80	0	0	-	-	-	0	ok	10.3	QuartzCore.framework
+fragment	fixed_vert_lph_spc (of 1)	read_surf_frag	80	0	0	-	-	-	0	ok	6.0	QuartzCore.framework
+fragment	fixed_vert_lph_spc (of 1)	read_surf_frag_rg_uint	80	0	0	-	-	-	0	ok	2.9	QuartzCore.framework

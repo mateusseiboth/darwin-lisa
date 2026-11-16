@@ -1,0 +1,54 @@
+src/freedreno/drm-shim/freedreno_noop.c      |  6 ++++++
+ src/freedreno/vulkan/tu_knl_darwin_redwood.h | 17 +++++++++++------
+ 2 files changed, 17 insertions(+), 6 deletions(-)
+
+--- Changes ---
+
+src/freedreno/drm-shim/freedreno_noop.c
+  @@ -212,6 +212,12 @@ static ioctl_fn_t driver_ioctls[] = {
+  +   {
+  +      /* darwin-lisa: Adreno 642L (SM7325), Mesa's A635 row; GMEM as the lisa kernel reports it (FD_GPU_ID=635) */
+  +      .gpu_id = 635,
+  +      .chip_id = CHIPID(6, 3, 5, 0),
+  +      .gmem_size = 512 * 1024,
+  +   },
+      {
+         /* First entry is default */
+         .gpu_id = 630,
+  +6 -0
+
+src/freedreno/vulkan/tu_knl_darwin_redwood.h
+  @@ -16,13 +16,15 @@
+  -#define RW_SERVICE "RedwoodGPU"
+  +/* darwin-lisa: our kernel's HakiosGPU (kernel/drivers/gpu/hakios.gpu.cpp) is the same msm-by-selector service under another
+  + * name; TU_DARWIN_RW_SERVICE names another (RedwoodGPU on dada's kernel). */
+  +#define RW_SERVICE_DEFAULT "HakiosGPU"
+   #define RW_SEL(nr) (0x40u + (nr))           /* DRM_COMMAND_BASE + DRM_MSM_x */
+   #define RW_GEM_CLOSE 0x09u                  /* DRM_IOCTL_GEM_CLOSE */
+   #define RW_SURFACE 0x7eu
+  -#define RW_HOST 0x7cu                       /* RedwoodGPU's import of the caller's own pages (kernels from 29 Oct on) */
+  +#define RW_HOST 0x7du                       /* darwin-lisa: HakiosGPU's kHakiosUserMemory (RedwoodGPU's is 0x7c), same record */
+   
+  -struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host */
+  +struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host; hakios.gpu.cpp: struct hakios_user_memory */
+      uint64_t address, bytes;
+      uint32_t handle;                         /* out */
+      uint32_t flags;
+  @@ -518,8 +520,10 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
+  -       * began"), so every wait returned at once and Turnip spun. */
+  -      uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
+  +       * began"), so every wait returned at once and Turnip spun.
+  +       * darwin-lisa: HakiosGPU reads msm's deadline against mach_continuous_time() (hakios.gpu.cpp millisecondsUntil), which is
+  +       * Darwin's CLOCK_MONOTONIC, as hakios-drm hands it over. */
+  +      uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+         uint64_t deadline = w->timeout_ns > UINT64_MAX - now ? UINT64_MAX / 2 : now + w->timeout_ns;
+         struct drm_msm_wait_fence req = {.fence = (uint32_t)w->fence, .queueid = rw.queue};
+         req.timeout.tv_sec = (int64_t)(deadline / 1000000000ull);
+  @@ -580,7 +584,8 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
+  -   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(RW_SERVICE));
+  +   const char *name = getenv("TU_DARWIN_RW_SERVICE");
+  +   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(name && *name ? name : RW_SERVICE_DEFAULT));
+      if (!service)
+         return false;
+      kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &dw.conn);
+  +11 -6

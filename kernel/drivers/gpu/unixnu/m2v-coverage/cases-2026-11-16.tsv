@@ -1,0 +1,251 @@
+render	accumulator_gradient_vertex	accumulator_gradient_fragment	115	-	-	-	-	-	21
+render	accumulator_gradient_vertex	accumulator_gradient_fragment	115	65	115	-	0=8703246355	-	332
+render	alpha_effect_vertex	alpha_effect_fragment	115	-	-	0=81604378916	0=81604378916	-	68
+render	alpha_effect_vertex	alpha_effect_fragment	90	-	-	0=81665196580	0=81665196580	-	36
+render	compSphereVert	compositeSphere	80	0	0	-	-	-	303
+render	downsample_blur_vert_lph	downsample_4_frag_lph	115	115	0	-	-	31:0:1	149
+render	downsample_blur_vert_lph	downsample_4_frag_lph	80	-	-	-	-	31:0:1	19
+render	downsample_blur_vert_lph	downsample_8_frag_lph	115	115	0	-	-	31:0:1	174
+render	downsample_blur_vert_lph	downsample_8_frag_lph	80	115	0	-	-	31:0:1	173
+render	downsample_blur_vert_lph	narrow_blur_11_frag_lph	115	115	0	-	-	31:0:1	74
+render	downsample_blur_vert_lph	narrow_blur_11_frag_lph	80	-	-	-	-	31:0:1	12
+render	downsample_blur_vert_lph	narrow_blur_15_frag_lph	115	115	0	-	-	31:0:1	73
+render	downsample_blur_vert_lph	narrow_blur_15_frag_lph	80	-	-	-	-	31:0:1	12
+render	downsample_blur_vert_lph	narrow_blur_19_frag_lph	115	115	0	-	-	31:0:1	184
+render	downsample_blur_vert_lph	narrow_blur_19_frag_lph	80	115	0	-	-	31:0:1	156
+render	downsample_blur_vert_lph	narrow_blur_23_frag_lph	115	115	0	-	-	31:0:1	40
+render	downsample_blur_vert_lph	narrow_blur_23_frag_lph	80	115	0	-	-	31:0:1	29
+render	downsample_blur_vert_lph	narrow_blur_27_frag_lph	115	115	0	-	-	31:0:1	14
+render	downsample_blur_vert_lph	narrow_blur_7_frag_lph	115	115	0	-	-	31:0:1	62
+render	downsample_blur_vert_lph	narrow_blur_7_frag_lph	80	-	-	-	-	31:0:1	18
+render	downsample_blur_vert_lph	single_pass_blur_3_lph	115	-	-	-	-	31:0:1	36
+render	downsample_blur_vert_lph	single_pass_blur_3_lph	80	-	-	-	-	31:0:1	12
+render	downsample_blur_vert_lph	variable_blur_downsample_frag_lph	80	115	0	-	-	31:0:1	221
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	-	-	31:0:1	10
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 39=1 47=20 53=1	31:0:1	154
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 39=1 47=21 53=1	31:0:1	154
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	31:0:1	184
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	3=1	4=1 5=2 28=3 29=62 32=1 35=1 39=1 47=42	31:0:1	56
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 28=3 29=62 32=1 47=23	4=1 5=2 28=3 29=62 32=1 47=23	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 29=62 39=1	31:0:1	183
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 47=46 51=1 53=1	31:0:1	46
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 51=1 53=1	31:0:1	221
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	115	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	-	31:0:1	53
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	3=1 4=1 5=2 28=13 29=62	31:0:1	185
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	3=1 4=1 5=2 28=13 29=62 34=1 39=1	31:0:1	140
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=1 29=42 32=1 35=1 47=11 53=1	4=1 5=2 28=1 29=42 32=1 35=1 47=11 53=1	31:0:1	40
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=1 29=43 32=1 35=1 47=11 53=1	31:0:1	78
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 34=1 39=1 47=20 53=1	31:0:1	175
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 34=1 39=1 47=21 53=1	31:0:1	175
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=1 29=62 32=1 47=10 53=1	31:0:1	191
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=1 29=62 32=1 47=11 53=1	31:0:1	211
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=20 29=62 32=1 34=1 35=1 39=1 47=42	31:0:1	69
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	4=1 5=2 28=20 29=62 32=1 35=1 39=1 47=42	31:0:1	55
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 28=20 29=62 32=1 35=1 47=42	31:0:1	149
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=21 29=62 32=1 35=1 47=42	4=1 5=2 28=21 29=62 32=1 35=1 47=42	31:0:1	7
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=22 29=62 32=1 34=1 35=1 39=1 47=42	31:0:1	191
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=3 29=26 32=1 35=1 47=11 53=1	4=1 5=2 28=3 29=26 32=1 35=1 47=11 53=1	31:0:1	128
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=43 32=1 35=1 47=11 53=1	31:0:1	10
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 34=1 39=1 47=10 53=1	31:0:1	200
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=3 29=62 32=1 34=1 39=1 47=11 53=1	31:0:1	138
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 35=1 39=1 47=42	31:0:1	39
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=3 29=62 32=1 35=1 47=42	4=1 5=2 28=3 29=62 32=1 35=1 47=42	31:0:1	12
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=10 53=1	31:0:1	138
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=11 53=1	31:0:1	140
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 28=3 29=62 32=1 47=23	31:0:1	18
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=59 29=62 32=1 47=20 53=1	4=1 5=2 28=59 29=62 32=1 47=20 53=1	31:0:1	8
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=59 29=62 32=1 47=21 53=1	4=1 5=2 28=59 29=62 32=1 47=21 53=1	31:0:1	8
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=66 29=43 32=1 35=1 47=20 53=1	31:0:1	219
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 28=66 29=43 32=1 35=1 47=21 53=1	31:0:1	219
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=66 29=43 32=1 35=1 47=23	4=1 5=2 28=66 29=43 32=1 35=1 47=23	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 28=7 29=62 32=2 47=23 48=23	4=1 5=2 28=7 29=62 32=2 47=23 48=23	31:0:1	8
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 29=26 35=1	4=1 5=2 29=26 35=1	31:0:1	71
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 29=42 35=1	4=1 5=2 29=42 35=1	31:0:1	40
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 29=43 35=1	31:0:1	73
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	-	4=1 5=2 29=62	31:0:1	258
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 29=62 34=1 39=1	31:0:1	391
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 16=1 28=5 29=43 32=2 35=1 51=1 52=1 53=1 54=1	31:0:1	10
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 47=1 48=35 51=1 52=1 53=1 54=1	31:0:1	131
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 48=35 49=5 51=1 52=1 53=1 54=1	31:0:1	37
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1	31:0:1	8
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 16=1 28=60 29=42 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 16=1 28=60 29=42 32=1 35=1 51=1 53=1	31:0:1	20
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 16=1 28=60 29=43 32=1 35=1 51=1 53=1	31:0:1	56
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 16=1 28=7 29=62 32=2 51=1 52=1 53=1 54=1	31:0:1	34
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 23=1 28=1 29=62 32=1 47=1 51=1 53=1 57=3 59=393477	31:0:1	72
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=24 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=24 51=1 53=1	31:0:1	16
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=25 51=1 53=1	31:0:1	23
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=38 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=42 32=1 35=1 47=38 51=1 53=1	31:0:1	16
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=24 51=1 53=1	31:0:1	88
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=25 51=1 53=1	31:0:1	245
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 47=38 51=1 53=1	31:0:1	92
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=43 32=1 35=1 51=1 53=1	31:0:1	69
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=50 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=50 32=1 35=1 47=25 51=1 53=1	31:0:1	399
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 47=25 51=1 53=1	31:0:1	197
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 47=46 51=1 53=1	31:0:1	56
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 49=5 51=1 53=1	31:0:1	48
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 34=1 39=1 51=1 53=1	31:0:1	169
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 39=1 51=1 53=1	31:0:1	46
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 46=1 51=1 53=1	31:0:1	92
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=1 51=1 53=1	31:0:1	214
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=24 51=1 53=1	31:0:1	109
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 49=5 51=1 53=1	31:0:1	455
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=25 51=1 53=1	31:0:1	248
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 49=5 51=1 53=1	31:0:1	44
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 51=1 53=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 47=38 51=1 53=1	31:0:1	6
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 49=5 51=1 53=1	31:0:1	213
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=1 29=62 32=1 51=1 53=1	31:0:1	228
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=12 32=1 34=1 35=1 39=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=12 32=1 34=1 35=1 39=1 47=25 51=1 53=1	31:0:1	19
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=42 32=1 35=1 47=24 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=42 32=1 35=1 47=24 51=1 53=1	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=43 32=1 35=1 47=25 51=1 53=1	31:0:1	111
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=3 29=43 32=1 35=1 51=1 53=1	31:0:1	10
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=50 32=1 35=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=50 32=1 35=1 47=25 51=1 53=1	31:0:1	5
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 34=1 39=1 47=25 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 34=1 39=1 47=25 51=1 53=1	31:0:1	21
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=1 51=1 53=1	31:0:1	158
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=24 51=1 53=1	31:0:1	189
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 49=5 51=1 53=1	31:0:1	345
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=25 51=1 53=1	31:0:1	302
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=35 51=1 53=1	31:0:1	91
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=38 49=5 51=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 47=38 49=5 51=1 53=1	31:0:1	44
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 49=5 51=1 53=1	31:0:1	98
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 15=1 28=3 29=62 32=1 51=1 53=1	31:0:1	179
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=24 48=9 51=1 53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=24 48=9 51=1 53=1 54=1	31:0:1	2
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=38 48=9 51=1 53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=42 32=2 35=1 47=38 48=9 51=1 53=1 54=1	31:0:1	1
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=43 32=2 35=1 47=24 48=9 51=1 53=1 54=1	31:0:1	70
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=43 32=2 35=1 51=1 52=1 53=1 54=1 56=2	31:0:1	69
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 47=24 48=9 51=1 53=1 54=1	31:0:1	181
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 48=9 49=5 51=1 53=1 54=1	31:0:1	77
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 48=9 51=1 53=1 54=1	31:0:1	192
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=5 29=62 32=2 51=1 52=1 53=1 54=1 56=2	31:0:1	197
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	4=1 5=2 7=1 15=1 28=52 29=62 32=1 35=1 51=1 53=1	31:0:1	121
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 15=1 28=66 29=43 32=1 35=1 51=1 53=1	31:0:1	164
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1	31:0:1	6
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=11 49=5 52=1 53=1 54=1	31:0:1	137
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 16=1 28=15 29=62 32=2 35=1 47=11 52=1 53=1 54=1	31:0:1	80
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=1 29=62 32=1 34=1 39=1 51=1 53=1 55=1	31:0:1	189
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=10 52=1 53=1 54=1 56=2	31:0:1	89
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=11 49=5 52=1 53=1 54=1 56=2	31:0:1	89
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=15 29=62 32=2 35=1 47=11 52=1 53=1 54=1 56=2	31:0:1	184
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=18 29=62 32=1 51=1 53=1 55=2	31:0:1	74
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=20 29=62 32=1 51=1 53=1 55=2	31:0:1	70
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 28=21 29=62 32=1 51=1 53=1 55=2	4=1 5=2 7=1 28=21 29=62 32=1 51=1 53=1 55=2	31:0:1	24
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 28=3 29=26 32=1 35=1 51=1 53=1 55=2	4=1 5=2 7=1 28=3 29=26 32=1 35=1 51=1 53=1 55=2	31:0:1	169
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=3 29=62 32=1 51=1 53=1 55=2	31:0:1	205
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	3=1	4=1 5=2 7=1 28=5 29=62 32=2 48=11 51=1 53=1 54=1 55=2	31:0:1	69
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=52 29=62 32=1 35=1 51=1 53=1 55=2	31:0:1	197
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 28=66 29=43 32=1 35=1 51=1 53=1 55=2	31:0:1	193
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 23=1 28=5 29=62 32=2 34=1 36=32 39=1 48=9 51=1 53=1 54=1 57=3 59=393477	4=1 5=2 7=1 8=1 15=1 21=1 23=1 28=5 29=62 32=2 34=1 36=32 39=1 48=9 51=1 53=1 54=1 57=3 59=393477	31:0:1	40
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 47=25 51=1 53=1	31:0:1	2
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=43 32=1 35=1 36=32 51=1 53=1	31:0:1	234
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=50 32=1 35=1 36=32 51=1 53=1	31:0:1	220
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 34=1 36=32 39=1 49=1 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 34=1 36=32 39=1 49=1 51=1 53=1	31:0:1	397
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 36=32 49=5 51=1 53=1	31:0:1	108
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=1 29=62 32=1 36=32 51=1 53=1	31:0:1	183
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=43 32=1 35=1 36=32 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=43 32=1 35=1 36=32 47=25 51=1 53=1	31:0:1	11
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 34=1 36=32 39=1 47=25 51=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 34=1 36=32 39=1 47=25 51=1 53=1	31:0:1	16
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	46=1 53=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 47=25 51=1 53=1	31:0:1	287
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	115	0	53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=3 29=62 32=1 36=32 51=1 53=1	31:0:1	177
+render	fixed_vert_lph_spc	fixed_frag_lph_cph	80	-	-	4=1 5=2 7=1 8=1 15=1 21=1 28=5 29=62 32=2 36=32 48=9 51=1 53=1 54=1	4=1 5=2 7=1 8=1 15=1 21=1 28=5 29=62 32=2 36=32 48=9 51=1 53=1 54=1	31:0:1	14
+render	mask__vertex	mask_accumulate_fragment	80	65	80	-	0=64424509449	-	344
+render	mask__vertex	mask_accumulate_fragment	80	-	-	0=64424640521	0=64424640521	-	22
+render	path_blit_vert_lph	attachment_clear_frag_lph	80	115	0	-	-	31:0:1	218
+render	path_distance_vertex	path_distance_fragment	115	65	115	0=64424509466	-	-	354
+render	path_distance_vertex	path_distance_fragment	25	65	115	0=64424509466	-	-	57
+render	path_exterior_vertex	path_exterior_fragment	115	65	115	0=47244771353	-	-	455
+render	path_exterior_vertex	path_exterior_fragment	25	-	-	-	-	-	7
+render	path_interior_vertex	path_interior_fragment	115	65	115	0=47244640280	-	-	353
+render	path_interior_vertex	path_interior_fragment	25	65	115	0=47244640280	-	-	57
+render	plane__vertex	accumulator_color_fragment	115	-	-	-	-	-	16
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=107374182482	0=107374182482	-	8
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=111669149778	0=111669149778	-	8
+render	plane__vertex	accumulator_color_fragment	115	-	-	0=8589934674	0=8589934674	-	69
+render	plane__vertex	accumulator_color_fragment	115	65	115	-	0=8590000146	-	328
+render	plane__vertex	accumulator_color_fragment	25	65	115	-	0=184683594130	-	57
+render	plane__vertex	accumulator_color_fragment	25	65	115	-	0=8589934738	-	57
+render	plane__vertex	accumulator_color_fragment	25	-	-	0=8589935698	0=8589935698	-	7
+render	plane__vertex	accumulator_color_fragment	80	65	80	-	0=8589934610	-	342
+render	plane__vertex	accumulator_color_fragment	80	-	-	0=8590065682	0=8590065682	-	22
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	-	-	-	9
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	0=81604378705	0=81604378705	-	116
+render	plane__vertex	accumulator_coverage_fragment	115	-	-	0=81604379729	0=81604379729	-	12
+render	plane__vertex	accumulator_coverage_fragment	115	65	115	-	0=90194313361	-	354
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252444702	0=252444702	-	40
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252706846	0=252706846	-	20
+render	plane__vertex	filter_blur_fragment	115	-	-	0=252968990	0=252968990	-	16
+render	plane__vertex	filter_blur_fragment	115	-	-	0=256639006	0=256639006	-	40
+render	plane__vertex	filter_blur_fragment	115	-	-	0=256901150	0=256901150	-	20
+render	plane__vertex	filter_blur_fragment	115	-	-	0=257163294	0=257163294	-	16
+render	plane__vertex	filter_blur_fragment	65	65	115	-	0=135266334	-	394
+render	plane__vertex	filter_blur_fragment	80	65	80	-	0=252706846	-	394
+render	plane__vertex	filter_color_fragment	80	-	-	-	-	-	27
+render	plane__vertex	filter_color_fragment	80	65	80	-	0=28	-	352
+render	plane__vertex	filter_distance_fragment	115	-	-	-	-	-	9
+render	plane__vertex	filter_distance_fragment	115	65	115	-	0=2359327	-	386
+render	plane__vertex	filter_distance_fragment	65	-	-	-	-	-	22
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=1048607	-	395
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=1572895	-	395
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=524319	-	388
+render	plane__vertex	filter_distance_fragment	65	65	115	-	0=786463	-	395
+render	plane__vertex	plane_color_fragment	115	-	-	-	-	-	10
+render	plane__vertex	plane_color_fragment	115	65	115	-	0=2	-	385
+render	plane__vertex	plane_color_fragment	25	-	-	-	-	-	10
+render	plane__vertex	plane_color_fragment	25	65	115	-	0=2	-	44
+render	plane__vertex	plane_color_fragment	80	-	-	-	-	-	17
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=2	-	395
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=66	-	349
+render	plane__vertex	plane_color_fragment	80	65	80	-	0=8589934658	-	356
+render	plane__vertex	spill_fragment	80	-	-	0=8589934627	0=8589934627	-	13
+render	plane_image_stretch_vertex	plane_image_stretch_fragment	115	-	-	0=8594128963	0=8594128963	-	68
+render	primitive__vertex	primitive_color_fragment	115	65	115	-	0=65605	-	395
+render	primitive__vertex	primitive_color_fragment	115	-	-	0=8590000197	0=8590000197	-	20
+render	primitive__vertex	primitive_color_fragment	115	-	-	0=8590000261	0=8590000261	-	116
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=69	0=69	-	22
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=8589934661	0=8589934661	-	22
+render	primitive__vertex	primitive_color_fragment	80	-	-	0=8589934725	0=8589934725	-	22
+render	primitive__vertex	primitive_coverage_fragment	115	-	-	0=81604378756	0=81604378756	-	5
+render	primitive__vertex	primitive_coverage_fragment	115	-	-	0=85899346052	0=85899346052	-	68
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	65	115	-	0=131142	-	326
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=184918540358	0=184918540358	-	8
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=184918540422	0=184918540422	-	8
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=234946630	0=234946630	-	29
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=70	0=70	-	68
+render	primitive_gradient_vertex	primitive_gradient_fragment	115	-	-	0=8824881286	0=8824881286	-	29
+render	primitive_image_vertex	primitive_image_fragment	10	-	-	-	-	-	10
+render	primitive_image_vertex	primitive_image_fragment	10	65	80	0=8594392135	0=8594392135	-	353
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	-	-	-	10
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=107378639943	0=107378639943	-	8
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=184688051271	0=184688051271	-	8
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=184956223559	0=184956223559	-	7
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=189251190855	0=189251190855	-	68
+render	primitive_image_vertex	primitive_image_fragment	115	65	115	0=189251321927	0=189251321927	-	326
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=4457543	0=4457543	-	52
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=6554695	0=6554695	-	16
+render	primitive_image_vertex	primitive_image_fragment	115	65	115	0=81608573063	0=81608573063	-	286
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=81608836167	0=81608836167	-	7
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8594392135	0=8594392135	-	44
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8594457671	0=8594457671	-	68
+render	primitive_image_vertex	primitive_image_fragment	115	-	-	0=8596554823	0=8596554823	-	16
+render	primitive_image_vertex	primitive_image_fragment	80	-	-	-	-	-	31
+render	primitive_image_vertex	primitive_image_fragment	80	65	80	0=8594128967	0=8594128967	-	395
+render	primitive_image_vertex	primitive_image_fragment	80	65	80	0=8594129031	0=8594129031	-	385
+render	primitive_image_vertex	primitive_image_fragment	80	-	-	0=8594392135	0=8594392135	-	37
+render	primitive_image_vertex	primitive_image_fragment	90	-	-	-	-	-	17
+render	primitive_image_vertex	primitive_image_fragment	90	65	115	0=8594392135	0=8594392135	-	378
+render	primitive_image_vertex	primitive_image_fragment	90	-	-	0=8594457671	0=8594457671	-	36
+render	quadGen	blitNearest	80	0	0	-	-	-	303
+render	sdf_filter_vert_lph	glass_background_sdf_no_bleed_lph	80	115	0	-	-	31:0:1	307
+render	sdf_filter_vert_lph	glass_foreground_sdf_lph	80	115	0	-	-	31:0:1	192
+render	shadowGenVert	shadowFrag	80	0	0	-	-	-	303
+render	siriChipVert	siriChipFrag	80	0	0	0=1	-	-	606
+render	sphereVert	sphereFrag	10	0	0	-	-	-	303
+render	std_vert1_lph	home_affordance_base_lph	115	115	0	-	-	31:0:1	39
+render	std_vert1_lph	home_affordance_base_lph	80	115	0	-	-	31:0:1	28
+render	std_vert1_lph	luma_boost_lph	80	115	0	-	-	31:0:1	213
+render	stroke_lines_vertex	stroke_lines_fragment	115	-	-	-	-	-	4
+render	stroke_lines_vertex	stroke_lines_fragment	115	65	115	0=64424509966	0=64424509966	-	350
+render	stroke_lines_vertex	stroke_lines_fragment	115	-	-	0=64424641038	0=64424641038	-	24
+render	variable_blur_vert_lph	glass_background_lph	80	115	0	-	-	31:0:1	56
+render	variable_blur_vert_lph	glass_background_no_bleed_lph	80	115	0	-	-	31:0:1	197
+render	variable_blur_vert_lph	variable_blur_frag_lph	115	-	-	-	-	31:0:1	15
+render	variable_blur_vert_lph	variable_blur_frag_lph	80	-	-	-	-	31:0:1	1

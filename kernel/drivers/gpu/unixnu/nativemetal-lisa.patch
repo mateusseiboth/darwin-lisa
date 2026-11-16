@@ -1,0 +1,112 @@
+diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
+index 3a4c01e..2bdb81a 100644
+--- a/NativeAdrenoMetalPlugin.mm
++++ b/NativeAdrenoMetalPlugin.mm
+@@ -47,9 +47,7 @@ static bool requestedPath(const char *name, char *path, size_t size) {
+     slash = strrchr(path, '/');
+     if (!slash) return false;
+     snprintf(slash + 1, size - size_t(slash + 1 - path), "%s", name);
+-    if (access(path, R_OK) == 0) return true;
+-    // dada: /System/Library/Extensions/RedwoodMetal.bundle is a link to /redwood/lib/RedwoodMetal.bundle; the files beside it are there
+-    snprintf(path, size, "/redwood/lib/%s", name);
++    // darwin-lisa: the bundle is /System/Library/Extensions/AdrenoMetal.bundle itself (dada's was a link to /redwood/lib)
+     return access(path, R_OK) == 0;
+ }
+ static bool requested() {
+@@ -143,16 +141,32 @@ static void reportDisplayState(Gpu &gpu) {
+         markSample(gpu, now, 0xA000);
+     } @catch (NSException *) {}
+ }
++// darwin-lisa: the value of boot-arg NAME= (to the next blank) in value; false when the boot-args do not have it.
++static bool bootArg(const char *name, char *value, size_t size) {
++    char args[1024] = {}, key[64];
++    size_t length = sizeof args - 1;
++    if (sysctlbyname("kern.bootargs", args, &length, nullptr, 0) != 0) return false;
++    snprintf(key, sizeof key, "%s=", name);
++    for (const char *at = strstr(args, key); at; at = strstr(at + 1, key))
++        if (at == args || at[-1] == ' ') {
++            snprintf(value, size, "%.*s", (int)strcspn(at + strlen(key), " "), at + strlen(key));
++            return true;
++        }
++    return false;
++}
+ // Whether NativeAdrenoMetal.clients names this process (names separated by blanks, commas or new lines; "*" names every process).
++// darwin-lisa: boot-arg m2v_clients=a,b,c takes the file's place (m2v_clients=backboardd: the render server alone).
+ static bool listedClient() {
+-    char path[1024];
+-    if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
+-    FILE *file = fopen(path, "r");
+-    if (!file) return false;
+     char text[1024] = {};
+-    const size_t length = fread(text, 1, sizeof text - 1, file);
+-    fclose(file);
+-    text[length] = 0;
++    if (!bootArg("m2v_clients", text, sizeof text)) {
++        char path[1024];
++        if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
++        FILE *file = fopen(path, "r");
++        if (!file) return false;
++        const size_t length = fread(text, 1, sizeof text - 1, file);
++        fclose(file);
++        text[length] = 0;
++    }
+     const char *self = getprogname();
+     for (char *save = nullptr, *name = strtok_r(text, " ,\t\r\n", &save); name; name = strtok_r(nullptr, " ,\t\r\n", &save))
+         if (!strcmp(name, "*") || !strcmp(name, self)) return true;
+@@ -207,7 +221,7 @@ static id clientDevice(unsigned port) {
+     // in once a boot, by whoever comes first (the "imported" mark); the export (backboardd) then carries everybody's pipelines.
+     // A process that cannot write there (another user, a sandbox) uses its own directories, as before. NB_SHARED_CACHE=0: never.
+     char candidates[3][512] = {};
+-    const char *shared = "/private/var/mobile/Library/Caches/com.redwood.m2v-shared/";
++    const char *shared = "/private/var/mobile/Library/Caches/com.darwin-lisa.m2v-shared/";
+     if (getuid() == 501 && !(getenv("NB_SHARED_CACHE") && !strcmp(getenv("NB_SHARED_CACHE"), "0"))) {
+         mkdir("/private/var/mobile/Library/Caches", 0755);
+         mkdir(shared, 0700);
+@@ -294,7 +308,8 @@ static id clientDevice(unsigned port) {
+         // dada: the pipeline-cache export (RedwoodGPU's tunnel, boot-arg gpu_export_mb), which only deviceForPort started before --
+         // not while the image has the job that sends /private/var as a whole (the shared shader cache with it): the tunnel takes one
+         // sender, and two would overwrite each other's pieces (userland/src/stateexport.c)
+-        const bool stateExport = access("/redwood/LaunchDaemons/com.redwood.stateexport.plist", F_OK) == 0;
++        // darwin-lisa: HakiosGPU has no such tunnel, and the accelerator Metal found the plug-in on is the framebuffer's: no export
++        const bool stateExport = true;
+         if (Gpu *gpu = stateExport ? nullptr : makeGpu(port)) {
+             pthread_t exporter;
+             if (pthread_create(&exporter, nullptr, [](void *arg) -> void * {
+@@ -527,16 +542,15 @@ static id deviceForPort(unsigned port) {
+         // already in the environment wins either way (mtltest picks its own per launch). Without sysmem Turnip
+         // chooses per render pass between on-chip tiles (GMEM) and memory (its autotune), its default on other
+         // Adrenos; nocb keeps concurrent binning off (gen8 BV/BR stalls seen elsewhere, not yet understood here).
++        // darwin-lisa: on the A642L (a6xx gen4) nothing by default: turnip's autotune picks GMEM or sysmem per pass, which T0 measured
++        // (docs/gpu-driver-rewrite.md); pandora_tu_debug=gmem / sysmem / bos (the BO census) for T2's variants, or tu= (the
++        // same, short: the loader's line holds 460 characters)
+         static char chosen[128];
+-        const char *flags = "nocb,bos";   // dada: bos for the BO census on the console (tu_debug_bos_console)
+-        char args[1024] = {};
+-        size_t size = sizeof args - 1;
+-        if (sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0)
+-            if (const char *at = strstr(args, "pandora_tu_debug=")) {
+-                snprintf(chosen, sizeof chosen, "%.*s", (int)strcspn(at + 17, " "), at + 17);
+-                flags = chosen;
+-            }
+-        setenv("TU_DEBUG", flags, 0);
++        const char *flags = "";
++        if (publish::bootArg("pandora_tu_debug", chosen, sizeof chosen) || publish::bootArg("tu", chosen, sizeof chosen)) flags = chosen;
++        if (*flags) setenv("TU_DEBUG", flags, 0);
++        // darwin-lisa: tu_host_import=1, the caller's own pages imported by HakiosGPU's 0x7d (newBufferWithBytesNoCopy: in place)
++        if (char v[8]; publish::bootArg("tu_host_import", v, sizeof v)) setenv("TU_DARWIN_HOST_IMPORT", v, 0);
+         static bool told;
+         if (!told) {
+             told = true;
+diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
+index 4912cfd..cf35b27 100644
+--- a/NativeBridgeMetalFrontend.mm
++++ b/NativeBridgeMetalFrontend.mm
+@@ -423,7 +423,7 @@ static std::unordered_map<std::string,int64_t> *gBigCallers;
+ static std::string bigCaller() {
+  void *frames[10];const int n=backtrace(frames,10);std::string out;char item[96];int kept=0;
+  for(int i=2;i<n && kept<3;i++){Dl_info info{};if(!dladdr(frames[i],&info) || !info.dli_fname)continue;const char *slash=strrchr(info.dli_fname,'/');
+-  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"Metal"))continue;
++  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"AdrenoMetal") || !strcmp(name,"Metal"))continue;
+   snprintf(item,sizeof item,"%s%s+%lx",kept?" ":"",name,(unsigned long)((uintptr_t)frames[i]-(uintptr_t)info.dli_fbase));out+=item;kept++;}
+  return out;
+ }

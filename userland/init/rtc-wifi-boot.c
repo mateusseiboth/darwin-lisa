@@ -3,6 +3,7 @@
  * init-26.c includes it after bootArgNumber() and mountVar(), and main() calls, once /private/var is there:
  *
  *   applySavedRtcOffset()  rtc=1: the offset kept on the data volume -> kern.hakios.rtc_offset (the calendar moves)
+ *   applyEpochCalendar()   a calendar still before 2024 (no clock set it): epoch= plus the seconds it ran
  *   startRtcKeeper()       rtc=1: a child that saves the kernel's offset whenever it changes (the system set the time)
  *   applyTimeZone()        tz=NAME: /private/var/db/timezone/localtime points at NAME's zone (time-zone.c)
  *   giveWifiNetwork()      wifi=1: a RAM disk's fw/network kept on the data volume, then the kept one ->
@@ -99,6 +100,27 @@ applySavedRtcOffset(void)
 		return;
 	}
 	printf("init26: RTC the saved offset %lld s is the kernel's now\n", offset);
+}
+
+/* no clock set the calendar (rtc=0, or the RTC gave nothing): epoch= plus the seconds it has run (rtc-offset.c) */
+static void
+applyEpochCalendar(void)
+{
+	struct timeval now, set = { 0, 0 };
+	long long calendar;
+	long long epoch = (long long)bootArgNumber("epoch", 0);
+
+	if (gettimeofday(&now, NULL) != 0 || !resolveEpochCalendar(now.tv_sec, epoch, &calendar)) {
+		return;
+	}
+	set.tv_sec = (long)calendar;
+	set.tv_usec = now.tv_usec;
+	if (settimeofday(&set, NULL) != 0) {
+		printf("init26: CLOCK the calendar stays at %ld s: settimeofday: %s\n", now.tv_sec, strerror(errno));
+		return;
+	}
+	printf("init26: CLOCK no clock set the calendar (%ld s): it is epoch= %lld + %ld s = %lld now\n", now.tv_sec, epoch,
+	    now.tv_sec, calendar);
 }
 
 /* the keeper: every RTC_KEEP_SECONDS, the kernel's offset saved when it is one to keep and not the one saved */

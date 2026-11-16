@@ -146,6 +146,12 @@ gettimeofday(struct timeval *tv, void *tz)
 	return (int)SC(SYS_gettimeofday, tv, tz, 0, 0, 0, 0);
 }
 
+int
+settimeofday(const struct timeval *tv, const void *tz)
+{
+	return (int)SC(SYS_settimeofday, tv, tz, 0, 0, 0, 0);
+}
+
 /* Sleep with select(): the kernel has no dedicated sleep system call. */
 int
 usleep(unsigned microseconds)

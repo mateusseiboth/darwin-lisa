@@ -65,6 +65,25 @@ formatRtcOffset(char *out, size_t size, long long offset)
 	return at;
 }
 
+#define RTC_DATE_2024           1704067200LL    /* 2024-01-01 00:00:00 UTC: a calendar below it was never set */
+
+/*
+ * The calendar from boot-arg epoch= when nothing set it. Without rtc=1 (every host run: gpu-quietrun.sh,
+ * run-flashroot.sh) no platform clock answers, the kernel starts the calendar at 0 and leaves epoch= unread, and
+ * launchd, SpringBoard and the Notification Center live in 1969-12-31. The calendar then counts the seconds since the
+ * kernel started it, so the time is epoch= (the host's clock when the payload was made) plus that count.
+ * NOW: the calendar's seconds; EPOCH: epoch= (0 when absent). 1 and *calendar, or 0 (the clock is left alone).
+ */
+static int
+resolveEpochCalendar(long long now, long long epoch, long long *calendar)
+{
+	if (now < 0 || now >= RTC_DATE_2024 || epoch < RTC_DATE_2024) {
+		return 0;
+	}
+	*calendar = epoch + now;
+	return 1;
+}
+
 /* An offset worth keeping for the next boot: one that was given or set, not the kernel's estimate */
 static int
 isRtcOffsetToKeep(int source)

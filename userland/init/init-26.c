@@ -995,9 +995,10 @@ main(int argc, char **argv, char **envp)
 	cacheProbe();
 	memProbe();
 	mountVar();
-	/* darwin-lisa: the clock's kept offset (rtc=1), the time zone (tz=) and the kept Wi-Fi network (wifi=1),
-	 * init/rtc-wifi-boot.c */
+	/* darwin-lisa: the clock's kept offset (rtc=1), epoch= when no clock set the calendar, the time zone (tz=) and
+	 * the kept Wi-Fi network (wifi=1), init/rtc-wifi-boot.c */
 	applySavedRtcOffset();
+	applyEpochCalendar();
 	startRtcKeeper();
 	applyTimeZone();
 	giveWifiNetwork();

@@ -27,6 +27,16 @@ sets the clock is remembered.
   `__pm8xxx_rtc_set_time` does it (stop, byte 0 = 0, bytes 1..3, byte 0, start). This happens only if the arbiter
   says the channel belongs to EE 0, and the offset becomes 0. Off by default: pmOS reads the same counter.
 
+## Without rtc=1 (host runs)
+
+`gpu-quietrun.sh` and `run-flashroot.sh` lines carry `epoch=` but not `rtc=1`. Then no clock answers, the kernel starts
+the calendar at 0 and never reads `epoch=`: launchd logs 1969-12-31, the Notification Center says "Wed 31 Dec". Since
+2026-11-16 init26 (`applyEpochCalendar()`, `userland/init/rtc-offset.c` `resolveEpochCalendar()`) sets the calendar
+to `epoch=` plus the seconds it has run when it is still before 2024 after the saved offset step, and logs
+`init26: CLOCK no clock set the calendar (N s): it is epoch= E + N s = T now`. With `rtc=1` the calendar is already
+set and nothing changes. `gpu-quietrun.sh` takes `epoch=` again just before it makes the payload, so the time spent
+in `bootos.sh` is not lost.
+
 ## Files
 
 | File | What |

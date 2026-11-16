@@ -58,6 +58,20 @@ main(void)
 	expect(!isRtcOffsetToKeep(0) && !isRtcOffsetToKeep(1) && !isRtcOffsetToKeep(2), "estimates are not kept");
 	expect(isRtcOffsetToKeep(3) && isRtcOffsetToKeep(4) && isRtcOffsetToKeep(5), "rtc_offset=, saved and set are kept");
 	expect(!isRtcOffsetToKeep(6) && !isRtcOffsetToKeep(-1), "an unknown source is not kept");
+
+	{
+		long long calendar = 7;
+
+		expect(resolveEpochCalendar(31, 1794544279LL, &calendar) && calendar == 1794544310LL,
+		    "epoch: a calendar at 0 + 31 s becomes epoch= + 31 s");
+		calendar = 7;
+		expect(!resolveEpochCalendar(1794544300LL, 1794544279LL, &calendar) && calendar == 7,
+		    "epoch: a calendar already set (RTC, saved offset) is left alone");
+		expect(!resolveEpochCalendar(31, 0, &calendar) && calendar == 7, "epoch: no epoch=, nothing");
+		expect(!resolveEpochCalendar(31, 1600000000LL, &calendar) && calendar == 7, "epoch: an epoch= before 2024 is not a time");
+		expect(!resolveEpochCalendar(-5, 1794544279LL, &calendar) && calendar == 7, "epoch: a calendar before 1970, nothing");
+		expect(resolveEpochCalendar(0, 1704067200LL, &calendar) && calendar == 1704067200LL, "epoch: 2024-01-01 itself is a time");
+	}
 	printf("%s (%d failures)\n", failures ? "FAILED" : "ok", failures);
 	return failures != 0;
 }

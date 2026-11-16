@@ -61,6 +61,8 @@
 #include <dlfcn.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <mach-o/dyld.h>
+#include <mach-o/getsect.h>
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <objc/message.h>
@@ -79,6 +81,7 @@
 #include <unistd.h>
 
 #include "bounded-call.c"
+#include "bt-virtual.c"
 #include "file-protection.c"
 #include "launch-probe.c"
 #include "name-list.c"
@@ -86,6 +89,7 @@
 #include "scroll-stroke.c"
 #include "status-bar.c"
 #include "touch-slots.c"
+#include "trait-names.c"
 
 _Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
 
@@ -1532,6 +1536,75 @@ fixPosterBoard(void)
 	withDndDeadline();
 }
 
+/* ---- bluetoothd: its built-in virtual controller (bt-virtual.c, boot-arg dlisa_btvirt=1) ------------------- */
+
+static int
+sysctlbynameForBluetoothd(const char *name, void *old, size_t *oldLength, void *new, size_t newLength)
+{
+	static char arguments[1024];
+	static bool said;
+	size_t size = sizeof(arguments) - 1;
+
+	if (arguments[0] == 0 && sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) == 0) {
+		arguments[size] = 0;
+	}
+	if (!isFakedVmmQuery(getprogname(), name, arguments) || old == NULL || oldLength == NULL || *oldLength < sizeof(int)) {
+		return sysctlbyname(name, old, oldLength, new, newLength);
+	}
+	*(int *)old = 1;
+	*oldLength = sizeof(int);
+	if (!said) {
+		said = true;
+		say("dlisa[%s]: bt: kern.hv_vmm_present answered 1: the virtual controller (transport 10, APPLE_VIRTUAL)\n",
+		    getprogname());
+	}
+	return 0;
+}
+
+/* the main program's imports of `symbol` (its GOT, both kinds) point at `replacement` from now on */
+static unsigned
+rebindMainImport(const char *symbol, void *replacement)
+{
+	static const char *const sections[][2] = { { "__DATA_CONST", "__auth_got" }, { "__DATA_CONST", "__got" },
+		                                   { "__DATA", "__got" }, { "__AUTH_CONST", "__auth_got" } };
+	const struct mach_header_64 *header = (const struct mach_header_64 *)_dyld_get_image_header(0);
+	void *target = dlsym(RTLD_DEFAULT, symbol);
+	unsigned replaced = 0;
+
+	for (size_t i = 0; target != NULL && i < sizeof(sections) / sizeof(sections[0]); i++) {
+		unsigned long size = 0;
+		uint8_t *slots = getsectiondata(header, sections[i][0], sections[i][1], &size);
+		vm_address_t page = (vm_address_t)slots & ~(vm_address_t)vm_page_mask;
+		vm_size_t length = ((vm_address_t)slots + size - page + vm_page_mask) & ~(vm_size_t)vm_page_mask;
+
+		if (slots == NULL || size == 0 ||
+		    vm_protect(mach_task_self(), page, length, false, VM_PROT_READ | VM_PROT_WRITE | VM_PROT_COPY) != KERN_SUCCESS) {
+			continue;
+		}
+		replaced += replacePointers((void **)slots, size / sizeof(void *), target, replacement);
+		vm_protect(mach_task_self(), page, length, false, VM_PROT_READ);
+	}
+	return replaced;
+}
+
+static void
+fixBluetoothd(void)
+{
+	char arguments[1024];
+	size_t size = sizeof(arguments) - 1;
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
+		return;
+	}
+	arguments[size] = 0;
+	if (!isFakedVmmQuery("bluetoothd", "kern.hv_vmm_present", arguments)) {
+		say("dlisa[%s]: bt: dlisa_btvirt is not on: bluetoothd looks for its controller as usual\n", getprogname());
+		return;
+	}
+	say("dlisa[%s]: bt: sysctlbyname rebound in %u slot(s) of bluetoothd's imports\n", getprogname(),
+	    rebindMainImport("sysctlbyname", (void *)sysctlbynameForBluetoothd));
+}
+
 /* ---- which program gets which fix ------------------------------------------------------------------ */
 
 static const struct {
@@ -1546,6 +1619,7 @@ static const struct {
 	{ "Preferences", withoutAsynchronousLayerHosts },
 	{ "PosterBoard", fixPosterBoard },
 	{ "CollectionsPoster", withoutApfsPurgeable },
+	{ "bluetoothd", fixBluetoothd },
 };
 
 /*
@@ -1861,6 +1935,113 @@ probeThread(__unused void *argument)
 	return NULL;
 }
 
+/*
+ * dlisa_uiprobe, 15 s after start: what colour the app gives its text (trait-names.c). One line for the key window
+ * (its appearance, the screen's, labelColor resolved for it) and one for each of the first 8 UILabels found under the
+ * windows (text, resolved textColor, its own appearance, its layer's compositingFilter, and the nearest ancestor whose
+ * class names a visual effect, glass or vibrancy). White text with "light" here means the render server colours it;
+ * "dark" means the app resolves its colours for a dark appearance.
+ */
+#define TEXT_PROBE_LABELS       8
+
+static long
+readInterfaceStyle(id object)
+{
+	id traits = object != nil ? SEND0(id, object, "traitCollection") : nil;
+
+	return traits != nil ? SEND0(long, traits, "userInterfaceStyle") : -1;
+}
+
+static void
+formatColorFor(char *text, size_t size, id color, id traits)
+{
+	double r = 0, g = 0, b = 0, a = 0;
+	id resolved = color;
+
+	if (color != nil && traits != nil) {
+		resolved = ((id (*)(id, SEL, id))objc_msgSend)(color, sel_registerName("resolvedColorWithTraitCollection:"), traits);
+	}
+	if (resolved == nil || !((bool (*)(id, SEL, double *, double *, double *, double *))objc_msgSend)(resolved,
+	    sel_registerName("getRed:green:blue:alpha:"), &r, &g, &b, &a)) {
+		snprintf(text, size, "?");
+		return;
+	}
+	formatRgba(text, size, r, g, b, a);
+}
+
+static const char *
+findEffectAncestor(id view)
+{
+	for (id at = SEND0(id, view, "superview"); at != nil; at = SEND0(id, at, "superview")) {
+		const char *name = object_getClassName(at);
+
+		if (strstr(name, "Effect") != NULL || strstr(name, "Glass") != NULL || strstr(name, "Vibran") != NULL) {
+			return name;
+		}
+	}
+	return "-";
+}
+
+static void
+sayLabel(id label, int index)
+{
+	char color[40], filter[48];
+	id text = SEND0(id, label, "text"), compositing = SEND0(id, SEND0(id, label, "layer"), "compositingFilter");
+	const char *utf8 = text != nil ? SEND0(const char *, text, "UTF8String") : "(nil)";
+
+	formatColorFor(color, sizeof(color), SEND0(id, label, "textColor"), SEND0(id, label, "traitCollection"));
+	snprintf(filter, sizeof(filter), "%s", compositing != nil ? SEND0(const char *, SEND0(id, compositing, "description"),
+	    "UTF8String") : "-");
+	say("dlisa[%s]: text: label %d \"%.40s\" color %s style %s filter %s in %s (%s)\n", getprogname(), index,
+	    utf8 != NULL ? utf8 : "?", color, nameInterfaceStyle(readInterfaceStyle(label)), filter, findEffectAncestor(label),
+	    object_getClassName(label));
+}
+
+static void
+walkLabels(id view, int depth, int *found, int *views)
+{
+	id subviews;
+	unsigned long count;
+
+	(*views)++;
+	if (*found < TEXT_PROBE_LABELS && ((bool (*)(id, SEL, Class))objc_msgSend)(view, sel_registerName("isKindOfClass:"),
+	    objc_getClass("UILabel"))) {
+		sayLabel(view, (*found)++);
+	}
+	if (depth > 60) {
+		return;
+	}
+	subviews = SEND0(id, view, "subviews");
+	count = subviews != nil ? SEND0(unsigned long, subviews, "count") : 0;
+	for (unsigned long i = 0; i < count; i++) {
+		walkLabels(((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews, sel_registerName("objectAtIndex:"), i), depth + 1,
+		    found, views);
+	}
+}
+
+static void
+sayTextColors(void)
+{
+	id app = SEND0(id, (id)objc_getClass("UIApplication"), "sharedApplication");
+	id windows = app != nil ? SEND0(id, app, "windows") : nil;
+	unsigned long count = windows != nil ? SEND0(unsigned long, windows, "count") : 0;
+	id screen = SEND0(id, (id)objc_getClass("UIScreen"), "mainScreen");
+	int found = 0, views = 0;
+
+	for (unsigned long i = 0; i < count; i++) {
+		id window = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows, sel_registerName("objectAtIndex:"), i);
+		char label[40];
+
+		formatColorFor(label, sizeof(label), SEND0(id, (id)objc_getClass("UIColor"), "labelColor"),
+		    SEND0(id, window, "traitCollection"));
+		say("dlisa[%s]: text: window %lu %s style %s (screen %s) labelColor %s\n", getprogname(), i,
+		    object_getClassName(window), nameInterfaceStyle(readInterfaceStyle(window)),
+		    nameInterfaceStyle(readInterfaceStyle(screen)), label);
+		walkLabels(window, 0, &found, &views);
+	}
+	say("dlisa[%s]: text: %lu windows, %d views, %d labels shown\n", getprogname(), count, views, found);
+}
+
 static void
 startUiProbe(void)
 {
@@ -1874,6 +2055,9 @@ startUiProbe(void)
 	watchMainRunLoop();
 	dispatch_async(dispatch_get_main_queue(), ^{
 		startProbeDisplayLink();
+	});
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 15 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		sayTextColors();
 	});
 	if (pthread_create(&thread, NULL, probeThread, NULL) == 0) {
 		pthread_detach(thread);

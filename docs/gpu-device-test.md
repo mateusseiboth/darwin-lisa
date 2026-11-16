@@ -192,6 +192,23 @@ BinaryArchive(InvalidFile { path: "/System/Library/Frameworks/QuartzCore.framewo
 `commandBuffer refused: ... DeviceLost` lines start when the run gives the GPU back (`tu_knl_darwin.cc:887: submit
 failed: 0xe00002d8`).
 
+**The new stack, run by run** (every run back to pmOS, no GPU hang; `B` = Session 12's base + `metal_plugin=AdrenoMetal`;
+gestures `touch_lat=1 touch_seq=nc@200,up@210,cc@250` unless said; "CC" = the Control Center pull; swaps from
+`frame_bursts.py`; m5 = backboardd's submit time from `gpu2-rwtime`):
+
+| run | root, kernel | line | picture | numbers |
+|---|---|---|---|---|
+| T2-B | int6, periph2 | `$B` + Session 15's tap/scroll/cc | wallpaper first seen; home icons missing (labels only); Settings not reached; CC right | boot 36.9/s (median 19.7 ms); m5 2.12 ms a call |
+| T2-C | int6, periph2 | `tu=gmem` | home complete (wallpaper, icons, dock, status bar); Settings not reached | boot 52.1/s (16.5 ms); later bursts 18-31/s |
+| t7a | int7, periph2 | `tu=nobin`, `up@200` | icons late; bands of icon rows at +260/+275 | binary archive fixed (`an empty one in its place`) |
+| t3a | int8, unixnu1 | `$B` | wallpaper, labels, no icons; gestures not acted on | m5 0.35 ms a call (max 26 ms) |
+| t3b | int8, unixnu1 | `gpu_hwcg=1` | home complete at +228; CC right at +280, shifted at +300 | m5 0.063 ms; gesture 54.1/s (16.6 ms); CC 26.8/s (33.6 ms) |
+| t4a | int10, unixnu3 (hwcg on) | `gpu_log=1` | the lock-screen poster (big clock over the wallpaper) seen as the Notification Center closes; home, CC right; CC shifted at +300 | gesture 56.5/s; CC 42.3/s (19.2 ms); m5 0.16 ms; 0 `came after the swap` |
+| t4b | int10, unixnu3 | `fb_settle_us=2000` | icons at +150 for the first time; the Notification Center frame garbled; CC shifted at +300 | 16 `submission(s) ... came after the swap; waited for`; m5 0.057 ms |
+| t4c | int10, unixnu3 | `tu=sysmem`, `cc@250` | CC right and **not shifted** at +300: the band is the GMEM path's | m5 0.054 ms (max 158 us); no CC burst recorded |
+| t5a | int11, unixnu4 | `m2v_renderarea=1` | the Notification Center clean; band at +300 | gesture 64.0/s (16.1 ms); CC 27.9/s (26.8 ms) |
+| t5d | int12, unixnu4 | `$B` | the lock screen complete: "Mon 16 Nov", big "7:21" in glass over the wallpaper; band at +300 | `vsc grew draw 0 prim 0` in all 27 lines (gmem passes up to 1478, 52177 tiles); CC 27.7/s (20.7 ms) |
+
 ## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
 
 Nothing was run on the phone. Question: why the Settings switch track and knob, the Settings cards, the Control

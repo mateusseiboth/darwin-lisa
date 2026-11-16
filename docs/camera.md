@@ -132,7 +132,7 @@ driver as HakiOS wrote it and is untried on lisa.
 
 | Piece | What | sha256 |
 | --- | --- | --- |
-| `research/hackios-xnu-kernel/kernel-16k-cam1.bak` | the tree as of 2026-11-16 15:05 (the last build before this one made `kernel26.nopac`, with the other workers' wires) + `HAKIOS_CAMERA` | see `kernel/drivers/camera/README.md` / the handover |
+| `research/hackios-xnu-kernel/kernel-16k-cam1.bak` | the shared xnu-work at 15:21 on 2026-11-16 (scheduler restored: `sched_prim.c` 3c766b2f, `sched_clutch.c` 45817b0b; the other workers' wires) + `HAKIOS_CAMERA`, built by `camera-build.sh` under the lock (`hakios.camera.o` 15:21:55, `kernel.macho` 15:24:57). `llvm-nm`: `_hakios_camera_init`, `_frames_dump`, `_frame_crop`, `_hakios_camera_tab0` present | `3f32d6e949a4095d95bf92a3232feedfe3768b0d83cb3d4973b7dc3fcc226753` |
 
 Inert without `cam=`: the driver starts nothing, maps nothing. The camera is not in `build-combined.sh`'s lines.
 

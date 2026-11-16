@@ -13,15 +13,13 @@ Nothing was run on the phone and nothing was written to it.
   Linux driver, every number against pmOS's DT and Linux 7.2.9's camcc/camss, the log-to-PNG tool): all pass.
   `tools/ksyntax.py` with the 26 kernel's flags: 0 errors.
 - Wired into the shared xnu-work (`camera-wire.py`, option `HAKIOS_CAMERA`, inert without `cam=`), and `kernel/patches/apply.sh`
-  runs the wire. In the 15:08 build `bsd/DEVELOPMENT/hakios.camera.o` compiled with no error; the kernel did not link
-  because `osfmk/kern/sched_prim.c` was half-patched by the scheduler work (not ours). No camera kernel exists yet.
+  runs the wire. The 15:08 build did not link (the scheduler's `sched_prim.c` was half-patched then); after the
+  scheduler worker restored the tree, `sched_prim.o` was recompiled from its own compile record (the libpthread step
+  needs it) and `camera-build.sh` made **`research/hackios-xnu-kernel/kernel-16k-cam1.bak`, sha256
+  `3f32d6e949a4095d95bf92a3232feedfe3768b0d83cb3d4973b7dc3fcc226753`** (15:25; `llvm-nm` shows the camera's symbols).
 
 ## Next
 
-1. When the tree is in a known state: `sh kernel/drivers/camera/camera-build.sh kernel-16k-cam1` (wire + build under
-   `research/hackios-xnu-kernel/.build.lock`, refuses to copy a kernel without the driver) ->
-   `research/hackios-xnu-kernel/kernel-16k-cam1.bak`, sha256 at the end of `logs/kernel-16k-cam1-build.log`.
-2. Check the other drivers stay inert without their boot-args (the camera adds no hook outside `hakios_camera_init()`).
-3. The phone run of `docs/camera.md` section 6.
-4. Then step B of the plan (`cam=5`, `/dev/hakios-camera`), after fixing HakiOS's read-path issues CAM-1/CAM-2
+1. The phone run of `docs/camera.md` section 6 with `KERNEL=kernel-16k-cam1.bak`.
+2. Then step B of the plan (`cam=5`, `/dev/hakios-camera`), after fixing HakiOS's read-path issues CAM-1/CAM-2
    (`research/hackios-xnu-kernel/docs/driver-review/camera-haptic-torch.md`).

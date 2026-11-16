@@ -441,6 +441,33 @@ back "Finished SUCCESSFULLY". Still no wallpaper, and the Notification Center bl
 - `dlisa[CollectionsPoster]: -[NSURL pbf_setPurgable:error:] not found; left alone` is expected: PosterBoard.framework
   is not loaded there, only PosterFoundation's two methods are.
 
+**Confirmed on the phone** (poster-f3, root 2ef33580, `research/hackios-xnu-kernel/logs/poster-f3-end.log`):
+CollectionsPoster lives, resolves `Collections~iphone.plist` for device name 'iPhone' and makes descriptor 7365 for
+the lock screen; PosterBoard's reload of it "Finished SUCCESSFULLY". Still no poster: `posterUUIDOrdering is empty`,
+`selected poster uuid: (null)`, home black, the Notification Center's big clock on black. The next cause:
+
+- **PosterBoard hangs on donotdisturbd in its first role coordinator setup.** After `Failed to setup role coordinator
+  for role 'PRPosterRoleBackdrop': (null)` (normal: the backdrop role has no coordinator) the state thread logs
+  `Adding update listener: listener=<FCActivityManager ...com.apple.PosterBoard>` and `[...] Getting active mode
+  assertion; not restricted by client identifier` (DoNotDisturb, `-[DNDModeSelectionService
+  activeModeAssertionWithError:]`, 0x224ad0e44), and never `Got mode assertion`. The connection
+  `com.apple.donotdisturb.service` stays at `Pending event until connection established` for the whole run; so does
+  SpringBoard's in every host run with its log (gpu-cc1, gpu-nc2, gpu-nc11): donotdisturbd (running, never exits)
+  accepts no client here. The call is synchronous (FCActivityManager `_updateActiveModeAssertionIfNecessary`, under
+  `@synchronized`) and is made while `-[PBFPosterExtensionDataStore _stateLock_initialRoleCoordinatorSetup]`
+  (0x21fb32998) holds the store's state lock: neither `Role coordinator for role ... has initial events` nor `... had
+  no initial events` (both default-level) is ever printed, `_stateLock_processEvents:` never runs, so no transaction,
+  no `-finalizeChangesWithChangeHandler:` (0x21fb7b238), whose empty-collection branch is what calls
+  `+[PBFInitialPosterHelper initialPosterConfigurationsWithModelCoordinatorProvider:role:]` and makes the default
+  poster. PosterBoard's log "stopping" after ~17 s is that hang, not a limit of `dlisa_oslog` (there is none).
+  `DefaultWallpapers~iphone` is read only when a default wallpaper is set up, which never happened.
+- Fix (libdlisa, PosterBoard; `userland/inject/bounded-call.c` + `withDndDeadline` in `dlisa-inject.c`): Focus's
+  synchronous DND queries get 2.5 s each (`DNDModeSelectionService` `activeModeAssertionWithError:`,
+  `allModesWithError:`, `availableModesWithError:`, `DNDStateService queryCurrentStateWithError:`). The original runs on
+  a thread of its own; past the deadline the answer is "no Focus" (nil, or an empty set for the mode lists) and the
+  late call is left to its thread. When donotdisturbd answers, nothing changes. donotdisturbd itself is the open item:
+  it is now in `dlisa-inject.conf`, so `dlisa_oslog=donotdisturbd` shows why it accepts no connection.
+
 **HakiOS 16.5 shims.** None for any of these. Nothing in its `userland/src` (inject\*, tweaks) works around
 clonefile, snapshots, purgeable space or `F_PUNCHHOLE`. Its only `/private/var` handling was the HFS mount, the
 skeleton and the logd markers, and its fixes were in the kernel (ramfs page-cache coherency, `cow_test.c`). On the

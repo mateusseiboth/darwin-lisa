@@ -7,7 +7,7 @@ mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
 for t in "$HERE"/*-test.c; do
 	name=$(basename "$t" .c)
-	cc -Wall -Wextra -Werror -I"$HERE/.." -o "$OUT/$name" "$t"
+	cc -Wall -Wextra -Werror -pthread -I"$HERE/.." -o "$OUT/$name" "$t"
 	printf '%s: ' "$name"
 	"$OUT/$name"
 done

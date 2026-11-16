@@ -44,6 +44,9 @@
  *       volume without MNT_CPROTECT a nil class reads as NSURLFileProtectionNone. Then every new poster
  *       descriptor's store coordinator unmarks its files as purgeable, an APFS-only fsctl that fails on HFS, and
  *       no descriptor is made (purgeable.c): on a volume that is not APFS the purgeable marks succeed as no-ops.
+ *       Last, donotdisturbd never answers here, and Focus's synchronous queries to it (FCActivityManager, under
+ *       the data store's state lock in the first role coordinator setup) hung PosterBoard before it made the
+ *       default poster: those queries get a deadline and answer "no Focus" past it (bounded-call.c).
  *
  *   CollectionsPoster
  *       The same purgeable marks (PosterFoundation's), as no-ops on a volume that is not APFS.
@@ -72,6 +75,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "bounded-call.c"
 #include "file-protection.c"
 #include "launch-probe.c"
 #include "name-list.c"
@@ -1241,6 +1245,113 @@ withoutApfsPurgeable(void)
 	    (IMP)unmarkAsPurgableWithoutApfs);
 }
 
+/* bounded-call.c: Focus's synchronous Do Not Disturb queries, with a deadline. Past it the answer is "no Focus":
+ * no active mode assertion, no modes, no state. */
+#define DND_DEADLINE_MS 2500
+
+static IMP origActiveModeAssertion, origAllModes, origAvailableModes, origQueryCurrentState;
+
+extern void *objc_autoreleasePoolPush(void);
+extern void objc_autoreleasePoolPop(void *pool);
+extern id objc_retain(id object);
+extern id objc_autorelease(id object);
+
+struct dndQuery {
+	IMP original;
+	id self;
+	SEL selector;
+	id result;  /* retained */
+	id error;   /* retained */
+};
+
+static void
+runDndQuery(void *argument)
+{
+	struct dndQuery *query = argument;
+	void *pool = objc_autoreleasePoolPush();
+	id error = nil;
+	id result = ((id (*)(id, SEL, id *))query->original)(query->self, query->selector, &error);
+
+	query->result = result != nil ? objc_retain(result) : nil;
+	query->error = error != nil ? objc_retain(error) : nil;
+	objc_autoreleasePoolPop(pool);
+}
+
+/* the original, given DND_DEADLINE_MS; past it FALLBACK (a late answer is dropped with its thread's query) */
+static id
+queryDndBounded(IMP original, id self, SEL selector, id *error, id fallback)
+{
+	static int said;
+	struct dndQuery *query = calloc(1, sizeof(*query));
+	id result;
+
+	if (query == NULL) {
+		return ((id (*)(id, SEL, id *))original)(self, selector, error);
+	}
+	query->original = original;
+	query->self = objc_retain(self);
+	query->selector = selector;
+	if (!runBounded(runDndQuery, query, DND_DEADLINE_MS)) {
+		if (said++ < 8) {
+			say("dlisa[%s]: -%s: donotdisturbd did not answer in %d ms; taken as no Focus\n", getprogname(),
+			    sel_getName(selector), DND_DEADLINE_MS);
+		}
+		return fallback;
+	}
+	if (error != NULL) {
+		*error = query->error != nil ? objc_autorelease(query->error) : nil;
+	}
+	result = query->result != nil ? objc_autorelease(query->result) : nil;
+	free(query);
+	return result;
+}
+
+static id
+emptySet(void)
+{
+	return ((id (*)(id, SEL))objc_msgSend)((id)objc_getClass("NSSet"), sel_registerName("set"));
+}
+
+/* -[DNDModeSelectionService activeModeAssertionWithError:] (FCActivityManager's _updateActiveModeAssertionIfNecessary) */
+static id
+activeModeAssertionBounded(id self, SEL selector, id *error)
+{
+	return queryDndBounded(origActiveModeAssertion, self, selector, error, nil);
+}
+
+/* -[DNDModeSelectionService allModesWithError:] (FCActivityManager's _availableActivities) */
+static id
+allModesBounded(id self, SEL selector, id *error)
+{
+	return queryDndBounded(origAllModes, self, selector, error, emptySet());
+}
+
+/* -[DNDModeSelectionService availableModesWithError:] */
+static id
+availableModesBounded(id self, SEL selector, id *error)
+{
+	return queryDndBounded(origAvailableModes, self, selector, error, emptySet());
+}
+
+/* -[DNDStateService queryCurrentStateWithError:] */
+static id
+queryCurrentStateBounded(id self, SEL selector, id *error)
+{
+	return queryDndBounded(origQueryCurrentState, self, selector, error, nil);
+}
+
+static void
+withDndDeadline(void)
+{
+	origActiveModeAssertion = replaceMethod('-', "DNDModeSelectionService", "activeModeAssertionWithError:",
+	    (IMP)activeModeAssertionBounded);
+	origAllModes = replaceMethod('-', "DNDModeSelectionService", "allModesWithError:", (IMP)allModesBounded);
+	origAvailableModes = replaceMethod('-', "DNDModeSelectionService", "availableModesWithError:",
+	    (IMP)availableModesBounded);
+	origQueryCurrentState = replaceMethod('-', "DNDStateService", "queryCurrentStateWithError:",
+	    (IMP)queryCurrentStateBounded);
+}
+
 static void
 fixPosterBoard(void)
 {
@@ -1249,6 +1360,7 @@ fixPosterBoard(void)
 	origResourceValuesForKeys = (id (*)(id, SEL, id, id *))replaceMethod('-', "NSURL", "resourceValuesForKeys:error:",
 	    (IMP)resourceValuesWithProtectionNone);
 	withoutApfsPurgeable();
+	withDndDeadline();
 }
 
 /* ---- which program gets which fix ------------------------------------------------------------------ */

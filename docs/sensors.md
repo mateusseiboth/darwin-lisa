@@ -108,8 +108,11 @@ Apps' CoreMotion (CMMotionManager: raw accelerometer, gyro, compass, device moti
 `usr/libexec/locationd` (40,226,848 B, sha256 `65a6306b...`, from the 23F84 FileSystem dmg) is not in the root:
 `userland-26/scripts/select-system-26.py` drops every `usr/libexec`/`usr/sbin` program over `BIG_PROGRAM` (10 MiB).
 Its LaunchDaemon plist stays, so launchd advertises its Mach services with no executable ("Missing executable",
-exit 78) and synchronous clients wait. The same holds for 35 other daemons (21 in the FileSystem dmg, the rest
-cryptex Safari/WebKit daemons; list in the scratch `missing-exec.txt` of this round).
+exit 78) and synchronous clients wait. 25 LaunchDaemons of the shared sysroot have no executable, locationd among
+them, all present in the FileSystem dmg and cut by the selector or not chosen; the `missing` group of
+`dlisa-ld-groups.conf` (2beca308) lists exactly these 25. (A first count said 36: CommCenter twice, and ten cryptex
+Safari/WebKit daemons whose `/System/Cryptexes/...` path is a symlink into `/private/preboot/Cryptexes/`, where
+they are.)
 
 What locationd needs, read from the binary: 164 libraries, 163 of them in the 23F84 dyld cache, the other
 (`/usr/appleinternal/lib/liblinkguard.dylib`) weak. So it would load. Its motion side is `CLMotionCoprocessor` and

@@ -44,4 +44,9 @@ else
 	patch -d "$tree" -p1 --forward <"$wcomb"
 fi
 
+# 4. the cameras (kernel/drivers/camera/camera-wire.py: option HAKIOS_CAMERA, inert without cam=N). Its sensor table is
+#    made from pmOS's sensor driver patch; without that patch on the machine the wire says why and the build goes on
+#    without the camera.
+XNU_WORK="$tree" python3 "$here/../drivers/camera/camera-wire.py" || echo "apply.sh: camera wire NOT applied (see above)"
+
 echo "darwin-lisa kernel emulation patches applied to $tree"

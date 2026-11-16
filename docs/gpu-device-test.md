@@ -305,6 +305,53 @@ Center's corners and rims against `gpu-s9a-q7.png`). Pass for B: GPU a buffer at
 Seen, not chased: on the fake GPU a flat draw after a fetching draw in one pass faults ("fragment constants at vec4 0,
 1 of them: past the stage's constlen of 0"): the third draw of the session-13 test, left out of it.
 
+## Session 11, part 3 (2026-11-16, host only): int1-a/b, the controls' wait, chronod, and Settings' white text
+
+Stacks from `int1-a-end.log` / `int1-b-end.log`, symbolized with `ipsw dyld a2s` (23F84):
+- **Control extensions (CalculatorWidget launch probe, 1.5-9.5 s): not InterfaceNamer.** `mach_msg` <- libdispatch
+  `_dispatch_mach_send_with_result_and_wait_for_reply` <- libxpc `xpc_connection_send_message_with_reply_sync` <-
+  Foundation (NSXPC synchronous proxy) <- VoiceShortcutClient `serializedParametersForLinkAction:actionMetadata:error:`
+  <- Intents `initWithAppBundleIdentifier:linkAction:linkActionMetadata:` <- WidgetKit. CalculatorWidget's os_log:
+  `connection to service named com.apple.siri.VoiceShortcuts.xpc`. That service is siriactionsd's; siriactionsd is in
+  the image and was started (`DLISA exec 115(siriactionsd)`) but never answers. siriactionsd's own wait was not
+  sampled; it serves IDS-woken services (`com.apple.private.alloy.*-idswake`) and talks to assistantd, both among the
+  36 LaunchDaemons whose executable is not in the image (identityservicesd, assistantd, akd, passd, sharingd,
+  searchpartyd, callservicesd, locationd, bluetoothd, CommCenter...). So the PosterBoard worker's `missing` group
+  (`ld_disable=missing`, 6a7157d/f0a3361) is the likely fix here too: a lookup of an unregistered service fails at
+  once instead of waiting. It should be on by default, for all of them: none of the 36 can ever answer. Proof in the
+  next run: CalculatorWidget's launch probe no longer in `xpc_connection_send_message_with_reply_sync`, and the
+  Control Center's circles filled.
+- **chronod `main thread stuck 1982/3922 ms` (53-55 s): not a missing daemon.** `mach_msg` <- QuartzCore MIG call to
+  `CARenderServerGetServerPort` ("CALocalDisplayUpdateBlock returned NO" path) <- `-[CADisplay update]` over the
+  display list <- a libsystem_notify handler on the main queue: chronod asks backboardd's render server for the
+  display state and waits 2-4 s while backboardd is busy starting. Transient.
+- **Settings' text (int1-b, unblocked) is drawn, in near-white.** `int1-b-q3.png`: the status bar's "rdar:45025538"
+  is there in near-white on the light grey (539 near-white pixels, 8 dark); the same in `gpu-s11a-q3.png` (glass9);
+  in `gpu-s9a-q3.png` (glass9, classic identity) that strip is dark text (785 dark pixels). Row labels in white sit on
+  white cells; the grey "Search" placeholder shows. So not fonts, strings or glyph rendering, and not the plug-in (S9
+  and S11-A have the same glass9): the identity change makes Preferences' primary text white while its backgrounds are
+  light. Preferences draws no Metal at all (no `HakiosMetal[Preferences` line), and backboardd linked no text-specific
+  program. Whether the app resolves its colours for a dark appearance or something recolours them is what the probe
+  below says.
+
+**Text probe** (`dlisa_uiprobe`, 15 s after start; `userland/inject/trait-names.c`, test `trait-names-test.c`):
+`dlisa[Preferences]: text: window N <class> style light|dark (screen ...) labelColor rgba(...)` per window, then up
+to 8 `text: label N "<text>" color rgba(...) style ... filter ... in <effect ancestor> (<class>)`. Reading: `style
+dark` and white `labelColor` = the app is in dark appearance (then look at what sets it: SpringBoard's scene
+settings / `UIUserInterfaceStyle` for the HBT identity); `style light` with white label colours = the colour comes
+from a vibrancy/effect ancestor or a compositing filter (named on the line).
+
+Dylib `userland-26/out/libdlisa-textprobe/libdlisa.dylib` sha256 `f210aa9ad67cbce8611931767cfbb99f34b30e0a012cf900dba811df31ac09ad`:
+the 8e30b5c source (which rebuilds 174255e0 byte for byte at the canonical path) plus the text probe only. No root:
+the base a5d72c6a is not in `userland-26/out` and its diagnostic plug-in (HakiosMetal 1b8438cd) is in no folder here.
+To make one: a5d72c6a's recipe with this dylib in place of 174255e0 (hard-link copy, the file replaced, not written
+through). Note: the probe code also went into HEAD by way of e672e8e (bluetoothd), which committed the working
+`dlisa-inject.c` without `trait-names.c`; HEAD did not compile until 2292f29 added it.
+
+Run (with whatever root carries f210aa9a or HEAD's libdlisa, and `ld_disable=missing` if that root has the group):
+S11-A's line with `dlisa_uiprobe=1` as before, plus the screenshots. Read `grep -a "dlisa\[Preferences\]: text:"`
+and the Control Center screenshot.
+
 ## Session 11, part 2 (2026-11-16, host only): S11-A on the phone, Settings stuck in configd's interface wait
 
 S11-A ran (root 2ef33580, vendor_boot final19-hbt, `research/hackios-xnu-kernel/logs/gpu-s11a*`, no end log). The

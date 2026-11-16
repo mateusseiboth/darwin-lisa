@@ -102,8 +102,25 @@ missing are logged once each. Boot-arg `sensors_hid=0` leaves the services out.
 
 Unit and axis conversions are in `userland/motion/sensor-events.c`, host-tested by `userland/motion/test/run-tests.sh`.
 
-Out of scope: apps' CoreMotion (raw accelerometer, gyro, compass) goes through locationd, which is not in the root.
-Adding it is a separate decision (it hung the data migrator before, see `userland-26/scripts/mkimage-trim.sh`).
+## Stage 2 (not built): locationd, for apps' CoreMotion
+
+Apps' CoreMotion (CMMotionManager: raw accelerometer, gyro, compass, device motion) goes through locationd over XPC.
+`usr/libexec/locationd` (40,226,848 B, sha256 `65a6306b...`, from the 23F84 FileSystem dmg) is not in the root:
+`userland-26/scripts/select-system-26.py` drops every `usr/libexec`/`usr/sbin` program over `BIG_PROGRAM` (10 MiB).
+Its LaunchDaemon plist stays, so launchd advertises its Mach services with no executable ("Missing executable",
+exit 78) and synchronous clients wait. The same holds for 35 other daemons (21 in the FileSystem dmg, the rest
+cryptex Safari/WebKit daemons; list in the scratch `missing-exec.txt` of this round).
+
+What locationd needs, read from the binary: 164 libraries, 163 of them in the 23F84 dyld cache, the other
+(`/usr/appleinternal/lib/liblinkguard.dylib`) weak. So it would load. Its motion side is `CLMotionCoprocessor` and
+`SPUHIDDriverInterface` (the AppleSPU user client and its HID services, usage page 0xff0c), plus IOHIDEventSystemClient
+matching; whether it falls back to plain (0xff00, 3) accelerometer services without an SPU is not known.
+
+Proposal: a named exception, the limit unchanged: `BIG_PROGRAMS_KEPT = ('usr/sbin/bluetoothd', 'usr/libexec/locationd')`,
+and a test root of its own (sensors2 + locationd, with `dlisa_oslog=locationd`). Risks: the CoreLocation migrator
+hung DataMigrator for 20 min when locationd was in the root (`mkimage-trim.sh`, LEAN), and without an SPU locationd
+may serve no motion at all. Pass: locationd stays up, no DataMigrator stall, and a CMMotionManager client gets
+accelerometer data (`oslog[locationd]` says which service it took).
 
 ## Delivered (stage 1: accelerometer + rotation, and the services)
 
@@ -111,7 +128,7 @@ Adding it is a separate decision (it hung the data migrator before, see `userlan
 | --- | --- | --- |
 | kernel `research/hackios-xnu-kernel/kernel-16k-sensors1.bak` | `kernel-16k-s14-idle.bak` + `kernel/drivers/adsp/sensors-wire.py` (FastRPC file server, the current `dlisa.ssc.c`, 317 sensor files built in). Inert without `sensors=1` / `sensors_rpc=1` | `090fdadfd7367c73f5656c80e26356f342a483161121910ff377170219aa68ab` |
 | `libdlisa-motion.dylib` | dlisa-motion.c + sensors-hid.c | `d948f0d57214b5c9bfa39f72705561a479d7b0e27c12a041159e10af0fa67221` |
-| root `userland-26/out/system-26.apfs.full-sensors1` | the shared `out/sysroot-26` (launchd d2506319, libdlisa f61dbf9b) with two files: the dylib above and `/etc/dlisa-inject.conf` + `/usr/local/lib/libdlisa-motion.dylib backboardd`. Hard-link copy, `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB | `e9736ae78bec63dced468d7e15d92abc020e5831ed2b100910cc967b593e617a` (4,999,610,368 B; 61212 files as 2ef33580; read back: the dylib and the conf) |
+| root `userland-26/out/system-26.apfs.full-sensors2` | the combined test root `system-26.apfs.full-8739d3b5` (int1 + libdlisa 174255e0 + HakiosMetal glass11 9e29ff9c + launchd dbeb1522 + InterfaceNamer aa6f1292) with the dylib above and `/etc/dlisa-inject.conf` e0704957 (= 8739d3b5's dd9abccb + `/usr/local/lib/libdlisa-motion.dylib backboardd`, the repository's conf since 5f8a74b). How: a file-by-file content diff of 8739d3b5 against `out/sysroot-26` (only those five files differ), a hard-link copy of the sysroot with the five taken from 8739d3b5 and the two of this round, `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB. Read back: the seven files, and the whole image against its source copy | `57d7baec43027d2faa7599b7378fb797c9a3f2e1dfb6df43683d42aabefa562d` (4,999,610,368 B; 61212 files) |
 
 To carry the change onto another root, those two files are all there is (the conf line must survive
 `build-inject.sh`, which rewrites the conf: run `kernel/drivers/adsp/install-root.sh SYSROOT` after it).
@@ -128,7 +145,7 @@ Phone in pmOS first. Flash the root, then one host run. `E` has no GPU arguments
 
 ```sh
 cd ~/Dev/mobile
-darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-sensors1      # reads back the sha in reimage-sensors1.log
+darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-sensors2      # reads back 57d7baec
 E="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init cpus=4 adsp=1 battmgr=1 sensors=1 sensors_rpc=1 sensors_fake=2 sensors_wait=150 sensors_rate=25"
 KERNEL=kernel-16k-sensors1.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh sns1 "$E" "120 240 360"; bash darwin-lisa/tools/bootos.sh pmos
 L=research/hackios-xnu-kernel/logs/sns1-end.log    # (gpu-quietrun's logs: sns1.log, sns1-tN.log, sns1-end.log)

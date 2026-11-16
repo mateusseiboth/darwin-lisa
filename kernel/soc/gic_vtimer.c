@@ -52,6 +52,35 @@ gic_vtimer_mark(const char *tag, uint32_t value)
 	loader_log_putc('\n');
 }
 
+/*
+ * darwin-lisa: shared peripheral interrupts a driver asks for (gic_spi_handler_set(); the GPU's with boot-arg gpu_irq=1,
+ * kernel/drivers/gpu/unixnu/kernel-wire.py). The driver programs the distributor for its line; the handler runs here, between
+ * the acknowledge and the end of the interrupt, with interrupts off: it quiets its device and wakes a thread, no more.
+ */
+#define GIC_SPI_HANDLERS        8
+static struct {
+	uint32_t intid;
+	void (*handler)(void *);
+	void *arg;
+} gic_spi[GIC_SPI_HANDLERS];
+
+void gic_spi_handler_set(uint32_t intid, void (*handler)(void *), void *arg);
+void
+gic_spi_handler_set(uint32_t intid, void (*handler)(void *), void *arg)
+{
+	for (unsigned i = 0; i < GIC_SPI_HANDLERS; i++) {
+		if (gic_spi[i].intid == intid || (handler != NULL && gic_spi[i].handler == NULL)) {
+			gic_spi[i].handler = NULL;
+			__asm__ volatile ("dmb ish" ::: "memory");
+			gic_spi[i].intid = intid;
+			gic_spi[i].arg = arg;
+			__asm__ volatile ("dmb ish" ::: "memory");
+			gic_spi[i].handler = handler;
+			return;
+		}
+	}
+}
+
 static void
 gic_vtimer_handler(void *target __unused, void *refCon __unused, void *nub __unused, int source __unused)
 {
@@ -82,7 +111,17 @@ gic_vtimer_handler(void *target __unused, void *refCon __unused, void *nub __unu
 			/* another processor wants this one's attention (cpu_signal(); with several cores, soc/smp) */
 			cpu_signal_handler();
 		}
-		/* other intids (SPIs for devices) are not wired yet */
+		else if (intid >= 32) {
+			/* a shared peripheral interrupt a driver asked for (gic_spi_handler_set()); others are not wired */
+			for (unsigned i = 0; i < GIC_SPI_HANDLERS; i++) {
+				void (*handler)(void *) = gic_spi[i].handler;
+
+				if (handler != NULL && gic_spi[i].intid == intid) {
+					handler(gic_spi[i].arg);
+					break;
+				}
+			}
+		}
 		/* EOImode=1 (set in pe_init_fiq): split priority-drop from deactivate.
 		 * Some hypervisor virtual CPU interfaces do not honor the combined
 		 * EOImode=0 deactivate, wedging Group-1 delivery after a few interrupts;

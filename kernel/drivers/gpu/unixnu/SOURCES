@@ -7,6 +7,7 @@ everything else in the bundle, is the following, rebuilt by the scripts named be
   metal2vulkan   https://github.com/steelbrain/metal2vulkan  commit 720ef1ce9ae2a2068999a8675717418b9416283e
                  + gpu2/patches/metal2vulkan-720ef1c-dada.patch of
                    https://github.com/superboyyy/hakios-arm64e-dada  commit f1ae906fcc43ba8f763663257724ba938fb820ab
+                 + kernel/drivers/gpu/unixnu/metal2vulkan-lisa.patch of the darwin-lisa repository
   AdrenoMetal    https://github.com/UniXNU/AdrenoMetal  commit c6d29ca (MIT)
                  + gpu2/patches/nativemetal-dada.patch (as above)
                  + kernel/drivers/gpu/unixnu/nativemetal-lisa.patch of the darwin-lisa repository

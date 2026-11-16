@@ -2,7 +2,7 @@
 # The sources of the UniXNU GPU stack for lisa (docs/gpu-driver-rewrite.md, T0b/T1), from their upstreams, at the commits
 # dada's gpu2/ patches apply to, with dada's patches and then ours (this directory's *-lisa.patch) applied:
 #   Mesa 85fda3b (gitlab.freedesktop.org)            + dada mesa-85fda3b-dada.patch       + mesa-lisa.patch
-#   metal2vulkan 720ef1c (github steelbrain)         + dada metal2vulkan-720ef1c-dada.patch
+#   metal2vulkan 720ef1c (github steelbrain)         + dada metal2vulkan-720ef1c-dada.patch + metal2vulkan-lisa.patch
 #   AdrenoMetal c6d29ca (github UniXNU)              + dada nativemetal-dada.patch        + nativemetal-lisa.patch
 #   AdrenoPM4, NativeMobileDisplay (github UniXNU, for two headers), NativeAdrenoABI.h of Adreno830 (github Shad0w23333)
 #   dada's patches: github superboyyy/hakios-arm64e-dada f1ae906 gpu2/patches
@@ -58,7 +58,7 @@ dada() {       # dada DIR PATCH [LISA]
 	if [ -n "${3:-}" ] && git -C "$1" diff --quiet; then git -C "$1" apply "$HERE/$3"; fi
 }
 dada mesa mesa-85fda3b-dada.patch mesa-lisa.patch
-dada metal2vulkan metal2vulkan-720ef1c-dada.patch
+dada metal2vulkan metal2vulkan-720ef1c-dada.patch metal2vulkan-lisa.patch
 dada adrenometal nativemetal-dada.patch nativemetal-lisa.patch
 
 # glslangValidator, by hand

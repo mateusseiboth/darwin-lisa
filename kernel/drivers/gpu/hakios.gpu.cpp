@@ -76,6 +76,8 @@ uint32_t hakios_gpu_last(void);
 void hakios_gpu_worked(uint64_t * microseconds, uint32_t * submissions, uint32_t by[7]);
 void hakios_gpu_report(const char * why);
 void hakios_gpu_stop(void);
+/* darwin-lisa (kernel-wire.py, boot-arg gpu_irq=1): whether the GPU's interrupt wakes fences' waiters, and on what */
+bool hakios_gpu_irq(void ** event);
 
 void HakiosGPUStart(void);
 void HakiosGPUStop(void);
@@ -231,6 +233,17 @@ gpuWait(uint32_t fence, uint64_t milliseconds)
 		}
 		if (mach_absolute_time() - began >= patience || gGPUReported) {
 			break;                  /* (a GPU that has stopped answering is not waited for again) */
+		}
+		void * event = NULL;
+
+		if (hakios_gpu_irq(&event)) {
+			/* darwin-lisa: woken by the GPU's interrupt (every submission's fence raises it); 1 ms at most, then it looks
+			 * again, which covers an interrupt that came between the look above and this sleep */
+			uint64_t deadline;
+
+			clock_interval_to_deadline(1, kMillisecondScale, &deadline);
+			IOLockSleepDeadline(gGPULock, event, deadline, THREAD_UNINT);
+			continue;
 		}
 		IOLockUnlock(gGPULock);
 		delay_for_interval(GPU_ASK_AGAIN_US, NSEC_PER_USEC);

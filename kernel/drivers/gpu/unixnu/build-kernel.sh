@@ -20,8 +20,8 @@ trap 'rm -rf "$STAGE"' EXIT
 case "$NAME" in kernel26.nopac|*/*) echo "build-kernel: not $NAME" >&2; exit 2 ;; esac
 
 WIRES="$D/display/display-wire.py $D/gpu/gpu-wire.py $D/gpu/unixnu/kernel-wire.py"
-EXPECT="_HakiosGPUStart _hakios_gpu_submit _hakios_gpu_parameter"
-STRINGS="gpu_hwcg=1: Linux's clock gating;came after the swap; waited for"
+EXPECT="_HakiosGPUStart _hakios_gpu_submit _hakios_gpu_parameter _hakios_gpu_irq _gic_spi_handler_set"
+STRINGS="gpu_hwcg=1: Linux's clock gating;came after the swap; waited for;wakes the fences' waiters"
 
 cat > "$STAGE/inside.sh" <<'EOF'
 set -eu

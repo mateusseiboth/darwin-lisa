@@ -1,236 +1,222 @@
-diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
-index 3a4c01e..023b4a4 100644
---- a/NativeAdrenoMetalPlugin.mm
-+++ b/NativeAdrenoMetalPlugin.mm
-@@ -47,9 +47,7 @@ static bool requestedPath(const char *name, char *path, size_t size) {
-     slash = strrchr(path, '/');
-     if (!slash) return false;
-     snprintf(slash + 1, size - size_t(slash + 1 - path), "%s", name);
--    if (access(path, R_OK) == 0) return true;
--    // dada: /System/Library/Extensions/RedwoodMetal.bundle is a link to /redwood/lib/RedwoodMetal.bundle; the files beside it are there
--    snprintf(path, size, "/redwood/lib/%s", name);
-+    // darwin-lisa: the bundle is /System/Library/Extensions/AdrenoMetal.bundle itself (dada's was a link to /redwood/lib)
-     return access(path, R_OK) == 0;
- }
- static bool requested() {
-@@ -143,16 +141,32 @@ static void reportDisplayState(Gpu &gpu) {
-         markSample(gpu, now, 0xA000);
-     } @catch (NSException *) {}
- }
-+// darwin-lisa: the value of boot-arg NAME= (to the next blank) in value; false when the boot-args do not have it.
-+static bool bootArg(const char *name, char *value, size_t size) {
-+    char args[1024] = {}, key[64];
-+    size_t length = sizeof args - 1;
-+    if (sysctlbyname("kern.bootargs", args, &length, nullptr, 0) != 0) return false;
-+    snprintf(key, sizeof key, "%s=", name);
-+    for (const char *at = strstr(args, key); at; at = strstr(at + 1, key))
-+        if (at == args || at[-1] == ' ') {
-+            snprintf(value, size, "%.*s", (int)strcspn(at + strlen(key), " "), at + strlen(key));
-+            return true;
-+        }
-+    return false;
-+}
- // Whether NativeAdrenoMetal.clients names this process (names separated by blanks, commas or new lines; "*" names every process).
-+// darwin-lisa: boot-arg m2v_clients=a,b,c takes the file's place (m2v_clients=backboardd: the render server alone).
- static bool listedClient() {
--    char path[1024];
--    if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
--    FILE *file = fopen(path, "r");
--    if (!file) return false;
-     char text[1024] = {};
--    const size_t length = fread(text, 1, sizeof text - 1, file);
--    fclose(file);
--    text[length] = 0;
-+    if (!bootArg("m2v_clients", text, sizeof text)) {
-+        char path[1024];
-+        if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
-+        FILE *file = fopen(path, "r");
-+        if (!file) return false;
-+        const size_t length = fread(text, 1, sizeof text - 1, file);
-+        fclose(file);
-+        text[length] = 0;
-+    }
-     const char *self = getprogname();
-     for (char *save = nullptr, *name = strtok_r(text, " ,\t\r\n", &save); name; name = strtok_r(nullptr, " ,\t\r\n", &save))
-         if (!strcmp(name, "*") || !strcmp(name, self)) return true;
-@@ -207,7 +221,7 @@ static id clientDevice(unsigned port) {
-     // in once a boot, by whoever comes first (the "imported" mark); the export (backboardd) then carries everybody's pipelines.
-     // A process that cannot write there (another user, a sandbox) uses its own directories, as before. NB_SHARED_CACHE=0: never.
-     char candidates[3][512] = {};
--    const char *shared = "/private/var/mobile/Library/Caches/com.redwood.m2v-shared/";
-+    const char *shared = "/private/var/mobile/Library/Caches/com.darwin-lisa.m2v-shared/";
-     if (getuid() == 501 && !(getenv("NB_SHARED_CACHE") && !strcmp(getenv("NB_SHARED_CACHE"), "0"))) {
-         mkdir("/private/var/mobile/Library/Caches", 0755);
-         mkdir(shared, 0700);
-@@ -294,7 +308,8 @@ static id clientDevice(unsigned port) {
-         // dada: the pipeline-cache export (RedwoodGPU's tunnel, boot-arg gpu_export_mb), which only deviceForPort started before --
-         // not while the image has the job that sends /private/var as a whole (the shared shader cache with it): the tunnel takes one
-         // sender, and two would overwrite each other's pieces (userland/src/stateexport.c)
--        const bool stateExport = access("/redwood/LaunchDaemons/com.redwood.stateexport.plist", F_OK) == 0;
-+        // darwin-lisa: HakiosGPU has no such tunnel, and the accelerator Metal found the plug-in on is the framebuffer's: no export
-+        const bool stateExport = true;
-         if (Gpu *gpu = stateExport ? nullptr : makeGpu(port)) {
-             pthread_t exporter;
-             if (pthread_create(&exporter, nullptr, [](void *arg) -> void * {
-@@ -527,23 +542,44 @@ static id deviceForPort(unsigned port) {
-         // already in the environment wins either way (mtltest picks its own per launch). Without sysmem Turnip
-         // chooses per render pass between on-chip tiles (GMEM) and memory (its autotune), its default on other
-         // Adrenos; nocb keeps concurrent binning off (gen8 BV/BR stalls seen elsewhere, not yet understood here).
-+        // darwin-lisa: on the A642L (a6xx gen4) nothing by default: turnip's autotune picks GMEM or sysmem per pass, which T0 measured
-+        // (docs/gpu-driver-rewrite.md); pandora_tu_debug=gmem / sysmem / bos (the BO census) for T2's variants, or tu= (the
-+        // same, short: the loader's line holds 460 characters)
-         static char chosen[128];
--        const char *flags = "nocb,bos";   // dada: bos for the BO census on the console (tu_debug_bos_console)
--        char args[1024] = {};
--        size_t size = sizeof args - 1;
--        if (sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0)
--            if (const char *at = strstr(args, "pandora_tu_debug=")) {
--                snprintf(chosen, sizeof chosen, "%.*s", (int)strcspn(at + 17, " "), at + 17);
--                flags = chosen;
--            }
--        setenv("TU_DEBUG", flags, 0);
-+        const char *flags = "";
-+        if (publish::bootArg("pandora_tu_debug", chosen, sizeof chosen) || publish::bootArg("tu", chosen, sizeof chosen)) flags = chosen;
-+        // darwin-lisa: tu_bb= the render server's own TU_DEBUG (in place of tu= there), tu_cl= every other process's: to tell
-+        // whether a pass mode breaks what the producers draw (icons, apps' layers) or what the render server composites (T2-B)
-+        static char own[128];
-+        if (!strcmp(getprogname(), "backboardd") ? publish::bootArg("tu_bb", own, sizeof own) : publish::bootArg("tu_cl", own, sizeof own))
-+            flags = own;
-+        if (*flags) setenv("TU_DEBUG", flags, 0);
-+        // darwin-lisa: tu_host_import=1, the caller's own pages imported by HakiosGPU's 0x7d (newBufferWithBytesNoCopy: in place)
-+        if (char v[8]; publish::bootArg("tu_host_import", v, sizeof v)) setenv("TU_DARWIN_HOST_IMPORT", v, 0);
-         static bool told;
-         if (!told) {
-             told = true;
-             NSLog(@"pandora-metal TU_DEBUG=%s", getenv("TU_DEBUG"));
-         }
-     }
--    if (port) return publish::clientDevice(port);
-+    // darwin-lisa: ONE device per process. Our kernel publishes two IOAcceleratorES services (the framebuffer started twice,
-+    // gpu-probe-1551), Metal asks each, and Metal 26 aborts in MTLCreateSystemDefaultDevice ("doesn't know what to do with more
-+    // than one device", T1-A: backboardd 14 times). The first port's device is the process's; another port gets nil, which
-+    // Metal skips (as HakiosMetal's deviceInit does).
-+    static id onlyDevice;
-+    static unsigned onlyPort;
-+    if (port && onlyDevice) {
-+        NSLog(@"gpu2-metal: accelerator port %u: this process has its device already (port %u); this service gives none", port, onlyPort);
-+        return nil;
-+    }
-+    if (port) {
-+        id made = publish::clientDevice(port);
-+        if (made) {
-+            onlyDevice = made;
-+            onlyPort = port;
-+        }
-+        return made;
-+    }
-     static bool attempted;
-     if (attempted) return nil;
-     attempted = true;
-diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
-index 4912cfd..340ae35 100644
---- a/NativeBridgeMetalFrontend.mm
-+++ b/NativeBridgeMetalFrontend.mm
-@@ -423,7 +423,7 @@ static std::unordered_map<std::string,int64_t> *gBigCallers;
- static std::string bigCaller() {
-  void *frames[10];const int n=backtrace(frames,10);std::string out;char item[96];int kept=0;
-  for(int i=2;i<n && kept<3;i++){Dl_info info{};if(!dladdr(frames[i],&info) || !info.dli_fname)continue;const char *slash=strrchr(info.dli_fname,'/');
--  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"Metal"))continue;
-+  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"AdrenoMetal") || !strcmp(name,"Metal"))continue;
-   snprintf(item,sizeof item,"%s%s+%lx",kept?" ":"",name,(unsigned long)((uintptr_t)frames[i]-(uintptr_t)info.dli_fbase));out+=item;kept++;}
-  return out;
- }
-@@ -2037,6 +2037,13 @@ static bool computeDescriptor(MTLComputePipelineDescriptor *d,NmbComputePipeline
- }
- @end
- 
-+// darwin-lisa: no archive here holds a binary of this device's (QuartzCore's own metallib is answered with an empty one), so
-+// MTLPipelineOptionFailOnBinaryArchiveMiss would refuse every pipeline that asks it (t7a: fixed_vert_lph_gen / fixed_frag_lph_cpf,
-+// BinaryArchiveMiss, 106 times, the home's icons missing until +240 s). Every pipeline is made from its library instead, as Metal
-+// makes one whose archive has it.
-+static MTLPipelineOption withoutArchiveMiss(MTLPipelineOption options) {
-+ return (MTLPipelineOption)(options & ~MTLPipelineOptionFailOnBinaryArchiveMiss);
-+}
- static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &archives,NSError **error) {
-  for(id archive in list) {
-   if(![archive isKindOfClass:[NBBinaryArchive class]]){if(error)*error=nbError(@"foreign binary archive");return false;}
-@@ -2510,7 +2517,7 @@ struct NBWatermark {uint64_t value[2];};
-  if(!computeDescriptor(d,&p,error)){NSLog(@"gpu2-metal: compute pipeline (descriptor) %@ refused: %@",d.computeFunction.name,error?*error:nil);return nil;}
-  std::vector<NmbBinaryArchive *> archives;
-  if(!pipelineArchives(d.binaryArchives,archives,error))return nil;
-- const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
-+ const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
-  const uint64_t pipelineBegan=nowUs();
-  NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
-  if(!handle)return failWith<id<MTLComputePipelineState>>(error,[NSString stringWithFormat:@"compute pipeline (descriptor) %@ %@",d.computeFunction.name,d.label],nil);
-@@ -2527,7 +2534,7 @@ struct NBWatermark {uint64_t value[2];};
-  if(!renderDescriptor(d,p,error)){delete p;return nil;}
-  std::vector<NmbBinaryArchive *> archives;
-  if(!pipelineArchives(d.binaryArchives,archives,error)){delete p;return nil;}
-- const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
-+ const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
-  const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
-  NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
-  journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
-@@ -2638,6 +2645,14 @@ struct NBWatermark {uint64_t value[2];};
- - (id<MTLBinaryArchive>)newBinaryArchiveWithDescriptor:(MTLBinaryArchiveDescriptor *)d error:(NSError **)error {
-  if(d.url && !d.url.isFileURL){if(error)*error=nbError(@"a file URL is required");return nil;}
-  NmbBinaryArchive *handle=nmb_binary_archive_new(gDevice,d.url?d.url.fileSystemRepresentation:nullptr);
-+ // darwin-lisa: QuartzCore 26 opens its own default.metallib as a binary archive (on an Apple GPU the library's AGX slice is one).
-+ // It is no archive of this device's, so it is answered with an empty archive, as Metal answers an archive whose slices are for
-+ // another GPU: every lookup misses and the pipelines are made from the library (T1-A on int6: the first problem of every process).
-+ if(!handle && d.url && strstr(lastError().UTF8String?:"","InvalidFile")) {
-+  static std::atomic<int> told{0};
-+  if(told.fetch_add(1)<4)NSLog(@"gpu2-metal: %@ is no binary archive of this device: an empty one in its place",d.url.path);
-+  handle=nmb_binary_archive_new(gDevice,nullptr);
-+ }
-  if(!handle)return failWith<id<MTLBinaryArchive>>(error,@"binary archive",nil);
-  NBBinaryArchive *archive=[NBBinaryArchive new];archive.handle=handle;if(error)*error=nil;return (id<MTLBinaryArchive>)archive;
- }
-@@ -2701,13 +2716,26 @@ static uint64_t askAnswer(SEL cmd,NSUInteger arg) {
- static NSUInteger countArgAnswer(id,SEL cmd,NSUInteger arg) {return (NSUInteger)askAnswer(cmd,arg);}
- static BOOL flagArgAnswer(id,SEL cmd,NSUInteger arg) {return askAnswer(cmd,arg)!=0;}
- static BOOL deviceResolve(id cls,SEL,SEL sel) {return nbAddDefault((Class)cls,sel);}
-+// darwin-lisa: the private counts and flags the runtime leaves to Metal's own answer (PrivateAnswer::Metal: no Vulkan limit or
-+// document says what they promise), answered for the Adreno 642L instead of left out (T1-A: six "no device answer" lines a process).
-+// gpuCoreCount: the A635's two shader processors (freedreno_devices.py); maxComputeThreadgroupMemory: what a threadgroup really
-+// gets here, turnip's maxComputeSharedMemorySize, not Apple's 64 KiB; maxVertexAmplificationCount: Metal's 2; and no to large
-+// MRT, compressed texture writes from kernels and conditional load/store actions, none of which this device has.
-+static bool lisaAnswer(const char *name,uint64_t *value) {
-+ static const struct {const char *name;uint64_t value;} table[]={
-+  {"gpuCoreCount",2},{"maxVertexAmplificationCount",2},{"maxComputeThreadgroupMemory",32768},
-+  {"isLargeMRTSupported",0},{"supportsComputeCompressedTextureWrite",0},{"supportsConditionalLoadStore",0},
-+ };
-+ for(const auto &t:table)if(!strcmp(t.name,name)){*value=t.value;return true;}
-+ return false;
-+}
- static void installAnswers(Class cls) {
-  uint32_t kind=0;
-  for(size_t i=0;const char *name=nmb_device_answer_selector(i,&kind);i++) {
-   SEL sel=sel_registerName(name);uint64_t value=0;
-   switch(kind) {
-   case NMB_ANSWER_COUNT: case NMB_ANSWER_FLAG:
--   if(!nmb_device_answer(gDevice,name,0,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
-+   if(!nmb_device_answer(gDevice,name,0,&value) && !lisaAnswer(name,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
-    // Extended-range 10-bit (XR10) framebuffers are withheld: this display chain presents 8-bit BGRX scanout only. The render server picks its
-    // wide-gamut 64-bit (and Apple-compressed) framebuffer when a device offers them, and the display driver could not show it (int-089: the
-    // swap's surface was '&w4a', 8 bytes per pixel, and every swap was refused).
-diff --git a/bridge/NativeMetalObjects.rs b/bridge/NativeMetalObjects.rs
-index 3a80c08..31ee26a 100644
---- a/bridge/NativeMetalObjects.rs
-+++ b/bridge/NativeMetalObjects.rs
-@@ -101,8 +101,13 @@ fn e<E: std::fmt::Debug>(what: &'static str) -> impl FnOnce(E) -> String {
-     move |error| format!("{what}: {error:?}")
- }
- 
-+// darwin-lisa: the bits Metal's headers define (CPU cache mode 0-3, storage mode 4-7, hazard tracking 8-9); iOS 26's frameworks
-+// set private ones above them (t3a: 0x600200 on a heap, refused as an undefined MTLResourceOptions), which no Vulkan memory here
-+// has a use for: left out instead of refusing the resource.
-+const KNOWN_RESOURCE_OPTIONS: u64 = 0x3ff;
-+
- fn options(value: u64) -> Result<ResourceOptions, String> {
--    ResourceOptions::from_raw(value).map_err(e("resource options"))
-+    ResourceOptions::from_raw(value & KNOWN_RESOURCE_OPTIONS).map_err(e("resource options"))
- }
- 
- #[unsafe(no_mangle)]
+NativeAdrenoMetalPlugin.mm   | 83 ++++++++++++++++++++++++++++++++------------
+ NativeBridgeMetalFrontend.mm | 36 ++++++++++++++++---
+ bridge/NativeMetalObjects.rs | 16 +++++++--
+ 3 files changed, 107 insertions(+), 28 deletions(-)
+
+--- Changes ---
+
+NativeAdrenoMetalPlugin.mm
+  @@ -47,9 +47,7 @@ static bool requestedPath(const char *name, char *path, size_t size) {
+  -    if (access(path, R_OK) == 0) return true;
+  -    // dada: /System/Library/Extensions/RedwoodMetal.bundle is a link to /redwood/lib/RedwoodMetal.bundle; the files beside it are there
+  -    snprintf(path, size, "/redwood/lib/%s", name);
+  +    // darwin-lisa: the bundle is /System/Library/Extensions/AdrenoMetal.bundle itself (dada's was a link to /redwood/lib)
+       return access(path, R_OK) == 0;
+   }
+   static bool requested() {
+  @@ -143,16 +141,32 @@ static void reportDisplayState(Gpu &gpu) {
+  +// darwin-lisa: the value of boot-arg NAME= (to the next blank) in value; false when the boot-args do not have it.
+  +static bool bootArg(const char *name, char *value, size_t size) {
+  +    char args[1024] = {}, key[64];
+  +    size_t length = sizeof args - 1;
+  +    if (sysctlbyname("kern.bootargs", args, &length, nullptr, 0) != 0) return false;
+  +    snprintf(key, sizeof key, "%s=", name);
+  +    for (const char *at = strstr(args, key); at; at = strstr(at + 1, key))
+  +        if (at == args || at[-1] == ' ') {
+  +            snprintf(value, size, "%.*s", (int)strcspn(at + strlen(key), " "), at + strlen(key));
+  +            return true;
+  +        }
+  +    return false;
+  +}
+   // Whether NativeAdrenoMetal.clients names this process (names separated by blanks, commas or new lines; "*" names every process).
+  +// darwin-lisa: boot-arg m2v_clients=a,b,c takes the file's place (m2v_clients=backboardd: the render server alone).
+   static bool listedClient() {
+  -    char path[1024];
+  -    if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
+  -    FILE *file = fopen(path, "r");
+  -    if (!file) return false;
+       char text[1024] = {};
+  -    const size_t length = fread(text, 1, sizeof text - 1, file);
+  -    fclose(file);
+  -    text[length] = 0;
+  +    if (!bootArg("m2v_clients", text, sizeof text)) {
+  +        char path[1024];
+  +        if (!requestedPath("NativeAdrenoMetal.clients", path, sizeof path)) return false;
+  +        FILE *file = fopen(path, "r");
+  +        if (!file) return false;
+  +        const size_t length = fread(text, 1, sizeof text - 1, file);
+  +        fclose(file);
+  +        text[length] = 0;
+  +    }
+       const char *self = getprogname();
+       for (char *save = nullptr, *name = strtok_r(text, " ,\t\r\n", &save); name; name = strtok_r(nullptr, " ,\t\r\n", &save))
+           if (!strcmp(name, "*") || !strcmp(name, self)) return true;
+  @@ -207,7 +221,7 @@ static id clientDevice(unsigned port) {
+  -    const char *shared = "/private/var/mobile/Library/Caches/com.redwood.m2v-shared/";
+  +    const char *shared = "/private/var/mobile/Library/Caches/com.darwin-lisa.m2v-shared/";
+       if (getuid() == 501 && !(getenv("NB_SHARED_CACHE") && !strcmp(getenv("NB_SHARED_CACHE"), "0"))) {
+           mkdir("/private/var/mobile/Library/Caches", 0755);
+           mkdir(shared, 0700);
+  @@ -294,7 +308,8 @@ static id clientDevice(unsigned port) {
+  -        const bool stateExport = access("/redwood/LaunchDaemons/com.redwood.stateexport.plist", F_OK) == 0;
+  +        // darwin-lisa: HakiosGPU has no such tunnel, and the accelerator Metal found the plug-in on is the framebuffer's: no export
+  +        const bool stateExport = true;
+           if (Gpu *gpu = stateExport ? nullptr : makeGpu(port)) {
+               pthread_t exporter;
+               if (pthread_create(&exporter, nullptr, [](void *arg) -> void * {
+  @@ -527,23 +542,47 @@ static id deviceForPort(unsigned port) {
+  +        // darwin-lisa: on the A642L (a6xx gen4) nothing by default: turnip's autotune picks GMEM or sysmem per pass, which T0 measured
+  +        // (docs/gpu-driver-rewrite.md); pandora_tu_debug=gmem / sysmem / bos (the BO census) for T2's variants, or tu= (the
+  +        // same, short: the loader's line holds 460 characters)
+           static char chosen[128];
+  -        const char *flags = "nocb,bos";   // dada: bos for the BO census on the console (tu_debug_bos_console)
+  -        char args[1024] = {};
+  -        size_t size = sizeof args - 1;
+  -        if (sysctlbyname("kern.bootargs", args, &size, nullptr, 0) == 0)
+  -            if (const char *at = strstr(args, "pandora_tu_debug=")) {
+  -                snprintf(chosen, sizeof chosen, "%.*s", (int)strcspn(at + 17, " "), at + 17);
+  -                flags = chosen;
+  -            }
+  -        setenv("TU_DEBUG", flags, 0);
+  +        const char *flags = "";
+  +        if (publish::bootArg("pandora_tu_debug", chosen, sizeof chosen) || publish::bootArg("tu", chosen, sizeof chosen)) flags = chosen;
+  +        // darwin-lisa: tu_bb= the render server's own TU_DEBUG (in place of tu= there), tu_cl= every other process's: to tell
+  +        // whether a pass mode breaks what the producers draw (icons, apps' layers) or what the render server composites (T2-B)
+  +        static char own[128];
+  +        if (!strcmp(getprogname(), "backboardd") ? publish::bootArg("tu_bb", own, sizeof own) : publish::bootArg("tu_cl", own, sizeof own))
+  +            flags = own;
+  +        if (*flags) setenv("TU_DEBUG", flags, 0);
+  +        // darwin-lisa: tu_host_import=1, the caller's own pages imported by HakiosGPU's 0x7d (newBufferWithBytesNoCopy: in place)
+  +        if (char v[8]; publish::bootArg("tu_host_import", v, sizeof v)) setenv("TU_DARWIN_HOST_IMPORT", v, 0);
+  +        // darwin-lisa: m2v_renderarea=1, each pass's render area the rectangle its draws reach (metal2vulkan-lisa.patch): a tiler
+  +        // loads and stores those bins only, not the framebuffer for a small glass panel (the Control Center's opening, t3b)
+  +        if (char v[8]; publish::bootArg("m2v_renderarea", v, sizeof v)) setenv("M2V_RENDER_AREA", v, 0);
+           static bool told;
+           if (!told) {
+               told = true;
+               NSLog(@"pandora-metal TU_DEBUG=%s", getenv("TU_DEBUG"));
+           }
+       }
+  -    if (port) return publish::clientDevice(port);
+  +    // darwin-lisa: ONE device per process. Our kernel publishes two IOAcceleratorES services (the framebuffer started twice,
+  +    // gpu-probe-1551), Metal asks each, and Metal 26 aborts in MTLCreateSystemDefaultDevice ("doesn't know what to do with more
+  +    // than one device", T1-A: backboardd 14 times). The first port's device is the process's; another port gets nil, which
+  +    // Metal skips (as HakiosMetal's deviceInit does).
+  +    static id onlyDevice;
+  +    static unsigned onlyPort;
+  +    if (port && onlyDevice) {
+  +        NSLog(@"gpu2-metal: accelerator port %u: this process has its device already (port %u); this service gives none", port, onlyPort);
+  +        return nil;
+  +    }
+  +    if (port) {
+  +        id made = publish::clientDevice(port);
+  +        if (made) {
+  +            onlyDevice = made;
+  +            onlyPort = port;
+  +        }
+  +        return made;
+  +    }
+       static bool attempted;
+       if (attempted) return nil;
+       attempted = true;
+  +61 -22
+
+NativeBridgeMetalFrontend.mm
+  @@ -423,7 +423,7 @@ static std::unordered_map<std::string,int64_t> *gBigCallers;
+  -  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"Metal"))continue;
+  +  const char *name=slash?slash+1:info.dli_fname;if(!strcmp(name,"RedwoodMetal") || !strcmp(name,"AdrenoMetal") || !strcmp(name,"Metal"))continue;
+     snprintf(item,sizeof item,"%s%s+%lx",kept?" ":"",name,(unsigned long)((uintptr_t)frames[i]-(uintptr_t)info.dli_fbase));out+=item;kept++;}
+    return out;
+   }
+  @@ -2037,6 +2037,13 @@ static bool computeDescriptor(MTLComputePipelineDescriptor *d,NmbComputePipeline
+  +// darwin-lisa: no archive here holds a binary of this device's (QuartzCore's own metallib is answered with an empty one), so
+  +// MTLPipelineOptionFailOnBinaryArchiveMiss would refuse every pipeline that asks it (t7a: fixed_vert_lph_gen / fixed_frag_lph_cpf,
+  +// BinaryArchiveMiss, 106 times, the home's icons missing until +240 s). Every pipeline is made from its library instead, as Metal
+  +// makes one whose archive has it.
+  +static MTLPipelineOption withoutArchiveMiss(MTLPipelineOption options) {
+  + return (MTLPipelineOption)(options & ~MTLPipelineOptionFailOnBinaryArchiveMiss);
+  +}
+   static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &archives,NSError **error) {
+    for(id archive in list) {
+     if(![archive isKindOfClass:[NBBinaryArchive class]]){if(error)*error=nbError(@"foreign binary archive");return false;}
+  @@ -2510,7 +2517,7 @@ struct NBWatermark {uint64_t value[2];};
+  - const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+  + const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
+    const uint64_t pipelineBegan=nowUs();
+    NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
+    if(!handle)return failWith<id<MTLComputePipelineState>>(error,[NSString stringWithFormat:@"compute pipeline (descriptor) %@ %@",d.computeFunction.name,d.label],nil);
+  @@ -2527,7 +2534,7 @@ struct NBWatermark {uint64_t value[2];};
+  - const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
+  + const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
+    const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
+    NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
+    journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
+  @@ -2638,6 +2645,14 @@ struct NBWatermark {uint64_t value[2];};
+  + // darwin-lisa: QuartzCore 26 opens its own default.metallib as a binary archive (on an Apple GPU the library's AGX slice is one).
+  + // It is no archive of this device's, so it is answered with an empty archive, as Metal answers an archive whose slices are for
+  + // another GPU: every lookup misses and the pipelines are made from the library (T1-A on int6: the first problem of every process).
+  + if(!handle && d.url && strstr(lastError().UTF8String?:"","InvalidFile")) {
+  +  static std::atomic<int> told{0};
+  +  if(told.fetch_add(1)<4)NSLog(@"gpu2-metal: %@ is no binary archive of this device: an empty one in its place",d.url.path);
+  +  handle=nmb_binary_archive_new(gDevice,nullptr);
+  + }
+    if(!handle)return failWith<id<MTLBinaryArchive>>(error,@"binary archive",nil);
+    NBBinaryArchive *archive=[NBBinaryArchive new];archive.handle=handle;if(error)*error=nil;return (id<MTLBinaryArchive>)archive;
+   }
+  @@ -2701,13 +2716,26 @@ static uint64_t askAnswer(SEL cmd,NSUInteger arg) {
+  +// darwin-lisa: the private counts and flags the runtime leaves to Metal's own answer (PrivateAnswer::Metal: no Vulkan limit or
+  +// document says what they promise), answered for the Adreno 642L instead of left out (T1-A: six "no device answer" lines a process).
+  +// gpuCoreCount: the A635's two shader processors (freedreno_devices.py); maxComputeThreadgroupMemory: what a threadgroup really
+  +// gets here, turnip's maxComputeSharedMemorySize, not Apple's 64 KiB; maxVertexAmplificationCount: Metal's 2; and no to large
+  +// MRT, compressed texture writes from kernels and conditional load/store actions, none of which this device has.
+  +static bool lisaAnswer(const char *name,uint64_t *value) {
+  + static const struct {const char *name;uint64_t value;} table[]={
+  +  {"gpuCoreCount",2},{"maxVertexAmplificationCount",2},{"maxComputeThreadgroupMemory",32768},
+  +  {"isLargeMRTSupported",0},{"supportsComputeCompressedTextureWrite",0},{"supportsConditionalLoadStore",0},
+  + };
+  + for(const auto &t:table)if(!strcmp(t.name,name)){*value=t.value;return true;}
+  + return false;
+  +}
+   static void installAnswers(Class cls) {
+    uint32_t kind=0;
+    for(size_t i=0;const char *name=nmb_device_answer_selector(i,&kind);i++) {
+     SEL sel=sel_registerName(name);uint64_t value=0;
+     switch(kind) {
+     case NMB_ANSWER_COUNT: case NMB_ANSWER_FLAG:
+  -   if(!nmb_device_answer(gDevice,name,0,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
+  +   if(!nmb_device_answer(gDevice,name,0,&value) && !lisaAnswer(name,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
+      // Extended-range 10-bit (XR10) framebuffers are withheld: this display chain presents 8-bit BGRX scanout only. The render server picks its
+      // wide-gamut 64-bit (and Apple-compressed) framebuffer when a device offers them, and the display driver could not show it (int-089: the
+      // swap's surface was '&w4a', 8 bytes per pixel, and every swap was refused).
+  +32 -4
+
+bridge/NativeMetalObjects.rs
+  @@ -90,10 +90,17 @@ fn copy_out(text: &str, out: *mut c_char, size: usize) -> usize {
+  -fn raw<T: TryFrom<u32>>(value: u64, what: &str) -> Result<T, String>
+  +fn raw<T: TryFrom<u32> + 'static>(value: u64, what: &str) -> Result<T, String>
+   where
+       T::Error: std::fmt::Debug,
+   {
+  +    // darwin-lisa: MTLPixelFormatRGBA16Float_XR (556), RGBA16Float whose values reach past 0..1 for the display, which metal2vulkan
+  +    // does not implement (t4a: RenderBox's uber pipeline in the widgets, "Format NotImplemented at Color(0)"): the same bits as
+  +    // RGBA16Float (115), which this display path shows as such
+  +    let value = match value {
+  +        556 if std::any::TypeId::of::<T>() == std::any::TypeId::of::<PixelFormat>() => 115,
+  +        v => v,
+  +    };
+       u32::try_from(value).ok().and_then(|v| T::try_from(v).ok()).ok_or_else(|| format!("{what} {value} is not a Metal value"))
+   }
+   
+  @@ -101,8 +108,13 @@ fn e<E: std::fmt::Debug>(what: &'static str) -> impl FnOnce(E) -> String {
+  +// darwin-lisa: the bits Metal's headers define (CPU cache mode 0-3, storage mode 4-7, hazard tracking 8-9); iOS 26's frameworks
+  +// set private ones above them (t3a: 0x600200 on a heap, refused as an undefined MTLResourceOptions), which no Vulkan memory here
+  +// has a use for: left out instead of refusing the resource.
+  +const KNOWN_RESOURCE_OPTIONS: u64 = 0x3ff;
+  +
+   fn options(value: u64) -> Result<ResourceOptions, String> {
+  -    ResourceOptions::from_raw(value).map_err(e("resource options"))
+  +    ResourceOptions::from_raw(value & KNOWN_RESOURCE_OPTIONS).map_err(e("resource options"))
+   }
+   
+   #[unsafe(no_mangle)]
+  +14 -2

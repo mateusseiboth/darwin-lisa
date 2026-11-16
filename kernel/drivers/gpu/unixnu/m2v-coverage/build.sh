@@ -20,6 +20,9 @@ path = "$HERE/main.rs"
 [[bin]]
 name = "m2v-formats"
 path = "$HERE/formats.rs"
+[[bin]]
+name = "m2v-renderarea"
+path = "$HERE/renderarea.rs"
 [dependencies]
 metal2vulkan = { path = "$UNIXNU/src/metal2vulkan/crates/metal2vulkan", features = ["ash"] }
 metal2vulkan-runtime = { path = "$UNIXNU/src/metal2vulkan/crates/metal2vulkan-runtime" }
@@ -28,4 +31,4 @@ debug = 0
 TOML
 cd "$B"
 "$HOME/.cargo/bin/cargo" +1.98.1 build --release --target-dir "$UNIXNU/build/m2v-coverage"
-ls -l "$UNIXNU/build/m2v-coverage/release/m2v-coverage" "$UNIXNU/build/m2v-coverage/release/m2v-formats"
+ls -l "$UNIXNU/build/m2v-coverage/release/m2v-coverage" "$UNIXNU/build/m2v-coverage/release/m2v-formats" "$UNIXNU/build/m2v-coverage/release/m2v-renderarea"

@@ -1,0 +1,68 @@
+diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-runtime/src/render.rs
+index 5cd377c9..050e6ce5 100644
+--- a/crates/metal2vulkan-runtime/src/render.rs
++++ b/crates/metal2vulkan-runtime/src/render.rs
+@@ -3869,6 +3869,17 @@ impl RenderCommandEncoder {
+             offset: vk::Offset2D { x: 0, y: 0 },
+             extent: vk::Extent2D { width, height },
+         };
++        // darwin-lisa (M2V_RENDER_AREA=1): the pass's render area is the rectangle bounding its draws' scissors within
++        // their viewports (`drawn`), where nothing of the pass reaches outside it: no attachment cleared by its load,
++        // none resolved, no execution of render commands, no pass whose pipeline is still being made, no tile dispatch,
++        // one layer. A tiler (turnip in GMEM) then loads and stores only the bins the draws reach, not the whole
++        // framebuffer for a small glass panel; what lies outside is left as it was, as Load/Store leaves it.
++        let render_area = match trimmed_render_area(&layout, &drawn, executions.is_empty() && pending.is_empty()
++            && dispatches.is_empty() && resolve_instance.is_none() && later_resolves.is_empty())
++        {
++            Some(area) => area,
++            None => render_area,
++        };
+         if let Some(first) = &first_texel_copies {
+             core.shadow_copies(first);
+         }
+@@ -8565,3 +8576,45 @@ mod tests {
+         }
+     }
+ }
++
++
++/// darwin-lisa: whether `M2V_RENDER_AREA=1` asks for trimmed render areas, read once.
++fn render_area_trimming() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("M2V_RENDER_AREA").is_ok_and(|v| v == "1"))
++}
++
++/// darwin-lisa: the render area bounding a pass's draws (`EndPass`'s `drawn`), where trimming is asked for and the pass
++/// reaches nothing outside its draws (`plain`: no execution, pending pipeline, tile dispatch or resolve step; checked here:
++/// no `Clear` load, no resolve, one layer). `None`: the whole attachment.
++fn trimmed_render_area(layout: &PassLayout, drawn: &clear_reach::DrawnArea, plain: bool) -> Option<vk::Rect2D> {
++    if !render_area_trimming() || !plain || layout.layers > 1 {
++        return None;
++    }
++    let colors_keep = layout
++        .colors
++        .iter()
++        .flatten()
++        .all(|c| c.load != LoadAction::Clear && c.resolve.is_none() && c.copied_resolve.is_none());
++    let depth_keeps = layout.depth_stencil.as_ref().is_none_or(|ds| {
++        ds.resolve.is_none()
++            && ds.depth.is_none_or(|a| a.load != LoadAction::Clear)
++            && ds.stencil.is_none_or(|a| a.load != LoadAction::Clear)
++    });
++    if !colors_keep || !depth_keeps {
++        return None;
++    }
++    let [width, height] = layout.extent;
++    let [x0, y0, x1, y1] = drawn.bounds()?;
++    let (x1, y1) = (x1.min(width), y1.min(height));
++    if x0 >= x1 || y0 >= y1 || (x0 == 0 && y0 == 0 && x1 == width && y1 == height) {
++        return None;
++    }
++    if std::env::var_os("M2V_RENDER_AREA_LOG").is_some() {
++        eprintln!("metal2vulkan: render area {x0},{y0} {}x{} of {width}x{height}", x1 - x0, y1 - y0);
++    }
++    Some(vk::Rect2D {
++        offset: vk::Offset2D { x: x0 as i32, y: y0 as i32 },
++        extent: vk::Extent2D { width: x1 - x0, height: y1 - y0 },
++    })
++}

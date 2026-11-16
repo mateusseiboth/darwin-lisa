@@ -472,6 +472,39 @@ over 35): 60 fps. The clock gating Linux programs is what the sysmem icons neede
   nothing until the `up` at 238: the pull ran and stopped; whether the panel then showed the Center or the home again needs a
   picture between 230 and 238 s of kernel time (about +212..+219 in the quietrun's times).
 
+**Levers 2 and 3 for the Control Center (2026-11-16), and t4a.**
+
+- **Render area = the draws' rectangle** (`metal2vulkan-lisa.patch`, plug-in boot-arg `m2v_renderarea=1`, env
+  `M2V_RENDER_AREA=1`): metal2vulkan begins a pass with `vkCmdBeginRenderPass` at `end_encoding` (its draws are recorded into
+  secondary command buffers), so the pass's render area can be the rectangle bounding its draws' scissors within their viewports
+  (`drawn`, which the runtime already keeps for its clears' reach). Only where nothing reaches outside: no `Clear` load, no resolve,
+  no execution of render commands, no pending pipeline, no tile dispatch, one layer; otherwise the whole attachment as before.
+  Turnip then loads and stores only the render area (`tu6_emit_blit_scissor`), not the framebuffer for each glass panel. Host
+  test `m2v-coverage/renderarea.rs` (a grey target, Load/Store passes of scissored draws: one panel, two apart, one at the
+  corner) on lavapipe: the same bytes with and without (hash 0975ff566a51fa75, every pixel check right), the areas trimmed
+  (`M2V_RENDER_AREA_LOG=1`: 20x16, 80x62, 16x10 of 96x80); on the host turnip every pass records.
+- **B1n, the GPU's interrupt wakes fences' waiters** (kernel boot-arg `gpu_irq=1`): `kernel/soc/gic_vtimer.c` gets a table of
+  shared peripheral interrupts (`gic_spi_handler_set`, dispatched between acknowledge and end; nothing changes while no driver
+  registers one); `kernel-wire.py` sets the distributor up for the GPU's line (SPI 300, intid 332, level, group 1, routed to the
+  processor that keeps the GPU), unmasks RBBM's CP_CACHE_FLUSH_TS, has every submission's fence event raise the interrupt, and
+  gives the line back before the GPU is (stop and quiesce); the handler clears RBBM and wakes the event; `gpuWait()` sleeps on
+  it, 1 ms at most, then looks again. Whether the hypervisor passes the distributor writes for this line is what the run shows
+  (`adreno: gpu_irq: N interrupts` at the end).
+- **t4a's first problems.** (a)/(b) RenderBox's uber pipeline in the widgets and SpringBoard refused `Format NotImplemented at
+  Color(0)` and at a draw: the target is `MTLPixelFormatRGBA16Float_XR` (556), which metal2vulkan does not implement (host: every
+  other color format of that pipeline makes it); the bridge now takes it as RGBA16Float (115), the same bits. (c) `heap texture
+  refused: OutOfMemory(Heap)`: CoreAnimation's heaps fragment; the frontend already makes such a texture apart (`heap texture
+  made apart`), so it is a log line, not a missing texture.
+- **t4a's band**, read from `tl: Q` and `tl: v`: of 507 swaps, 52 had a submission arrive between the end of the display's GPU wait
+  and the end of its copy, all in the gestures (243-244 s) and the CC's opening (283 s), none later; the band at +300 is the
+  CC's last frame, copied at 283 s while a submission ran, and left on screen as nothing moved after. `fb_settle_us` covers it
+  (t4b). The display also waits ~14 ms for its beat after the GPU wait (`shown - ready`), where those submissions land.
+
+**Kernel `kernel-16k-unixnu4.bak`** (sha256 `e7c15a5e5873d7fd320c234501c14d10a96d321ad3848d8d0e42642cbfa86603`): unixnu3 + `gpu_irq=1`
+(off by default; hwcg on, fb_settle_us off). **Root int11** `userland-26/out/system-26.apfs.full-938a5722` (sha256
+`938a5722d4adf003106dbbd40c50385b7601281329c58d125212ef403df30979`): int10 with AdrenoMetal `7c55b1a8` (render area option,
+RGBA16Float_XR). Lines (with the quietrun's prefix): `$B m2v_renderarea=1 $G` 449, `$B gpu_irq=1 $G` 442, both 459.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

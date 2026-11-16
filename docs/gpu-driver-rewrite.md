@@ -270,6 +270,19 @@ there is one, adds the vertex constants and attachments 1 and 2). Results in `m2
 | RenderBox `custom_effect_*`, `primitive_custom_*` (`custom_fn`) | translated; need the caller's linked function (`NeedsInput(LinkedFunction custom_fn)`), which metal2vulkan takes as `MTLLinkedFunctions`; dada found the glass these draw missing until linked | refused (`custom_fn.MTL_VISIBLE`, a function value) |
 | Framebuffer fetch `[[color(n)]]` and memoryless attachment 1 (the uber shader's mask) | every logged constant set ok | fetch slots by patch |
 
+**Text backing formats (host, 2026-11-16).** The probe of ctl3 found Settings' text drawn by the app (SwiftUI
+`CGDrawingLayer` with contents in A8, `_UILabelLayer`s "Automatic") and shown as a faint dashed trace: the fault is in
+compositing those layers, not in drawing them. `m2v-coverage/formats.rs` (`m2v-formats`) samples each backing format
+through metal2vulkan's runtime with the fixture's `sampled_fragment`, draws it over an RGBA8 target and reads it back.
+On lavapipe (which executes) every case is what Metal presents: A8Unorm (0,0,0,a); R8Unorm (r,0,0,1); R8 viewed
+(1,1,1,r) and (r,r,r,1); RG8Unorm (r,g,0,1) and viewed (r,r,r,g), the LA8 layout; BGRA8 and RGBA8 premultiplied in
+Metal's channel order; RGBA16Float. On turnip (drm-shim) every texture, swizzled view and pipeline is made. metal2vulkan
+maps A8Unorm to `VK_FORMAT_A8_UNORM` when the device exposes it, else to R8 with a (0,0,0,R) view
+(`metal/format/mod.rs`); turnip on the A635 exposes `VK_KHR_maintenance5` and `A8_UNORM_KHR` with sampling, linear
+filtering and linear tiling (an IOSurface), so the direct path is taken, onto freedreno's `FMT6_A8_UNORM` (the same
+hardware format our core uses for A8Unorm: `hakios-metal/src/texture.cpp:37`, so today's dashed text is not the format
+table but how the layer reaches the sampler). The phone run decides: T2's criterion below.
+
 No pipeline CoreAnimation used on lisa needs a patch to metal2vulkan or turnip. What is left: `inplace_copy` (if it
 ever shows, a fallback without raster order groups), `tile_*` (not used without tile support), and `custom_fn` (a
 runtime check on the phone: the linked path). Cold compile on the host: median 9.5 ms a pipeline (Ryzen 7 5800X, Mesa's
@@ -371,6 +384,7 @@ since the home page of these roots may differ. Read, in this order, each criteri
 | first frame | `gpu2-metal[backboardd ...]` without `no device`; `pandora-metal: backboardd has a device`; no `gpu2-turnip ... refused`; the +150 screenshot | the lock screen or home drawn by the GPU, no software-renderer line |
 | home | +150/+200 screenshots (after the unlock) | icons, wallpaper, dock |
 | Settings with glass | +215/+240 screenshots | cards with round corners, the navigation bar's glass blurred |
+| Settings' text | +215/+240 screenshots (ctl3-q2..q4 for today's) | the title "Settings" and every row's label legible, solid, not a faint dashed trace |
 | Control Center with corners | +260/+275 screenshots | round modules, slider fills inside their pills, no square behind AirPlay |
 | fps, scroll | frame intervals over the scroll window (`scroll_window.py`) | median under today's (18-21 ms, Session 6) |
 | fps, gestures | the lock-to-home burst and the Control Center pull (`frame_bursts.py`) | median frame interval at or under 11.1 ms (90 Hz) with the glass blur on |

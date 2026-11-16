@@ -1,0 +1,167 @@
+--- a/osfmk/arm64/cpu.c
++++ b/osfmk/arm64/cpu.c
+@@ -480,6 +480,8 @@
+ 	return ipending || (nirqc != irqc);
+ }
+ 
++extern bool dlisa_idle_wfi(int cpu, unsigned int wfi_all);     /* kern/sched_prim.c, sched-idle-quiet.patch */
++
+ /*
+  *	Routine:	cpu_idle
+  *	Function:
+@@ -592,7 +594,8 @@
+ 	cpc_cpu_transition(CPC_CPU_IDLE, cpu_data_ptr);
+ #endif /* CONFIG_CPU_COUNTERS */
+ 
+-	if (wfi) {
++	/* darwin-lisa: wfi=1 every core, else the cores of idle_wfi_mask that hold nothing back (sched-idle-quiet.patch) */
++	if (dlisa_idle_wfi(cpu_data_ptr->cpu_number, wfi)) {
+ #if !defined(APPLE_ARM64_ARCH_FAMILY) && !defined(BCM2837)
+ 		/*
+ 		 * (darwin-lisa: not on lisa. A core keeps its cache while it waits, and this would empty it by set
+--- a/osfmk/kern/sched_prim.c
++++ b/osfmk/kern/sched_prim.c
+@@ -187,8 +187,16 @@
+ extern int sched_clutch_lisa_root_priority(processor_set_t pset);       /* sched_clutch.c */
+ 
+ static uint64_t dlisa_sp_held, dlisa_sp_late, dlisa_sp_hand, dlisa_sp_move, dlisa_sp_pull;
+-static uint64_t lisa_hold_since[MAX_CPUS][2], lisa_hold_seen[MAX_CPUS][2], lisa_pull_looked[MAX_CPUS];   /* [cpu][rt] */
+-static bool lisa_hold_late[MAX_CPUS][2];
++/*
++ * [cpu][rt]. darwin-lisa (sched-idle-quiet.patch): a row of 64 bytes for each core, each on its own cache line. Each
++ * core writes only its own row, on every thread_select and every turn of its idle loop; packed four to a line, the
++ * A78 cpu3 and the A55s shared one and took it from each other on every context switch.
++ */
++#define LISA_ROW_WORDS 8
++static uint64_t lisa_hold_since[MAX_CPUS][LISA_ROW_WORDS] __attribute__((aligned(64)));
++static uint64_t lisa_hold_seen[MAX_CPUS][LISA_ROW_WORDS] __attribute__((aligned(64)));
++static uint64_t lisa_pull_looked[MAX_CPUS][LISA_ROW_WORDS] __attribute__((aligned(64)));
++static bool lisa_hold_late[MAX_CPUS][64] __attribute__((aligned(64)));
+ static uint64_t lisa_wait_abs, lisa_pull_abs;
+ 
+ static uint64_t
+@@ -306,10 +314,10 @@
+ 
+ 	uint64_t now = mach_absolute_time(), age = lisa_us_abs(lisa_sched_prefer_pull_us, &lisa_pull_abs);
+ 
+-	if (now - lisa_pull_looked[cpu] < age / 4) {
++	if (now - lisa_pull_looked[cpu][0] < age / 4) {
+ 		return;
+ 	}
+-	lisa_pull_looked[cpu] = now;
++	lisa_pull_looked[cpu][0] = now;
+ 
+ 	uint64_t slow = pset->cpu_state_map[PROCESSOR_RUNNING] & pset_available_cpumap(pset) & ~preferred &
+ 	    ~pset->pending_AST_URGENT_cpu_mask & ~os_atomic_load(&pset->pending_AST_PREEMPT_cpu_mask, relaxed);
+@@ -369,6 +377,44 @@
+ 	}
+ }
+ 
++/*
++ * darwin-lisa (sched-idle-quiet.patch): the small cores sleep when idle, the big ones poll.
++ *
++ * The idle loop polls on every core (cpu-idle-no-wfi.patch: WFI did not wake on the single-core bring-up kernel).
++ * Since the GIC v3 and Group-1 vtimer fixes it does (host run cpu-wfi1, 2026-11-11: wfi=1, cpus=7, 340 s, no hang),
++ * and three A55s polling for nothing cost the A78s: every turn of the loop re-read the pset's and the clutch's lines
++ * the A78s write on every enqueue (each such write then had to take them back) and did two atomics on one global
++ * counter (machine_track_platform_idle, now once per idle period), with the A55s at their top clock all along.
++ *
++ * Boot-arg idle_wfi_mask=MASK (default 0x70, cpu4-6 = the A55s; 0 = every core polls, as before): those cores wait
++ * in WFI when idle; an IPI or their timer wakes them. The A78s keep polling: the window server's threads are on them
++ * and they answer a wakeup at once. wfi=1 still puts every core to sleep. A core that leaves a head of the band to
++ * the A78s (lisa_hold, sched-prefer-select.patch) polls while it holds, so its wait stays bounded.
++ */
++TUNABLE(uint64_t, lisa_idle_wfi_mask, "idle_wfi_mask", 0x70);
++
++/* whether the core polls this turn of its idle loop (it holds a head of the band); written only by that core */
++static struct {
++	bool poll;
++} __attribute__((aligned(64))) lisa_idle_cpu[MAX_CPUS];
++
++static inline void
++lisa_idle_mark(int cpu, bool poll)
++{
++	if (lisa_idle_cpu[cpu].poll != poll) {
++		lisa_idle_cpu[cpu].poll = poll;
++	}
++}
++
++/* for cpu_idle (arm64/cpu.c): whether this core waits in WFI now; wfi_all is the wfi boot-arg */
++bool dlisa_idle_wfi(int cpu, unsigned int wfi_all);
++
++bool
++dlisa_idle_wfi(int cpu, unsigned int wfi_all)
++{
++	return !lisa_idle_cpu[cpu].poll && (wfi_all != 0 || ((lisa_idle_wfi_mask >> cpu) & 1) != 0);
++}
++
+ #if XNU_TARGET_OS_XR
+ #define         MAX_UNSAFE_RT_QUANTA               1
+ #define         SAFE_RT_MULTIPLIER                 5
+@@ -6738,6 +6784,15 @@
+ 	recount_snapshot(&snap);
+ 	recount_processor_idle(&processor->pr_recount, &snap);
+ 
++	/*
++	 * darwin-lisa (sched-idle-quiet.patch): counted idle once for the whole stay in the loop, not twice a turn (two
++	 * atomics on one global line per turn on every polling core). Its one reader asks whether every core is idle.
++	 * A core that comes here with something queued polls its first turn: thread_select may have just left a head of
++	 * the band to the A78s (lisa_hold).
++	 */
++	machine_track_platform_idle(TRUE);
++	bool lisa_held = !SCHED(processor_queue_empty)(processor);
++
+ 	while (1) {
+ 		/*
+ 		 * Ensure that updates to my processor and pset state,
+@@ -6772,9 +6827,12 @@
+ 			&& (processor->processor_primary == processor)
+ #endif /* CONFIG_SCHED_SMT */
+ 			) {
+-			if (rt_runq_count(pset) && !lisa_hold_realtime(pset, processor)) {
+-				break_reason = IDLE_BREAK_RT_RUNQ;
+-				break;
++			if (rt_runq_count(pset)) {
++				if (!lisa_hold_realtime(pset, processor)) {
++					break_reason = IDLE_BREAK_RT_RUNQ;
++					break;
++				}
++				lisa_held = true;    /* darwin-lisa: holding an RT head, poll this turn */
+ 			}
+ 		} else {
+ 			if (SCHED(processor_bound_count)(processor)) {
+@@ -6788,13 +6846,11 @@
+ 
+ 		lisa_pull(pset, processor);     /* darwin-lisa: an idle A78 takes the band back from an A55 */
+ 
+-		machine_track_platform_idle(TRUE);
++		lisa_idle_mark(processor->cpu_id, lisa_held);     /* darwin-lisa: polls while it holds (cpu_idle) */
+ 
+ 		machine_idle();
+ 		/* returns with interrupts enabled */
+ 
+-		machine_track_platform_idle(FALSE);
+-
+ #if (DEVELOPMENT || DEBUG)
+ 		if (processor->cpu_id == sched_idle_delay_cpuid) {
+ 			delay(500);
+@@ -6833,7 +6889,8 @@
+ 		}
+ 
+ 		/* darwin-lisa: a slow core leaves a head of the band to the A78s for a while (lisa_hold) */
+-		if (!SCHED(processor_queue_empty)(processor) && !lisa_hold_timeshare(pset, processor)) {
++		lisa_held = !SCHED(processor_queue_empty)(processor);
++		if (lisa_held && !lisa_hold_timeshare(pset, processor)) {
+ #if CONFIG_SCHED_SMT
+ 			/* Secondary SMT processors respond to directed wakeups
+ 			 * exclusively. Some platforms induce 'spurious' SMT wakeups.
+@@ -6849,6 +6906,9 @@
+ 		}
+ 	}
+ 
++	lisa_idle_mark(processor->cpu_id, false);
++	machine_track_platform_idle(FALSE);
++
+ 	recount_snapshot(&snap);
+ 	recount_processor_run(&processor->pr_recount, &snap);
+ 	smr_cpu_join(processor, snap.rsn_time_mach);

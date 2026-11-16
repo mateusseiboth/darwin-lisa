@@ -1,5 +1,115 @@
 # GPU on the phone: the run book (one session)
 
+## Session 14 (2026-11-16, host only): 7 cores against 4, the 5 s window, and an idle loop that leaves the A78s alone
+
+Nothing was run on the phone and nothing was written to it. Question: why S8-A (`kernel-16k-s8-select.bak`, cpus=7)
+drew 171 frames in the boot window where S8-B (same kernel, cpus=4) drew 185, with the UI already on the A78s.
+
+**Most of the gap is the 5 s window, not the cores.** The lock-to-home animation is one burst of ~160 swaps in 3.2 s
+(the runs with `touch_lat=1`: nc10 162 swaps in 3.20 s, nc12 161 in 3.16 s, e2 162 in 3.47 s). The framebuffer's 5 s
+windows run from the driver's start. A 7-core boot reaches the animation ~8 s earlier (S8-A's window ends at 47.8 s,
+S8-B's at 55.7 s), so the window cuts the animation at another phase: S8-A has it in 18 + 171 frames, S8-B in 3 + 185.
+A window's count also takes in the 10 a second idle redraw after the animation. `tools/frame_bursts.py` (new) sums the
+histograms of the animation's two windows (pauses left out) and backboardd's commits and draws over them:
+
+| run | kernel, cores | windows | moving intervals | <18 / 18-35 / longer | commits on time / late / stall | backboardd draws on the A55s |
+|---|---|---|---|---|---|---|
+| S8-A | s8-select, 7 | 18 + 171 | 167 | 131 / 18 / 18 | 135 / 22 / 14 | 0.6 % (71 of 11123) |
+| S8-B | s8-select, 4 | 3 + 185 | 169 | 140 / 19 / 10 | 138 / 22 / 14 | 0 |
+| c2 | rc3, 4 | 3 + 185 | 169 | 139 / 18 / 12 | 138 / 25 / 12 | 0 |
+| d3 | rc3, 4 | 3 + 184 | 168 | 141 / 16 / 11 | 140 / 21 / 13 | 0 |
+| S9-A | rc3, 4 (root efed09de) | 21 + 142 | 144 | 119 / 15 / 10 | 104 / 16 / 10 | 0 |
+| S9-B | rc3, 4 (efed09de, `metal_ubwc_rt=1`) | 41 + 160 | 176 | 144 / 21 / 11 | 147 / 20 / 13 | 0 |
+| e3 | s7-preferall, 7 | 35 + 158 | 167 | 130 / 26 / 11 | 114 / 41 / 12 | 23 % |
+| nc10 / nc12 | gpustop2, 7 (11-11) | 3 + 165 / 3 + 164 | 162 / 161 | 133 / 19 / 10; 137 / 15 / 9 | (no metal_fps) | |
+
+S8-A and S8-B made the same number of frames and commits. What is left is 8 more intervals over 35 ms (7 of them in the
+window before, the animation's first frames) and 9 fewer under 18 ms. One boot per arm cannot separate that from the
+spread: cpus=4 alone went from 144 to 176 between S9-A and S9-B. The comparison needs swap timestamps and repeated
+gestures (the run below), not one window of one boot.
+
+**What the idle loop cost anyway** (read from the code; not measured on the phone):
+- `machine_track_platform_idle` did an atomic increment and an atomic decrement of the global `cpu_idle_count` on
+  every turn of the polling loop, on every idle core. That cache line also holds `idle_enable`, `wake_abstime` and
+  `CpuDataEntries[0]` (`mach.development.bcm2837.unstripped`: 0x...bb320), and `thread_go` reads it on every wakeup
+  (`ml_get_power_state`), so the A78s missed on it whenever the A55s spun.
+- `lisa_hold_since` / `_seen` / `_late` / `lisa_pull_looked` (sched-prefer-select) were 16 bytes a core: cpu3 (A78)
+  and cpu4-6 (A55) on one line, written by every core on every `thread_select` (lisa_hold's early return stores 0,
+  lisa_took).
+- The A55s spun at their top clock: the governor starts 90 s after the raise, after the boot window.
+- WFI works since the GIC v3 / Group-1 vtimer fixes: host run cpu-wfi1 (2026-11-11 17:29, `wfi=1 cpus=7`, no GPU,
+  kernel tlwho2) stayed up 340 s. It was never tried with the GPU.
+
+**`kernel/patches/sched-idle-quiet.patch`** (after sched-prefer-select in `apply.sh`):
+- boot-arg `idle_wfi_mask=MASK`, default `0x70` (cpu4-6, the A55s): those cores wait in WFI when idle; an IPI or their
+  timer (at most 50 ms, decrementer floor) wakes them. The A78s keep polling and pick up a woken thread at once.
+  `idle_wfi_mask=0` is the old loop (every core polls); `wfi=1` still puts every core to sleep. With cpus=4 the mask
+  names no online core, so a cpus=4 boot polls as before.
+- a small core that leaves a head of the band to the A78s (`lisa_hold`) polls while it holds, so the 2 ms bound of
+  sched_prefer_wait holds. A core that enters the idle loop with something queued polls its first turn.
+- `machine_track_platform_idle` once on entering and once on leaving the idle loop, not twice a turn.
+- the lisa per-core rows padded to a 64-byte line each (`[MAX_CPUS][8]`, aligned 64).
+- Host tests: `sh kernel/patches/test/run.sh` builds the helper blocks of sched-prefer-select and sched-idle-quiet
+  against stand-ins: both PASS (the new one: default mask, `wfi=1`, mask 0, a holding core polls, one line a core).
+
+Kernel `research/hackios-xnu-kernel/kernel-16k-s14-idle.bak` (`bf4df15f63b98fe6...`; `kernel26.nopac` is this build
+now) = s8-select + sched-idle-quiet. For host runs: `KERNEL=kernel-16k-s14-idle.bak`.
+
+`out/vendor_boot-lisa-final21-s14-idle.img` (`6ce52f2624d1bf5a...`; RAM: `out/loader-usb-lisa-final21-s14-idle.hkub`
+`3b5ed61bc3992d06...`), a real `build-combined.sh` build: `GEOMETRY= CPUS=7 NAME=final21-s14-idle
+KERNEL=research/hackios-xnu-kernel/kernel-16k-s14-idle.bak EXTRA_ARGS="noidle=1 tz=America/Campo_Grande gpu=1 metal=1
+dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"`. Word by word against final19-hbt: only
+`cpus=4` -> `cpus=7` and the epoch; against final20-sel7-hbt only the epoch; 450 characters. Its loader differs from
+final20's in 3 bytes (the epoch). NOT flashed. Built before the uncommitted `ARTWORK` change to `loader/build-*.sh`
+(13:56:40), so the identity's own artwork, as final19. A rebuild with that change needs `ARTWORK=` to stay so.
+
+### The run (one trip, host runs only, phone in pmOS, any root, vendor_boot untouched)
+
+The same kernel in every arm. `touch_lat=1` logs every swap (`tl: s`), so each animation is measured whole; three
+Notification Center opens and closes (`nc` works on both status-bar layouts) give three samples a run after the boot
+has settled. 455 characters (457 for S14-C).
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
+T="140 175 195 215 240"
+# S14-A: 7 cores, the A55s in WFI (the kernel's default)
+KERNEL=kernel-16k-s14-idle.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s14a "$B metal_fps=1 touch_lat=1 cpus=7 touch_seq=nc@150,up@160,nc@170,up@180,nc@190,up@200" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S14-B: the control, 4 cores, same kernel
+KERNEL=kernel-16k-s14-idle.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s14b "$B metal_fps=1 touch_lat=1 cpus=4 touch_seq=nc@150,up@160,nc@170,up@180,nc@190,up@200" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S14-C: 7 cores, every core polling (what WFI changed); two nc for the length
+KERNEL=kernel-16k-s14-idle.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s14c "$B metal_fps=1 touch_lat=1 cpus=7 idle_wfi_mask=0 touch_seq=nc@150,up@160,nc@170,up@180" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Order S14-A, S14-B, S14-C; then S14-A and S14-B once more if the trip allows (two boots an arm halve the spread).
+If S14-A hangs (no heartbeat, `kernel hung`) or the UI never comes up, WFI with the GPU is the cause: S14-C is then the
+7-core arm, and `idle_wfi_mask=0` the line.
+
+Read each run:
+
+```sh
+python3 -I darwin-lisa/tools/frame_bursts.py research/hackios-xnu-kernel/logs/gpu-s14{a,b,c}-end.log
+grep -a -c "no answer" research/hackios-xnu-kernel/logs/gpu-s14a-end.log
+```
+
+It prints the boot animation by its two windows (moving intervals, <18 / 18-35 / longer, commits, backboardd's
+share of draws on the A55s) and every swap burst: the boot one (`no gesture`, ~43 s) and each `nc`/`up` one (`gesture
+at N s`), with swaps, seconds, swaps a second, intervals and median. For the old table: `MiniIOMobileFramebuffer: N
+frames in 5 s` and its histogram are still in the log.
+
+**Pass** (S14-A against S14-B, side by side; every number from frame_bursts.py):
+1. the boot burst: S14-A's swaps a second at least S14-B's, and its intervals over 35 ms at most S14-B's + 2;
+2. the three `nc` opens: S14-A's mean swaps a second and its share under 18 ms at least S14-B's;
+3. commits on time at least S14-B's - 5 and stalls at most S14-B's + 2 (window sum); backboardd's draws on the A55s
+   under 5 %;
+4. no hang, 0 `no answer`, S14-A's screenshots the same to the eye as S14-B's at the same times.
+
+When S14-A is within 3 % under S14-B on 1 or 2, it is the spread: run both again and judge on the two boots summed.
+On a pass: `tools/flash-vendorboot.sh out/vendor_boot-lisa-final21-s14-idle.img` (reads back `6ce52f26`), then the
+cold boot with no host command and a screenshot at +4/+5 min. Rollback: final19-hbt `bc7a7ea2` or final17-cpus4
+`2e7f0b85`. S14-C against S14-A says how much of it is WFI; if S14-C equals S14-A, keep the mask anyway (the A55s cool
+and the A78s keep the shared lines).
+
 ## Session 11 (2026-11-13, host only): Settings "draws nothing while scrolled" is a run with no scroll in it
 
 Nothing was run on the phone. Question: why Settings stops making frames while a finger scrolls it (Session 10, S9-A/B).

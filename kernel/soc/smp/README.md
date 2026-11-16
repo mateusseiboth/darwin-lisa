@@ -70,5 +70,7 @@ real work: with 1024 vnodes (BCM2837 "xsmall") the table is full within minutes 
 vnodes (~1000 kills in 20 min) that launchd restarts at once. `kernel/pg16k/maxvnodes-wire.py` sizes it from memory.
 Single-core boots never got that far fast enough to show it.
 
-Open: idle cores poll (`wfi=0`), which keeps them hot. Whether an SGI wakes a core parked in WFI under this
-hypervisor (it should: HakiOS ran `cpus=8` with WFI) is not measured yet; `wfi=1` brings WFI back for that test.
+Idle: WFI wakes since the GIC v3 / Group-1 vtimer fixes (host run cpu-wfi1, 2026-11-11: `wfi=1 cpus=7`, 340 s, no
+hang). `kernel/patches/sched-idle-quiet.patch` (2026-11-16) puts the A55s (cpu4-6, `idle_wfi_mask=0x70` by default)
+in WFI when idle and leaves the A78s polling; `idle_wfi_mask=0` polls everywhere, `wfi=1` sleeps everywhere
+(docs/gpu-device-test.md, Session 14).

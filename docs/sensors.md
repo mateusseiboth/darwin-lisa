@@ -122,6 +122,11 @@ among the wrappers. The fix: the proximity service publishes `Placement` = 1 (li
 proximity is left out unless `sensors_hid` has bit 0x10, until a run shows the wrapper taking it
 (`instantiated BKHIDUIDiscreteProximityServiceWrapper` in `oslog[backboardd]`).
 
+Built with the fix, NOT written: root `userland-26/out/system-26.apfs.full-5c001ebc` (sha256
+`5c001ebcb41d08951e3272e14226fde9dc92e307eff5037361c69fe77239223c`, 61213 files) = `system-26.apfs.full-9a91ed47`
+with only `/usr/local/lib/libdlisa-motion.dylib` changed (677f8faf, fd05335). Read back against its source copy:
+0 differences. Rollback: 9a91ed47 with `sensors_hid=0`.
+
 Unit and axis conversions are in `userland/motion/sensor-events.c`, host-tested by `userland/motion/test/run-tests.sh`.
 
 ## Stage 2 (not built): locationd, for apps' CoreMotion

@@ -88,6 +88,7 @@
 #include "purgeable.c"
 #include "scroll-stroke.c"
 #include "status-bar.c"
+#include "torch-level.c"
 #include "touch-slots.c"
 #include "trait-names.c"
 
@@ -1092,30 +1093,33 @@ isSameValue(CFPropertyListRef kept, CFStringRef wanted)
 	return kept == NULL || wanted == NULL ? kept == (CFPropertyListRef)wanted : CFEqual(kept, wanted);
 }
 
+/*
+ * The value is set in this process at once, before UIKit makes its first status bar, and handed to cfprefsd (the
+ * data volume) on the side: the first start with a new value already uses it, every later one reads it from there.
+ */
 static void
-saveStatusBarProvider(void)
+saveStatusBarProvider(const char *provider, const char *source)
 {
-	const char *provider = findStatusBarProvider(readBootArgs());
+	CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
+	CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
+	bool same = isSameValue(kept, wanted);
 
+	if (!same) {
+		CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
+	}
 	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-		CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
-		CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
-		bool same = isSameValue(kept, wanted);
-		bool saved = same;
+		bool saved = same || CFPreferencesAppSynchronize(UIKIT_DOMAIN);
 
-		if (!same) {
-			CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
-			saved = CFPreferencesAppSynchronize(UIKIT_DOMAIN);
-		}
-		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s)\n", getprogname(),
-		    provider != NULL ? provider : "none, UIKit chooses", same ? "already so" : saved ? "saved" : "NOT saved");
-		if (kept != NULL) {
-			CFRelease(kept);
-		}
-		if (wanted != NULL) {
-			CFRelease(wanted);
-		}
+		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s, from %s)\n",
+		    getprogname(), provider != NULL ? provider : "none, UIKit chooses",
+		    same ? "already so" : saved ? "saved" : "NOT saved", source);
 	});
+	if (kept != NULL) {
+		CFRelease(kept);
+	}
+	if (wanted != NULL) {
+		CFRelease(wanted);
+	}
 }
 
 /* What the choice is made from, once UIKit is up: MobileGestalt, SpringBoard's screen type, UIScreen, UIKit's own pick */
@@ -1197,6 +1201,22 @@ readOwnSplitProvider(id screen)
 	return chosen != Nil ? class_getName(chosen) : "none (rdar:45025538)";
 }
 
+/*
+ * The width UIScreen really has (the boot-args are only what it should be): when its split bar is another, that one
+ * is saved, for the next start (UIKit has made its bars by now). dlisa_sbprov=0 is left alone.
+ */
+static void
+correctStatusBarProvider(double nativeWidth)
+{
+	const char *wanted = findStatusBarProviderForWidth((long)(nativeWidth + 0.5));
+	const char *fromBootArgs = findStatusBarProvider(readBootArgs());
+
+	if (fromBootArgs == NULL || wanted == NULL || strcmp(wanted, fromBootArgs) == 0) {
+		return;
+	}
+	saveStatusBarProvider(wanted, "the screen's width, for the next start");
+}
+
 static void
 sayScreenFacts(void)
 {
@@ -1214,15 +1234,120 @@ sayScreenFacts(void)
 	    native.width, native.height, readDouble(screen, "_nativeScale"), readDouble(screen, "_displayCornerRadius"),
 	    notch != nil ? class_getName(object_getClass(notch)) : "none", cut.x, cut.y, cut.width, cut.height,
 	    readOwnSplitProvider(screen));
+	correctStatusBarProvider(native.width);
 }
 
 static void
 startStatusBarFix(void)
 {
-	saveStatusBarProvider();
+	saveStatusBarProvider(findStatusBarProvider(readBootArgs()), "the boot-args");
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SCREEN_FACTS_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		sayScreenFacts();
 	});
+}
+
+/* ---- SpringBoard: Control Center's flashlight on the kernel torch (torch-level.c, kernel torch=3) ----------- */
+
+/*
+ * AVFlashlight (AVFCapture) asks cameracaptured, whose capture stack has no camera here. Its instance methods are
+ * answered in SpringBoard instead and the level goes to /dev/hakios-torch. SBUIFlashlightController observes
+ * flashlightLevel by KVO, so the change is announced. Availability itself (camera-flash) is MobileGestalt's.
+ */
+static float flashlightLevel;
+
+static void
+writeTorch(uint32_t permille)
+{
+	int fd = open("/dev/hakios-torch", O_WRONLY);
+
+	if (fd < 0) {
+		say("dlisa[%s]: flashlight: /dev/hakios-torch: %s\n", getprogname(), strerror(errno));
+		return;
+	}
+	if (write(fd, &permille, sizeof(permille)) != (ssize_t)sizeof(permille)) {
+		say("dlisa[%s]: flashlight: write: %s\n", getprogname(), strerror(errno));
+	}
+	close(fd);
+}
+
+static void
+setTorchLevel(id flashlight, float level)
+{
+	id key = (id)CFSTR("flashlightLevel");
+
+	((void (*)(id, SEL, id))objc_msgSend)(flashlight, sel_registerName("willChangeValueForKey:"), key);
+	flashlightLevel = level > 0.0f ? (level > 1.0f ? 1.0f : level) : 0.0f;
+	writeTorch(torchPermilleForLevel(flashlightLevel));
+	((void (*)(id, SEL, id))objc_msgSend)(flashlight, sel_registerName("didChangeValueForKey:"), key);
+	say("dlisa[%s]: flashlight: level %.2f (%u of 1000)\n", getprogname(), (double)flashlightLevel,
+	    torchPermilleForLevel(flashlightLevel));
+}
+
+static bool
+flashlightYes(__unused id self, __unused SEL selector)
+{
+	return true;
+}
+
+static bool
+flashlightNo(__unused id self, __unused SEL selector)
+{
+	return false;
+}
+
+static bool
+flashlightPowerOn(__unused id self, __unused SEL selector, __unused void *error)
+{
+	return true;
+}
+
+static bool
+flashlightSetLevel(id self, __unused SEL selector, float level, __unused void *error)
+{
+	setTorchLevel(self, level);
+	return true;
+}
+
+static void
+flashlightPowerOff(id self, __unused SEL selector)
+{
+	setTorchLevel(self, 0.0f);
+}
+
+static float
+flashlightGetLevel(__unused id self, __unused SEL selector)
+{
+	return flashlightLevel;
+}
+
+static void
+withKernelFlashlight(void)
+{
+	static const struct {
+		const char *selector;
+		IMP replacement;
+	} methods[] = {
+		{ "isAvailable", (IMP)flashlightYes }, { "isOverheated", (IMP)flashlightNo },
+		{ "turnPowerOnWithError:", (IMP)flashlightPowerOn }, { "setFlashlightLevel:withError:", (IMP)flashlightSetLevel },
+		{ "turnPowerOff", (IMP)flashlightPowerOff }, { "flashlightLevel", (IMP)flashlightGetLevel },
+		{ "beamWidthControlSupported", (IMP)flashlightNo },
+	};
+	char status[128];
+	size_t size = sizeof(status) - 1;
+	unsigned replaced = 0;
+
+	if (sysctlbyname("kern.hakios.torch_status", status, &size, NULL, 0) != 0 || !isTorchServing(status)) {
+		return;                 /* (no torch=3 kernel driver: AVFlashlight is left as it is) */
+	}
+	if (dlopen("/System/Library/PrivateFrameworks/AVFCapture.framework/AVFCapture", RTLD_NOW) == NULL) {
+		say("dlisa[%s]: flashlight: AVFCapture not loaded: %s\n", getprogname(), dlerror());
+		return;
+	}
+	for (size_t i = 0; i < sizeof(methods) / sizeof(methods[0]); i++) {
+		replaced += replaceMethod('-', "AVFlashlight", methods[i].selector, methods[i].replacement) != NULL;
+	}
+	say("dlisa[%s]: flashlight: AVFlashlight on /dev/hakios-torch (%u of %zu methods)\n", getprogname(), replaced,
+	    sizeof(methods) / sizeof(methods[0]));
 }
 
 static void
@@ -1252,6 +1377,7 @@ fixSpringBoard(void)
 	replaceMethod('+', "XBApplicationSnapshotManifestImpl", "_outputFormatForSnapshot:", (IMP)snapshotOutputFormat);
 	setForceNoBuddy();
 	startStatusBarFix();
+	withKernelFlashlight();
 	unlockMode = bootArgNumber("dlisa_unlock");
 	if (unlockMode != 0) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_FIRST_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{

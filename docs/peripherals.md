@@ -23,6 +23,7 @@ the dyld cache, the reference kernelcache).
 
 | Piece | What | sha256 |
 | --- | --- | --- |
+| `research/hackios-xnu-kernel/kernel-16k-periph2.bak` | periph1 + vibration: under-voltage noted, not fatal + bt=2 votes l19b, s1c, l11c through RPMh | `d9b0fd3950048f18b4da26faa7a2eb76286139eeec1e9ff923e139d3dfd80ef9` |
 | `research/hackios-xnu-kernel/kernel-16k-periph1.bak` | the shared tree as of 2026-11-16 15:2x (s14 + the restored scheduler `sched_prim.c` 3c766b2f + the other workers' wires) + buttons, torch, haptic, bt, audio; firmware built in (`aw8624_haptic.bin`, `msbtfw11.{mbn,tlv}`, `msnv11.bin`). Built by `kernel/drivers/periph-build.sh` (lock, no `apply.sh`, symbols checked) | `40815677f8d56468e31549d8c58cdbdbeae59f057de6cd24bd1f28d2dd5754e0` |
 | `userland-26/out/system-26.apfs.full-9a91ed47` | test root: int3 (122a0d5c: libdlisa 7249bc09 with the Bluetooth and flashlight hooks, libdlisa-motion d948f0d5, ld-groups 2beca308, launchd dbeb1522, HakiosMetal 9e29ff9c, InterfaceNamer aa6f1292) + `usr/sbin/bluetoothd` (23F84, aaa02518) + `/etc/dlisa-inject.conf` of HEAD (b6d0f0b4: int3's + bluetoothd; both libraries it names are present). Hard-link copy of `out/sysroot-26` with those files replaced (taken out of the int3 image with `apfs.py cat`), `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB; copy deleted, shared sysroot untouched. Read back: the files above; census 61213 files (int3 + 1), 24194 directories, 821 symlinks, 15960 checksums, 0 bad. 4,999,610,368 B. NOT written | `9a91ed478bbd3d7d6a6439f148192ea8e6b14b0116c028d83184fe74e817706f` |
 
@@ -176,7 +177,7 @@ KERNEL=kernel-16k-periph1.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.s
 KERNEL=kernel-16k-periph1.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh periph-bt3 "$B bt=3" "240"
 ```
 
-Pass: bt=1 `look done`; bt=2 `QCA product ... firmware set 11`, `local version: ... manufacturer 29 (Qualcomm)`;
+Pass: bt=1 `look done` (on lisa it also says `SE7's clocks are not all on` and the regulators are not readable from this system: both are findings, not failures; go on to bt=2 when `GPLL0: ... locked` is there); bt=2 turns SE7's clocks on before it reads `SE7: fw revision ... (protocol 2 = UART)`, votes l19b, s1c, l11c on through RPMh (`voted on through RPMh`), leaves the Wi-Fi half's s7b, s1b, s8b alone, then `QCA product ... firmware set 11`, `local version: ... manufacturer 29 (Qualcomm)`;
 bt=3 `msbtfw11.mbn downloaded`, `msnv11.bin downloaded`, `QCA setup complete`, `found LE ...` lines (any phone or
 headset nearby), `level 3 done`. Any `bt: K: FAILED:` names the step.
 
@@ -186,6 +187,20 @@ Needs the test root `system-26.apfs.full-9a91ed47` (`tools/flash-root.sh`; rollb
 touch_seq=tap:56800:5600@200"` (Settings opened by the tap; then Bluetooth row). Pass: `dlisa[bluetoothd]: bt:
 sysctlbyname rebound in N slot(s)`, `kern.hv_vmm_present answered 1`, no "No valid serial port found"; a screenshot of
 Settings with Bluetooth "On"; `sound: the DSP took N frames a second` near 48000 (silent: amps off at sound=2).
+
+### Results on the phone (2026-11-16, kernel periph1, root 9a91ed47)
+
+- **periph-p1**: flashlight PASSES (channel 151 this system's, ON 1000 / 300 / off, no `OFF:`; `battery -273 C` = no
+  battery driver on the line). Keys: 22505 reads, 0 failed, every test press reached backboardd; power locks the
+  screen; side + volume up starts `ScreenshotServicesService` (log `DLISA exec 398(ScreenshotServic)` 0.2 s after the
+  chord), so SpringBoard sees both keys; the missing thumbnail is the screenshot service's capture, not the keys. No
+  volume HUD: SpringBoard shows it when the audio system's volume changes, and audiomxd has no output device here
+  (section 6); the volume keys themselves arrive. Vibration FAILED at `after loading: the chip reports 0x30`: 0x20
+  under-voltage + 0x10 FIFO almost empty, which Xiaomi's driver only logs (it masks the under-voltage interrupt when
+  the chip is idle): periph2 treats only over-voltage, over-current and over-temperature as faults.
+- **periph-bt1**: `look done`; SE7's branch off (vote bit 17 = 0, CBCR 0x80004220), RCG at 19.2 MHz, GPLL0 600 MHz
+  locked; the regulators are RPMh's (no arbiter channel, or another peripheral there). periph2's bt=2 votes the
+  Bluetooth-only rails through RPMh as Linux's rpmh-regulator does.
 
 ### Rollback
 

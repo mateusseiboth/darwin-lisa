@@ -32,8 +32,9 @@
  *              haptic_seq=CMD@S,...  test commands, S seconds after the driver starts (e.g. haptic_seq=2@200,1400@205)
  *
  * Limits: Android's gain (0x80) at most; no vibration longer than HAPTIC_MAX_MS, then stop and standby; any fault the
- * chip reports (over-voltage, under-voltage, over-current, over-temperature), a write that does not read back or a
- * byte nobody acknowledges: the chip is put into reset and nothing more is done for the rest of the run.
+ * chip reports (over-voltage, over-current, over-temperature; under-voltage is only noted, as Xiaomi's driver does),
+ * a write that does not read back or a byte nobody acknowledges: the chip is put into reset and nothing more is done
+ * for the rest of the run.
  */
 #include <kern/clock.h>
 #include <kern/locks.h>
@@ -318,14 +319,15 @@ regs_write(uint8_t reg, const uint8_t *values, unsigned count)
 #define AW_BEMF_VTHH_H          0x74
 
 #define AW_CHIP_ID              0x24
-#define SYSINT_FAULTS           0x66            /* OVI 0x40, UVLI 0x20, OCDI 0x04, OTI 0x02 */
+#define SYSINT_FAULTS           0x46            /* OVI 0x40, OCDI 0x04, OTI 0x02: the chip is given up on */
+#define SYSINT_UNDER_VOLTAGE    0x20            /* UVLI: noted only, as Xiaomi's driver does */
 #define ANDROID_GAIN            0x80
 #define LOOP_WAVEFORM           11
 #define SHORT_EFFECTS           10
 #define HAPTIC_MAX_MS           3000
 
 static uint8_t last_flags;
-static uint32_t played, faults_seen;
+static uint32_t played, faults_seen, under_voltage_seen;
 
 static void
 give_up(const char *why)
@@ -388,10 +390,20 @@ healthy(const char *when)
 	}
 	if (last_flags & SYSINT_FAULTS) {
 		faults_seen++;
-		printf("haptic: %s: the chip reports %#04x (over-voltage 0x40, under-voltage 0x20, over-current 0x04, "
-		    "over-temperature 0x02)\n", when, last_flags);
+		printf("haptic: %s: the chip reports %#04x (over-voltage 0x40, over-current 0x04, over-temperature 0x02)\n",
+		    when, last_flags);
 		give_up("a fault");
 		return false;
+	}
+	/*
+	 * Under-voltage (0x20) is latched in standby on lisa (seen on the phone after the RAM load: 0x30 with the FIFO's
+	 * almost-empty 0x10); Xiaomi's driver only logs it and masks it again when the chip is idle (aw8624_irq), never
+	 * stops on it. Counted and said, not fatal. 0x10 (RTP FIFO almost empty) and 0x01 (playback done) are normal.
+	 */
+	if (last_flags & SYSINT_UNDER_VOLTAGE) {
+		under_voltage_seen++;
+		under_voltage_seen <= 4 ? (void)printf("haptic: %s: under-voltage flag (%#04x), as Xiaomi's driver: noted, "
+		    "not a fault (%u so far)\n", when, last_flags, under_voltage_seen) : (void)0;
 	}
 	return true;
 }
@@ -613,8 +625,8 @@ sysctl_haptic_status SYSCTL_HANDLER_ARGS
 #pragma unused(oidp, arg1, arg2)
 	char text[120];
 
-	snprintf(text, sizeof(text), "level %u ready %u broken %u played %u faults %u flags %#x", level, ready, broken, played,
-	    faults_seen, last_flags);
+	snprintf(text, sizeof(text), "level %u ready %u broken %u played %u faults %u uv %u flags %#x", level, ready, broken,
+	    played, faults_seen, under_voltage_seen, last_flags);
 	return SYSCTL_OUT(req, text, strlen(text) + 1);
 }
 

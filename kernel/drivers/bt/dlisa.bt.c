@@ -231,14 +231,15 @@ struct supply {
 	uint16_t ppid;          /* (slave << 8) | peripheral of the regulator's control */
 	uint32_t mv;
 	bool ldo;
+	bool wifi;              /* also the Wi-Fi half's: on while Wi-Fi works, never voted here (an apps vote replaces apps' own) */
 };
 static const struct supply supplies[] = {       /* in hci_qca's enable order */
-	{ "l19b", "ldob19", "vddio", 0x152, 1800, true },
-	{ "s7b", "smpb7", "vddaon/btcxmx/rfacmn/rfa0p8", 0x126, 952, false },
-	{ "s1b", "smpb1", "vddrfa1p7", 0x114, 1856, false },
-	{ "s8b", "smpb8", "vddrfa1p2", 0x129, 1256, false },
-	{ "s1c", "smpc1", "vddrfa2p2", 0x214, 2200, false },
-	{ "l11c", "ldoc11", "vddasd", 0x24a, 2800, true },
+	{ "l19b", "ldob19", "vddio", 0x152, 1800, true, false },
+	{ "s7b", "smpb7", "vddaon/btcxmx/rfacmn/rfa0p8", 0x126, 952, false, true },
+	{ "s1b", "smpb1", "vddrfa1p7", 0x114, 1856, false, true },
+	{ "s8b", "smpb8", "vddrfa1p2", 0x129, 1256, false, true },
+	{ "s1c", "smpc1", "vddrfa2p2", 0x214, 2200, false, false },
+	{ "l11c", "ldoc11", "vddasd", 0x24a, 2800, true, false },
 };
 #define SUPPLIES (sizeof(supplies) / sizeof(supplies[0]))
 
@@ -428,7 +429,13 @@ rail_comes_up(const struct supply *s)
 static bool
 supplies_on(void)
 {
-	step("the supplies: read each over SPMI; a vote through RPMh only for one that reads off");
+	/*
+	 * On lisa the regulators are RPMh's: this system has no arbiter channel to l19b, s7b, s8b, s1c, and s1b / l11c
+	 * read as something else (periph-bt1, 2026-11-16), so their state is unknown. As Linux's rpmh-regulator does for
+	 * hci_qca, the rails only Bluetooth needs (l19b, s1c, l11c) are voted on with the DT's voltage whatever they read;
+	 * the Wi-Fi half's (s7b, s1b, s8b) are left alone: on while Wi-Fi works, and an apps vote would replace apps' own.
+	 */
+	step("the supplies: read each over SPMI; Bluetooth's own rails voted on through RPMh unless they read on");
 	for (unsigned i = 0; i < SUPPLIES; i++) {
 		const struct supply *s = &supplies[i];
 		enum rail_state now = read_rail(s, false);
@@ -436,8 +443,9 @@ supplies_on(void)
 		if (now == RAIL_ON) {
 			continue;
 		}
-		if (now == RAIL_UNKNOWN) {
-			printf("bt: supply %s: state unknown: not voted (the chip will not answer if it is really off)\n", s->rail);
+		if (s->wifi) {
+			printf("bt: supply %s (%s): %s; the Wi-Fi half's: not voted\n", s->rail, s->uses,
+			    now == RAIL_OFF ? "reads OFF" : "state unknown");
 			continue;
 		}
 		if (cmd_db == 0) {
@@ -448,6 +456,11 @@ supplies_on(void)
 			return fail("an RPMh vote for a supply did not complete");
 		}
 		rail_voted[i] = true;
+		if (now == RAIL_UNKNOWN) {
+			sleep_ms(10);   /* (it cannot be read back: RPMh's ramp, then on) */
+			printf("bt: supply %s voted on through RPMh (%u mV); not readable here\n", s->rail, s->mv);
+			continue;
+		}
 		if (!rail_comes_up(s)) {
 			(void)read_rail(s, false);
 			return fail("a supply voted on is still not in regulation after 50 ms");

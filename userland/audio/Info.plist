@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>org.darwin-lisa.audio</string>
+	<key>CFBundleName</key>
+	<string>DLisaAudio</string>
+	<key>CFBundleExecutable</key>
+	<string>DLisaAudio</string>
+	<key>CFBundlePackageType</key>
+	<string>BNDL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleSupportedPlatforms</key>
+	<array>
+		<string>iPhoneOS</string>
+	</array>
+	<key>CFPlugInTypes</key>
+	<dict>
+		<key>443ABAB8-E7B3-491A-B985-BEB9187030DB</key>
+		<array>
+			<string>08710C8E-DBE4-471B-A5B1-5EDB4F1CB195</string>
+		</array>
+	</dict>
+	<key>CFPlugInFactories</key>
+	<dict>
+		<key>08710C8E-DBE4-471B-A5B1-5EDB4F1CB195</key>
+		<string>DLisaAudio_Create</string>
+	</dict>
+</dict>
+</plist>

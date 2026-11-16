@@ -7,3 +7,6 @@ kernel/pacstrip/vectors.txt
 .dbg.pristine.orig
 userland/init/out/
 userland/init/obj/
+
+# darwin-lisa audio plug-in build output
+userland/audio/out/

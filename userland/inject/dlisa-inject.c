@@ -1813,6 +1813,8 @@ fixBluetoothd(void)
 	presetVmmAnswer();
 }
 
+#include "audio-probe.c"
+
 /* ---- which program gets which fix ------------------------------------------------------------------ */
 
 static const struct {
@@ -1828,6 +1830,7 @@ static const struct {
 	{ "PosterBoard", fixPosterBoard },
 	{ "CollectionsPoster", withoutApfsPurgeable },
 	{ "bluetoothd", fixBluetoothd },
+	{ "audiomxd", fixAudiomxd },
 };
 
 /*

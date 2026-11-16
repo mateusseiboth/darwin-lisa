@@ -1,7 +1,8 @@
 #!/bin/sh
 # darwin-lisa: a kernel for the UniXNU GPU stack's tests (T2), on the SHARED xnu-work tree, the way periph-build.sh builds:
-#   - gpu-wire.py (copies kernel/drivers/gpu/hakios.gpu.cpp: the submit honours GPU_SUBMIT_BO_TRACK, no cache push for
-#     surfaces Turnip only names) and kernel-wire.py here (boot-arg gpu_hwcg=1: Linux's clock gating and bicubic weights);
+#   - display-wire.py (copies kernel/drivers/display/: boot-arg fb_settle_us=N, the swap waits for a frame's submission that came
+#     after it), then gpu-wire.py (copies kernel/drivers/gpu/hakios.gpu.cpp: the submit honours GPU_SUBMIT_BO_TRACK, and
+#     MiniIOSurfaceSettled; re-applies its edits to the display's file) and kernel-wire.py here (boot-arg gpu_hwcg=1);
 #   - the wires the tree already has (peripherals, display, ...) are left as they are: nothing is re-applied or reverted;
 #   - the whole run holds research/hackios-xnu-kernel/.build.lock; kernel26.nopac is never written;
 #   - before the copy the linked kernel must be newer than the start of the run, define every symbol in EXPECT and hold the
@@ -18,9 +19,9 @@ STAGE=$(mktemp -d "${TMPDIR:-/tmp}/unixnu-kernel.XXXXXX")
 trap 'rm -rf "$STAGE"' EXIT
 case "$NAME" in kernel26.nopac|*/*) echo "build-kernel: not $NAME" >&2; exit 2 ;; esac
 
-WIRES="$D/gpu/gpu-wire.py $D/gpu/unixnu/kernel-wire.py"
+WIRES="$D/display/display-wire.py $D/gpu/gpu-wire.py $D/gpu/unixnu/kernel-wire.py"
 EXPECT="_HakiosGPUStart _hakios_gpu_submit _hakios_gpu_parameter"
-STRINGS="gpu_hwcg=1: Linux's clock gating"
+STRINGS="gpu_hwcg=1: Linux's clock gating;came after the swap; waited for"
 
 cat > "$STAGE/inside.sh" <<'EOF'
 set -eu
@@ -50,7 +51,10 @@ for symbol in $EXPECT; do
 	llvm-nm "$LINKED" | grep -q " [TtDdSs] $symbol\$" || missing="$missing $symbol"
 done
 [ -z "$missing" ] || { echo "build-kernel: not in the linked kernel:$missing"; exit 1; }
-strings "$LINKED" | grep -qF "$STRINGS" || { echo "build-kernel: the linked kernel lacks the new code ($STRINGS)"; exit 1; }
+strings "$LINKED" > "$STAGE/strings"
+echo "$STRINGS" | tr ';' '\n' | while read -r text; do
+	grep -qF "$text" "$STAGE/strings" || { echo "build-kernel: the linked kernel lacks the new code ($text)"; exit 1; }
+done
 echo "build-kernel: linked kernel new, defines: $EXPECT"
 python3 "$PACSTRIP" strip "$KOUT/kernel.macho" "$KOUT/kernel.macho.nopac"
 python3 "$U/scripts/seal-source-crypto-kernel.py" "$KOUT/kernel.macho.nopac"

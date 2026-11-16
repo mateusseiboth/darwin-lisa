@@ -428,6 +428,26 @@ every swap's `tl: v ready shown done`, to see a frame's submission land after it
 `58bd61cde4258577ce3615278d0d7a6071c2a89578177ea05686960269006d36`, NOT written): int8 with AdrenoMetal `87a66399`
 (FailOnBinaryArchiveMiss dropped).
 
+**Kernel `kernel-16k-unixnu2.bak`** (sha256 `9dbfde4ff9dcfd983ddb38b17721ad7379dc0af94df17c8f65a47c6e7aea8e71`; `build-kernel.sh`
+now runs `display-wire.py` first, which also brings in the committed display fixes the shared tree lacked: one `hakios_display_init`
+and the one-start guard, so one IOAcceleratorES): unixnu1 plus boot-arg `fb_settle_us=N`, the fix of the swap/submit race if
+`gpu_log=1` confirms it. Before copying a swap's surfaces the framebuffer waits for their last submission so far (as before), then N
+microseconds more in which no new submission names them; each one that comes is waited for and counted
+(`MiniIOSurfaceSettled`, hakios.gpu.cpp; Turnip's adapter names every surface of its process in every submission, so a frame's
+own late submission is among them). The first 20 swaps that needed it print `swap N: K submission(s) naming surface S came after
+the swap; waited for`, which is also the confirmation. Default 0: unchanged. Suggested 2000 (the copy itself takes ~1.5 ms).
+
+**t3a (int8 + unixnu1).** Submit 0.346 ms a call in backboardd (2.1 before), buffers 323 / 252 MB and not growing, boot 50.6 swaps/s
+(36.9 in T2-B). The gestures changed nothing: the touches were posted (`tl: p`), backboardd had nothing to commit
+(`B26 work: 0 commits`), and the display got 2 swaps in the minute after +165 s. SpringBoard's RenderBox pipelines were all refused
+by `BinaryArchiveMiss` (uber, plane, path, accumulator: its own archives answered empty), so it drew nothing new; int9 makes them.
+New first problem: a heap with MTLResourceOptions 0x600200, private bits 21-22 over the defined ones, refused as undefined; the
+bridge now keeps the defined bits (cache 0-3, storage 4-7, hazard tracking 8-9) and drops the rest: int10.
+
+**Root int10** `userland-26/out/system-26.apfs.full-cd5a49c4` (sha256
+`cd5a49c409178c7ffb3d5f51b9208e22a947129ca2ebf98036d9b5457f19623e`, NOT written): int9 with AdrenoMetal `6aca30f8` (resource
+options).
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

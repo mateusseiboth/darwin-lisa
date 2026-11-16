@@ -78,6 +78,13 @@ static uint32_t gSwapShift;
 static uint32_t gSwapSize = SWAP_SIZE16;
 static TUNABLE(uint32_t, gSwapShiftArg, "fb_swapshift", 0x48);
 static TUNABLE(uint32_t, gSwapDump, "fb_swapdump", 2);
+/*
+ * boot-arg fb_settle_us=N (darwin-lisa, the UniXNU stack's T2): before a swap's surfaces are copied, wait N microseconds more
+ * during which no GPU submission names them (MiniIOSurfaceSettled, hakios.gpu.cpp); 0 (default): only their last submission so far.
+ * Against the bands of 240 rows: a frame copied while the GPU still stored its bins, its submission having come after the swap.
+ */
+static TUNABLE(uint32_t, gSettleUs, "fb_settle_us", 0);
+static uint32_t gLateSubmissions;       /* swaps whose frame's submission came after them (fb_settle_us) */
 #define SWAP_ID                 (0x50 + gSwapShift)
 #define SWAP_SURFACE(layer)     (0x54 + gSwapShift + 4 * (layer))       /* surface number, 0 = none */
 #define SWAP_SOURCE(layer)      (0x64 + gSwapShift + 16 * (layer))      /* x, y, width, height in the surface */
@@ -1446,9 +1453,19 @@ IOMobileFramebuffer::show(const uint8_t * swap, MiniIOSurface ** surfaces)
 	bool report;
 
 	for (unsigned layer = 0; layer < SWAP_LAYERS; layer++) {
-		if (surfaces[layer] != NULL && !MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS)) {
+		int late = 0;
+
+		if (surfaces[layer] == NULL) {
+			continue;
+		}
+		late = gSettleUs != 0 ? MiniIOSurfaceSettled(surfaces[layer], SWAP_GPU_MS, gSettleUs) :
+		    (MiniIOSurfaceDrawn(surfaces[layer], SWAP_GPU_MS) ? 0 : -1);
+		if (late < 0) {
 			IOLog("MiniIOMobileFramebuffer: swap %u: the GPU is not done with surface %u after %u ms; shown as it is\n",
 			    swapWord(swap, SWAP_ID), swapWord(swap, SWAP_SURFACE(layer)), SWAP_GPU_MS);
+		} else if (late > 0 && gLateSubmissions++ < 20) {
+			IOLog("MiniIOMobileFramebuffer: swap %u: %d submission(s) naming surface %u came after the swap; waited for (fb_settle_us=%u)\n",
+			    swapWord(swap, SWAP_ID), late, swapWord(swap, SWAP_SURFACE(layer)), gSettleUs);
 		}
 	}
 	fStatWaiting += mach_absolute_time() - began;
@@ -2200,6 +2217,14 @@ MiniIOSurfaceDrawn(__unused MiniIOSurface * surface, __unused uint64_t milliseco
 {
 	return true;
 }
+
+#ifndef HAKIOS_GPU      /* darwin-lisa: with the GPU the real one is iokit/Kernel/hakios.gpu.cpp */
+int
+MiniIOSurfaceSettled(__unused MiniIOSurface * surface, __unused uint64_t milliseconds, __unused uint32_t graceUs)
+{
+	return 0;
+}
+#endif
 
 extern "C" void hakios_display_init(void);
 

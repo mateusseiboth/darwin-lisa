@@ -243,6 +243,45 @@ gpuWait(uint32_t fence, uint64_t milliseconds)
 	return false;
 }
 
+/*
+ * darwin-lisa (the UniXNU stack): MiniIOSurfaceDrawn(), then graceUs more without a new submission naming the surface, each one
+ * that comes waited for. Turnip's adapter names every surface of its process in every submission, so the frame's own submission
+ * is among them when it comes after the swap (MiniIOSurface.h). The count of late ones; -1 on a timeout.
+ */
+int
+MiniIOSurfaceSettled(MiniIOSurface * surface, uint64_t milliseconds, uint32_t graceUs)
+{
+	uint64_t began = mach_absolute_time(), grace, limit, quiet;
+	uint32_t seen;
+	int late = 0;
+
+	if (!MiniIOSurfaceDrawn(surface, milliseconds)) {
+		return -1;
+	}
+	nanoseconds_to_absolutetime((uint64_t) graceUs * NSEC_PER_USEC, &grace);
+	nanoseconds_to_absolutetime(milliseconds * NSEC_PER_MSEC, &limit);
+	seen = surface->drawn;
+	quiet = mach_absolute_time();
+	for (;;) {
+		uint64_t now;
+
+		if (surface->drawn != seen) {
+			seen = surface->drawn;
+			late++;
+			if (!MiniIOSurfaceDrawn(surface, milliseconds)) {
+				return -1;
+			}
+			quiet = mach_absolute_time();
+		}
+		now = mach_absolute_time();
+		if (now - quiet >= grace || now - began >= limit) {
+			break;
+		}
+		delay_for_interval(100, NSEC_PER_USEC);
+	}
+	return late;
+}
+
 bool
 MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds)
 {

@@ -165,6 +165,12 @@ void            MiniIOSurfaceCost(uint32_t * made, uint64_t * making, uint32_t *
 void            MiniIOSurfaceClearKept(void);
 /* Wait, for so many milliseconds at most, until the GPU is done with a surface's pixels (hakios.gpu.cpp). */
 bool            MiniIOSurfaceDrawn(MiniIOSurface * surface, uint64_t milliseconds);
+/*
+ * As MiniIOSurfaceDrawn(), then for graceUs more during which no new submission names the surface (each that does is waited for):
+ * a frame whose submission reaches the GPU driver after its swap (the UniXNU stack's Turnip schedules submissions on a thread of
+ * its own) is not copied while the GPU still writes it. Returns how many such late submissions it waited for; -1 on a timeout.
+ */
+int             MiniIOSurfaceSettled(MiniIOSurface * surface, uint64_t milliseconds, uint32_t graceUs);
 MiniIOSurface * MiniIOSurfaceCreateSimple(uint32_t width, uint32_t height, uint32_t pixelFormat);
 void            MiniIOSurfaceDrop(MiniIOSurface * surface);
 /* A Mach send right for the surface in the task (what IOSurfaceCreateMachPort gives); 0 on failure. */

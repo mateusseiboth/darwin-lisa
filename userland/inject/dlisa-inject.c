@@ -1093,30 +1093,33 @@ isSameValue(CFPropertyListRef kept, CFStringRef wanted)
 	return kept == NULL || wanted == NULL ? kept == (CFPropertyListRef)wanted : CFEqual(kept, wanted);
 }
 
+/*
+ * The value is set in this process at once, before UIKit makes its first status bar, and handed to cfprefsd (the
+ * data volume) on the side: the first start with a new value already uses it, every later one reads it from there.
+ */
 static void
-saveStatusBarProvider(void)
+saveStatusBarProvider(const char *provider, const char *source)
 {
-	const char *provider = findStatusBarProvider(readBootArgs());
+	CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
+	CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
+	bool same = isSameValue(kept, wanted);
 
+	if (!same) {
+		CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
+	}
 	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-		CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
-		CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
-		bool same = isSameValue(kept, wanted);
-		bool saved = same;
+		bool saved = same || CFPreferencesAppSynchronize(UIKIT_DOMAIN);
 
-		if (!same) {
-			CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
-			saved = CFPreferencesAppSynchronize(UIKIT_DOMAIN);
-		}
-		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s)\n", getprogname(),
-		    provider != NULL ? provider : "none, UIKit chooses", same ? "already so" : saved ? "saved" : "NOT saved");
-		if (kept != NULL) {
-			CFRelease(kept);
-		}
-		if (wanted != NULL) {
-			CFRelease(wanted);
-		}
+		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s, from %s)\n",
+		    getprogname(), provider != NULL ? provider : "none, UIKit chooses",
+		    same ? "already so" : saved ? "saved" : "NOT saved", source);
 	});
+	if (kept != NULL) {
+		CFRelease(kept);
+	}
+	if (wanted != NULL) {
+		CFRelease(wanted);
+	}
 }
 
 /* What the choice is made from, once UIKit is up: MobileGestalt, SpringBoard's screen type, UIScreen, UIKit's own pick */
@@ -1198,6 +1201,22 @@ readOwnSplitProvider(id screen)
 	return chosen != Nil ? class_getName(chosen) : "none (rdar:45025538)";
 }
 
+/*
+ * The width UIScreen really has (the boot-args are only what it should be): when its split bar is another, that one
+ * is saved, for the next start (UIKit has made its bars by now). dlisa_sbprov=0 is left alone.
+ */
+static void
+correctStatusBarProvider(double nativeWidth)
+{
+	const char *wanted = findStatusBarProviderForWidth((long)(nativeWidth + 0.5));
+	const char *fromBootArgs = findStatusBarProvider(readBootArgs());
+
+	if (fromBootArgs == NULL || wanted == NULL || strcmp(wanted, fromBootArgs) == 0) {
+		return;
+	}
+	saveStatusBarProvider(wanted, "the screen's width, for the next start");
+}
+
 static void
 sayScreenFacts(void)
 {
@@ -1215,12 +1234,13 @@ sayScreenFacts(void)
 	    native.width, native.height, readDouble(screen, "_nativeScale"), readDouble(screen, "_displayCornerRadius"),
 	    notch != nil ? class_getName(object_getClass(notch)) : "none", cut.x, cut.y, cut.width, cut.height,
 	    readOwnSplitProvider(screen));
+	correctStatusBarProvider(native.width);
 }
 
 static void
 startStatusBarFix(void)
 {
-	saveStatusBarProvider();
+	saveStatusBarProvider(findStatusBarProvider(readBootArgs()), "the boot-args");
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SCREEN_FACTS_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		sayScreenFacts();
 	});

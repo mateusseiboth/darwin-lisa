@@ -415,3 +415,26 @@ Rollback:
   Split1125 again at its start.
 - `dlisa_sbprov=0` on a boot of this root removes the key.
 
+
+### Root int3 (2026-11-16): the combined test root with HEAD's libdlisa
+
+The root is `userland-26/out/system-26.apfs.full-int3`, sha256
+`122a0d5c02d8f1dceca3eae0a92d3da9764d0261aa1e99dbabc4187ceb28d7f4`, 4,999,610,368 B. Not written.
+
+- **Base.** It is int2 (`517468c1`) with only libdlisa changed: fab777af becomes HEAD's **7249bc09** (HEAD 1963144,
+  `userland/inject` equal to f408bc4).
+  - That libdlisa carries the status bar fix of part 4, the text probe, the inert virtual BT and torch.
+  - It was rebuilt from `git archive HEAD` at the canonical path and is deterministic: the working tree builds the same.
+  - `sh userland/inject/test/run-tests.sh`: 11 files, 0 failures.
+  - The 71948b30 quoted earlier was a working tree in the middle of another worker's commit. HEAD now builds 7249bc09.
+- **How it was built.**
+  - int2's own files were found by a size diff of every regular file of the image against `out/sysroot-26`, plus
+    launchd (same size).
+  - Those files were then taken from int2: ld-groups 2beca308, conf e0704957, HakiosMetal glass11 9e29ff9c,
+    InterfaceNamer `Info.plist` aa6f1292, libdlisa-motion d948f0d5, launchd dbeb1522.
+  - Hard-link copy of the sysroot (deleted after; the shared sysroot is untouched), `mkapfs.py -z` with
+    `extract/system.manifest`, padded to 32 MiB.
+- **Read back.** The seven files above. The same size diff against the sysroot lists the same six files as int2. 61212
+  files, 24194 directories, 821 symlinks.
+- **The conf stays int2's e0704957.** HEAD's `dlisa-inject.conf` (440 B) has more entries; they are not in this root.
+- `system-26.apfs.full-f1132de1` was deleted. int2 is kept.

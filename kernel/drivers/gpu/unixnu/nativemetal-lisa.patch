@@ -1,5 +1,5 @@
 diff --git a/NativeAdrenoMetalPlugin.mm b/NativeAdrenoMetalPlugin.mm
-index 3a4c01e..2bdb81a 100644
+index 3a4c01e..3f87da4 100644
 --- a/NativeAdrenoMetalPlugin.mm
 +++ b/NativeAdrenoMetalPlugin.mm
 @@ -47,9 +47,7 @@ static bool requestedPath(const char *name, char *path, size_t size) {
@@ -72,7 +72,7 @@ index 3a4c01e..2bdb81a 100644
          if (Gpu *gpu = stateExport ? nullptr : makeGpu(port)) {
              pthread_t exporter;
              if (pthread_create(&exporter, nullptr, [](void *arg) -> void * {
-@@ -527,16 +542,15 @@ static id deviceForPort(unsigned port) {
+@@ -527,23 +542,39 @@ static id deviceForPort(unsigned port) {
          // already in the environment wins either way (mtltest picks its own per launch). Without sysmem Turnip
          // chooses per render pass between on-chip tiles (GMEM) and memory (its autotune), its default on other
          // Adrenos; nocb keeps concurrent binning off (gen8 BV/BR stalls seen elsewhere, not yet understood here).
@@ -97,8 +97,33 @@ index 3a4c01e..2bdb81a 100644
          static bool told;
          if (!told) {
              told = true;
+             NSLog(@"pandora-metal TU_DEBUG=%s", getenv("TU_DEBUG"));
+         }
+     }
+-    if (port) return publish::clientDevice(port);
++    // darwin-lisa: ONE device per process. Our kernel publishes two IOAcceleratorES services (the framebuffer started twice,
++    // gpu-probe-1551), Metal asks each, and Metal 26 aborts in MTLCreateSystemDefaultDevice ("doesn't know what to do with more
++    // than one device", T1-A: backboardd 14 times). The first port's device is the process's; another port gets nil, which
++    // Metal skips (as HakiosMetal's deviceInit does).
++    static id onlyDevice;
++    static unsigned onlyPort;
++    if (port && onlyDevice) {
++        NSLog(@"gpu2-metal: accelerator port %u: this process has its device already (port %u); this service gives none", port, onlyPort);
++        return nil;
++    }
++    if (port) {
++        id made = publish::clientDevice(port);
++        if (made) {
++            onlyDevice = made;
++            onlyPort = port;
++        }
++        return made;
++    }
+     static bool attempted;
+     if (attempted) return nil;
+     attempted = true;
 diff --git a/NativeBridgeMetalFrontend.mm b/NativeBridgeMetalFrontend.mm
-index 4912cfd..cf35b27 100644
+index 4912cfd..b25a7cd 100644
 --- a/NativeBridgeMetalFrontend.mm
 +++ b/NativeBridgeMetalFrontend.mm
 @@ -423,7 +423,7 @@ static std::unordered_map<std::string,int64_t> *gBigCallers;
@@ -110,3 +135,31 @@ index 4912cfd..cf35b27 100644
    snprintf(item,sizeof item,"%s%s+%lx",kept?" ":"",name,(unsigned long)((uintptr_t)frames[i]-(uintptr_t)info.dli_fbase));out+=item;kept++;}
   return out;
  }
+@@ -2701,13 +2701,26 @@ static uint64_t askAnswer(SEL cmd,NSUInteger arg) {
+ static NSUInteger countArgAnswer(id,SEL cmd,NSUInteger arg) {return (NSUInteger)askAnswer(cmd,arg);}
+ static BOOL flagArgAnswer(id,SEL cmd,NSUInteger arg) {return askAnswer(cmd,arg)!=0;}
+ static BOOL deviceResolve(id cls,SEL,SEL sel) {return nbAddDefault((Class)cls,sel);}
++// darwin-lisa: the private counts and flags the runtime leaves to Metal's own answer (PrivateAnswer::Metal: no Vulkan limit or
++// document says what they promise), answered for the Adreno 642L instead of left out (T1-A: six "no device answer" lines a process).
++// gpuCoreCount: the A635's two shader processors (freedreno_devices.py); maxComputeThreadgroupMemory: what a threadgroup really
++// gets here, turnip's maxComputeSharedMemorySize, not Apple's 64 KiB; maxVertexAmplificationCount: Metal's 2; and no to large
++// MRT, compressed texture writes from kernels and conditional load/store actions, none of which this device has.
++static bool lisaAnswer(const char *name,uint64_t *value) {
++ static const struct {const char *name;uint64_t value;} table[]={
++  {"gpuCoreCount",2},{"maxVertexAmplificationCount",2},{"maxComputeThreadgroupMemory",32768},
++  {"isLargeMRTSupported",0},{"supportsComputeCompressedTextureWrite",0},{"supportsConditionalLoadStore",0},
++ };
++ for(const auto &t:table)if(!strcmp(t.name,name)){*value=t.value;return true;}
++ return false;
++}
+ static void installAnswers(Class cls) {
+  uint32_t kind=0;
+  for(size_t i=0;const char *name=nmb_device_answer_selector(i,&kind);i++) {
+   SEL sel=sel_registerName(name);uint64_t value=0;
+   switch(kind) {
+   case NMB_ANSWER_COUNT: case NMB_ANSWER_FLAG:
+-   if(!nmb_device_answer(gDevice,name,0,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
++   if(!nmb_device_answer(gDevice,name,0,&value) && !lisaAnswer(name,&value)){NBLOG(@"native-metal: no device answer: %@",lastError());continue;}
+    // Extended-range 10-bit (XR10) framebuffers are withheld: this display chain presents 8-bit BGRX scanout only. The render server picks its
+    // wide-gamut 64-bit (and Apple-compressed) framebuffer when a device offers them, and the display driver could not show it (int-089: the
+    // swap's surface was '&w4a', 8 bytes per pixel, and every swap was refused).

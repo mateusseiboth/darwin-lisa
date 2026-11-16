@@ -337,6 +337,8 @@ now needs glslang for its fp64 library).
   four, census 61,218 files (9a91ed47 + 5), 24,195 directories, 821 symlinks, 15,961 checksums, 0 bad. It replaces
   5c001ebc and the first T1 root b915770a (both deleted); 31401b2b is kept.
 
+**T1-A on int5 (2026-11-16): failed, fixed in int6.** The stack came up in backboardd (the accelerator named AdrenoMetal, turnip opened the A642L over HakiosGPU, submissions ran, no GPU hang), then Metal aborted: `MTLCreateSystemDefaultDevice doesn't know what to do with more than one device`, 14 times. Our kernel publishes two IOAcceleratorES (the framebuffer started twice, known since gpu-probe-1551; HakiosMetal answers nil for the second port), and AdrenoMetal made a device for each port (`backboardd has a device` twice). `nativemetal-lisa.patch` now keeps the first port's device and gives nil for any other. It also answers the six private properties the runtime leaves to Metal's own value (`PrivateAnswer::Metal`), which printed `no device answer` and were left unimplemented: gpuCoreCount 2 (the A635's two SPs), maxVertexAmplificationCount 2, maxComputeThreadgroupMemory 32768 (turnip's shared memory, not Apple's 64 KiB), isLargeMRTSupported, supportsComputeCompressedTextureWrite and supportsConditionalLoadStore no. Root int6 `2b1bf7d9`. `metal_test` printed nothing because nothing starts it on a UI line: it runs from `init_run=/usr/local/bin/gputest`, which replaces usermanagerd, so it is a run of its own.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

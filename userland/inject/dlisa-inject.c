@@ -95,6 +95,9 @@
 #include "torch-level.c"
 #include "touch-slots.c"
 #include "trait-names.c"
+#include "sound-test.c"
+
+static void startSoundTest(void);      /* audio-probe.c */
 
 _Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
 
@@ -1440,6 +1443,7 @@ fixSpringBoard(void)
 	setForceNoBuddy();
 	startStatusBarFix();
 	withKernelFlashlight();
+	startSoundTest();
 	unlockMode = bootArgNumber("dlisa_unlock");
 	if (unlockMode != 0) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_FIRST_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{

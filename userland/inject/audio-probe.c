@@ -46,3 +46,71 @@ fixAudiomxd(void)
 		sayAudioIdentity();
 	});
 }
+
+/* ---- dlisa_sndtest (sound-test.c), in SpringBoard ---------------------------------------------------------------- */
+
+typedef uint32_t SystemSoundIDForTest;
+
+static void
+playSoundTestStep(const struct soundTestStep *step)
+{
+	void *toolbox = dlopen("/System/Library/Frameworks/AudioToolbox.framework/AudioToolbox", RTLD_NOW);
+	int32_t (*create)(CFURLRef, SystemSoundIDForTest *) = toolbox != NULL ?
+	    (int32_t (*)(CFURLRef, SystemSoundIDForTest *))dlsym(toolbox, "AudioServicesCreateSystemSoundID") : NULL;
+	void (*play)(SystemSoundIDForTest, void (^)(void)) = toolbox != NULL ?
+	    (void (*)(SystemSoundIDForTest, void (^)(void)))dlsym(toolbox, "AudioServicesPlaySystemSoundWithCompletion") : NULL;
+	char path[128];
+	CFURLRef url;
+	SystemSoundIDForTest sound = 0;
+	int32_t status;
+	uint64_t began = mach_absolute_time();
+
+	soundTestPath(step->sound, path, sizeof(path));
+	if (create == NULL || play == NULL) {
+		say("dlisa[%s]: sndtest: AudioToolbox not usable here (%s)\n", getprogname(), dlerror());
+		return;
+	}
+	url = CFURLCreateFromFileSystemRepresentation(NULL, (const UInt8 *)path, (CFIndex)strlen(path), false);
+	status = url != NULL ? create(url, &sound) : -1;
+	if (url != NULL) {
+		CFRelease(url);
+	}
+	if (status != 0) {
+		say("dlisa[%s]: sndtest: %s: AudioServicesCreateSystemSoundID: %d%s\n", getprogname(), path, status,
+		    access(path, R_OK) == 0 ? "" : " (no such file)");
+		return;
+	}
+	say("dlisa[%s]: sndtest: playing %s (system sound %u)\n", getprogname(), path, sound);
+	play(sound, ^{
+		mach_timebase_info_data_t base;
+
+		mach_timebase_info(&base);
+		say("dlisa[%s]: sndtest: %s done after %llu ms (the system sound server's completion)\n", getprogname(), step->sound,
+		    (mach_absolute_time() - began) * base.numer / base.denom / 1000000ull);
+	});
+}
+
+static void
+startSoundTest(void)
+{
+	static struct soundTestStep steps[SOUND_TEST_STEPS];
+	char arguments[1024];
+	size_t size = sizeof(arguments) - 1;
+	unsigned n;
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
+		return;
+	}
+	arguments[size] = 0;
+	n = parseSoundTest(arguments, steps);
+	for (unsigned i = 0; i < n; i++) {
+		const struct soundTestStep *step = &steps[i];
+
+		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)step->seconds * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+			playSoundTestStep(step);
+		});
+	}
+	if (n > 0) {
+		say("dlisa[%s]: sndtest: %u sound(s) to play, the first %u s from now\n", getprogname(), n, steps[0].seconds);
+	}
+}

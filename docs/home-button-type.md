@@ -515,3 +515,35 @@ for.
 **Recommendation.** Keep 1080x2400 1:1 with this notch fix for now. Option C is the right target once the display
 scaling is in hardware.
 
+
+### Root for part 5 (built 2026-11-16, NOT written)
+
+| Piece | What | sha256 |
+|---|---|---|
+| `userland-26/out/libdlisa-sbnotch/libdlisa.dylib` | HEAD cca541f: the text probe 6f369e6 + this notch fix, from `git archive` at the canonical path. `run-tests.sh`: 11 files, 0 failures | `c8b291b83221f32ca34e26af66bed8b0e26e774e3427225d5ce817f01046c8b5` |
+| root `userland-26/out/system-26.apfs.full-31401b2b` | 9a91ed47 with only libdlisa changed (7249bc09 -> c8b291b8). Hard-link copy of `out/sysroot-26` with 9a91ed47's own files: ld-groups 2beca308, conf b6d0f0b4, HakiosMetal 9e29ff9c, InterfaceNamer aa6f1292, libdlisa-motion d948f0d5, launchd dbeb1522, `usr/sbin/bluetoothd` aaa02518 (0755). Then `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB. Copy deleted, shared sysroot untouched. Read back: the eight files. A size diff of every regular file against the sysroot gives the same list as 9a91ed47's. 61213 files, 24194 directories, 821 symlinks, 4,999,610,368 B | `31401b2b5701299945d4c35d18d96aa98f99525f698adea7d751c68ce1479939` |
+
+Test (vendor_boot final19-hbt; KERNEL as ctl2). The line is 452 characters:
+
+```sh
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-31401b2b    # reads back 31401b2b
+KERNEL=<ctl2's> bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh ctl3 "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 cpus=4 dlisa_uiprobe=1 sensors_hid=0 touch_seq=tap:56800:5600@190,cc@260,up@290" "150 215 245 275 305"; bash darwin-lisa/tools/bootos.sh pmos
+grep -a -E "dlisa\[[A-Za-z]+\]: (status bar|screen)|sb_thisDeviceDisplayShape|_UIStatusBarVisualProvider_Split visualProvider" research/hackios-xnu-kernel/logs/ctl3-end.log
+```
+
+Pass:
+1. SpringBoard logs `+[UISDisplaySingleRectShape sb_thisDeviceDisplayShape] replaced` and then `status bar: notch
+   96.48,0.00 167.04x35.84 instead of SpringBoard's 70.83,0.00 178.35x25.60 (what
+   _UIStatusBarVisualProvider_Split1080_Wide wants)`.
+2. The second `screen:` line has `notch ... 96.48,0.00 167.04x35.84; UIKit's own split bar:
+   _UIStatusBarVisualProvider_Split1080_Wide`. That is UIKit's own match, no fallback.
+3. No `UIKit found no split bar for this screen` line. If one appears, the fallback carried the bar in that process and
+   the notch did not reach it.
+4. Every capture (home at +150, Settings at +215, Control Center at +275, home at +305): time at the top left, battery
+   and Wi-Fi at the top right, no "rdar:45025538".
+5. `status bar: com.apple.UIKit UIStatusBarVisualProviderClassName removed (saved)` appears once, from the old key.
+
+The text probe's own lines (Settings) are read as its worker says.
+
+Rollback: `tools/flash-root.sh userland-26/out/system-26.apfs.full-9a91ed47`. Nothing on darwin_var depends on the
+change.

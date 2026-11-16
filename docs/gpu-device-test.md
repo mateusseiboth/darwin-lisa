@@ -43,13 +43,15 @@ experiment for (1)), a memoryless attachment past 0 that begins DontCare is clea
 plug-in draws as glass9 (same compiled-stage cache key: the core patch changes no stage). Host: 266 tests, the same 14
 failed checks as before the patch.
 
-Root `userland-26/out/system-26.apfs.full-a84f8896` (4,999,610,368 B): 2ef33580 with only `HakiosMetal` changed
-(hard-link copy of `out/sysroot-26` with this plug-in and libdlisa ef2a85a2, `mkapfs.py -z` with
-`extract/system.manifest`, copy deleted). Read back: the same 86227 entries as 2ef33580, HakiosMetal 1b8438cd, libdlisa
-ef2a85a2, Info.plist 3769fa7f, dlisa-inject.conf 86a53398; 442 blocks of 4096 differ from 2ef33580. NOT written.
+Root `userland-26/out/system-26.apfs.full-a5d72c6a` (sha256 `a5d72c6ab5b3c80b...`, 4,999,610,368 B): int1 (cbfcec90)
+with HakiosMetal 1b8438cd and libdlisa 174255e0 (HEAD 8e30b5c: int1's 649341e3 plus the status bar choice,
+`dlisa_sbprov`; built from `git archive 8e30b5c` with build-inject.sh's command, which rebuilds 649341e3 byte for byte
+from f366af0). Hard-link copy of `out/sysroot-26` with int1's launchd dbeb1522, dlisa-inject.conf dd9abccb,
+InterfaceNamer aa6f1292 and those two, `mkapfs.py -z` with `extract/system.manifest`, copy deleted. Read back: the same
+86227 entries as cbfcec90, Info.plist 3769fa7f, ld-groups 820c3683, metal_test dd0bddc5. NOT written. (A first build
+on 2ef33580, a84f8896, was deleted unused.)
 
-The run (one trip, root a84f8896; Settings may open without text on this base, see Session 11 part 2; the Control
-Center carries the clip as well):
+The run (one trip, root a5d72c6a, beside int1-a/b; the Control Center carries the clip as well):
 
 ```sh
 B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
@@ -66,7 +68,7 @@ the `so far` counts (a fetch fallback named `fixed_frag_lph_cph reads [[color(1)
 `fixed_vert_lph_spc buffer 3` beside 53=1 vertex constants is cause (3)). Pass for the fix: Settings (+215: switch
 track and knob, card corners) and the Control Center (+260/275: the slider fills inside their pills, no square behind
 AirPlay) right in both A and B, or in C where A/B were wrong (then cause (1) and the clear goes in by default, sized to
-what the trace says). Rollback: 2ef33580.
+what the trace says). Rollback: cbfcec90 or 2ef33580.
 
 ## Session 14 (2026-11-16, host only): 7 cores against 4, the 5 s window, and an idle loop that leaves the A78s alone
 

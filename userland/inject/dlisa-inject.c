@@ -28,9 +28,13 @@
  *       dlisa_unlock=1 unlocks once at boot (=2: again whenever it locks), dlisa_noidle=1 holds an idle timer
  *       assertion (no auto-lock or dimming: Settings' "Auto-Lock: Never"), dlisa_watchdog=N scales FrontBoard's
  *       launch watchdog by N (apps are slow to start here). App snapshots are JPEG/PNG, not ASTC (HakiOS 16.5's fix).
- *       The status bar: com.apple.UIKit's UIStatusBarVisualProviderClassName gets the split bar made for the display's
- *       width (status-bar.c; dlisa_sbprov=0 takes it out), and 30 s in, two "screen:" lines say what UIKit chooses from
+ *       The status bar: the display context's notch is the one the split bar of the display's width wants
+ *       (status-bar.c; dlisa_sbprov=0 leaves it), and 30 s in, two "screen:" lines say what UIKit chooses from
  *       (artwork, home button type, SpringBoard's screen type, UIScreen's sizes and notch, UIKit's own pick).
+ *
+ *   every program with UIKit
+ *       +[_UIStatusBarVisualProvider_Split visualProviderSubclassForScreen:...] answers the split bar of the display's
+ *       width when UIKit found none (no "rdar:45025538" status bar).
  *
  *   containermanagerd (both of them)
  *       It asks the user manager for the "personas" of the user. This port has no data volume, no keybag and
@@ -1077,49 +1081,36 @@ readBootArgs(void)
 }
 
 /*
- * The status bar (docs/home-button-type.md, part 3). UIKit picks a split bar by the display's native width and the
- * notch SpringBoard hands it, and found none here: "rdar:45025538" stood in for the time, battery and Wi-Fi. It
- * reads com.apple.UIKit's UIStatusBarVisualProviderClassName first for the embedded screen ("WARNING: Using
- * overridden status bar visual provider class"), so SpringBoard writes there the split bar made for the display's
- * width (status-bar.c), through cfprefsd, for every app of the user. dlisa_sbprov=0 takes it out again.
+ * The status bar (docs/home-button-type.md, part 5). UIKit takes a split bar when its native width and its notch
+ * match the screen's: on this 1080 x 2400 at 3 (lisa=1) SpringBoard falls back to "iPhone X (D22, Zoomed)", whose
+ * notch fits no split bar, and "rdar:45025538" stood in for the time, battery and Wi-Fi (com.apple.UIKit's
+ * UIStatusBarVisualProviderClassName, parts 3 and 4, is not honoured on this path). So:
+ *   - SpringBoard hands every process the notch the split bar of the display's width wants (status-bar.c,
+ *     computeSplitNotch): +[UISDisplaySingleRectShape sb_thisDeviceDisplayShape], the exclusion area of the display
+ *     context apps get. UIKit then picks that split bar by itself, in every app.
+ *   - and wherever this library is, +[_UIStatusBarVisualProvider_Split visualProviderSubclassForScreen:...] answers
+ *     that split bar when UIKit found none.
+ * dlisa_sbprov=0 leaves both alone.
  */
 #define UIKIT_DOMAIN                    CFSTR("com.apple.UIKit")
 #define STATUS_BAR_PROVIDER_KEY         CFSTR("UIStatusBarVisualProviderClassName")
 #define SCREEN_FACTS_SECONDS            30
 
-static bool
-isSameValue(CFPropertyListRef kept, CFStringRef wanted)
-{
-	return kept == NULL || wanted == NULL ? kept == (CFPropertyListRef)wanted : CFEqual(kept, wanted);
-}
-
-/*
- * The value is set in this process at once, before UIKit makes its first status bar, and handed to cfprefsd (the
- * data volume) on the side: the first start with a new value already uses it, every later one reads it from there.
- */
+/* parts 3 and 4 wrote that key; it does nothing here and goes */
 static void
-saveStatusBarProvider(const char *provider, const char *source)
+removeStatusBarProviderKey(void)
 {
-	CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
-	CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
-	bool same = isSameValue(kept, wanted);
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+		CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
 
-	if (!same) {
-		CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
-	}
-	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-		bool saved = same || CFPreferencesAppSynchronize(UIKIT_DOMAIN);
-
-		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s, from %s)\n",
-		    getprogname(), provider != NULL ? provider : "none, UIKit chooses",
-		    same ? "already so" : saved ? "saved" : "NOT saved", source);
-	});
-	if (kept != NULL) {
+		if (kept == NULL) {
+			return;
+		}
 		CFRelease(kept);
-	}
-	if (wanted != NULL) {
-		CFRelease(wanted);
-	}
+		CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, NULL, UIKIT_DOMAIN);
+		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName removed (%s)\n", getprogname(),
+		    CFPreferencesAppSynchronize(UIKIT_DOMAIN) ? "saved" : "NOT saved");
+	});
 }
 
 /* What the choice is made from, once UIKit is up: MobileGestalt, SpringBoard's screen type, UIScreen, UIKit's own pick */
@@ -1145,6 +1136,92 @@ static double
 readDouble(id object, const char *selector)
 {
 	return isAnswering(object, selector) ? ((double (*)(id, SEL))objc_msgSend)(object, sel_registerName(selector)) : 0;
+}
+
+typedef struct {
+	double width, height;
+} DlisaSize;
+
+static Class (*origSplitSubclass)(Class, SEL, id, id);
+
+/* the split bar for the display's width, or Nil (dlisa_sbprov=0, a width with none, a UIKit without it) */
+static Class
+findSplitProviderClass(void)
+{
+	const char *name = findStatusBarProvider(readBootArgs());
+
+	return name != NULL ? objc_getClass(name) : Nil;
+}
+
+static Class
+splitSubclassOrOurs(Class self, SEL selector, id screen, id info)
+{
+	static int said;
+	Class chosen = origSplitSubclass(self, selector, screen, info);
+	Class ours = chosen == Nil ? findSplitProviderClass() : Nil;
+
+	if (ours != Nil && said++ < 2) {
+		say("dlisa[%s]: status bar: UIKit found no split bar for this screen; %s it is\n", getprogname(), class_getName(ours));
+	}
+	return chosen != Nil ? chosen : ours;
+}
+
+/* in every program that has UIKit */
+static void
+fixSplitStatusBar(void)
+{
+	if (objc_getClass("_UIStatusBarVisualProvider_Split") == Nil || findSplitProviderClass() == Nil) {
+		return;
+	}
+	origSplitSubclass = (Class (*)(Class, SEL, id, id))replaceMethod('+', "_UIStatusBarVisualProvider_Split",
+	    "visualProviderSubclassForScreen:visualProviderInfo:", (IMP)splitSubclassOrOurs);
+}
+
+/* SpringBoard: the notch of the split bar for the display's width, for the display context of every process */
+static id (*origDisplayShape)(id, SEL);
+
+static id
+makeSplitNotchShape(id original)
+{
+	Class split = findSplitProviderClass(), shape = objc_getClass("UISDisplaySingleRectShape");
+	const char *line = readBootArgs();
+	SEL notchSize = sel_registerName("notchSize"), reference = sel_registerName("referenceScreenScale");
+	DlisaSize size;
+	DlisaNotch notch;
+	DlisaRect was = readRect(original, "rect");
+
+	if (split == Nil || shape == Nil || class_getClassMethod(split, notchSize) == NULL) {
+		return original;
+	}
+	size = ((DlisaSize (*)(Class, SEL))objc_msgSend)(split, notchSize);
+	notch = computeSplitNotch((double)readDisplayWidth(line), (double)readDisplayScale(line), size.width, size.height,
+	    class_getClassMethod(split, reference) != NULL ? ((double (*)(Class, SEL))objc_msgSend)(split, reference) : 0);
+	say("dlisa[%s]: status bar: notch %.2f,%.2f %.2fx%.2f instead of SpringBoard's %.2f,%.2f %.2fx%.2f (what %s wants)\n",
+	    getprogname(), notch.x, notch.y, notch.width, notch.height, was.x, was.y, was.width, was.height, class_getName(split));
+	return ((id (*)(id, SEL, DlisaNotch))objc_msgSend)(((id (*)(Class, SEL))objc_msgSend)(shape, sel_registerName("alloc")),
+	    sel_registerName("initWithRect:"), notch);
+}
+
+static id
+displayShapeForSplitBar(id self, SEL selector)
+{
+	static id shape;
+	static dispatch_once_t once;
+
+	dispatch_once(&once, ^{
+		shape = makeSplitNotchShape(origDisplayShape(self, selector));
+	});
+	return shape;
+}
+
+static void
+fixSpringBoardNotch(void)
+{
+	if (findSplitProviderClass() == Nil) {
+		return;
+	}
+	origDisplayShape = (id (*)(id, SEL))replaceMethod('+', "UISDisplaySingleRectShape", "sb_thisDeviceDisplayShape",
+	    (IMP)displayShapeForSplitBar);
 }
 
 static long
@@ -1195,26 +1272,11 @@ readOwnSplitProvider(id screen)
 {
 	Class split = objc_getClass("_UIStatusBarVisualProvider_Split");
 	SEL choose = sel_registerName("visualProviderSubclassForScreen:visualProviderInfo:");
-	Class chosen = split != Nil && screen != nil && class_getClassMethod(split, choose) != NULL ?
-	    ((Class (*)(Class, SEL, id, id))objc_msgSend)(split, choose, screen, nil) : Nil;
+	Class (*own)(Class, SEL, id, id) = origSplitSubclass != NULL ? origSplitSubclass :
+	    split != Nil && class_getClassMethod(split, choose) != NULL ? (Class (*)(Class, SEL, id, id))objc_msgSend : NULL;
+	Class chosen = own != NULL && screen != nil ? own(split, choose, screen, nil) : Nil;
 
 	return chosen != Nil ? class_getName(chosen) : "none (rdar:45025538)";
-}
-
-/*
- * The width UIScreen really has (the boot-args are only what it should be): when its split bar is another, that one
- * is saved, for the next start (UIKit has made its bars by now). dlisa_sbprov=0 is left alone.
- */
-static void
-correctStatusBarProvider(double nativeWidth)
-{
-	const char *wanted = findStatusBarProviderForWidth((long)(nativeWidth + 0.5));
-	const char *fromBootArgs = findStatusBarProvider(readBootArgs());
-
-	if (fromBootArgs == NULL || wanted == NULL || strcmp(wanted, fromBootArgs) == 0) {
-		return;
-	}
-	saveStatusBarProvider(wanted, "the screen's width, for the next start");
 }
 
 static void
@@ -1234,13 +1296,13 @@ sayScreenFacts(void)
 	    native.width, native.height, readDouble(screen, "_nativeScale"), readDouble(screen, "_displayCornerRadius"),
 	    notch != nil ? class_getName(object_getClass(notch)) : "none", cut.x, cut.y, cut.width, cut.height,
 	    readOwnSplitProvider(screen));
-	correctStatusBarProvider(native.width);
 }
 
 static void
 startStatusBarFix(void)
 {
-	saveStatusBarProvider(findStatusBarProvider(readBootArgs()), "the boot-args");
+	removeStatusBarProviderKey();
+	fixSpringBoardNotch();
 	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SCREEN_FACTS_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
 		sayScreenFacts();
 	});
@@ -2314,6 +2376,7 @@ dlisaInjectInit(void)
 	copyLogToConsole();
 	startUiProbe();
 	startLaunchProbe();
+	fixSplitStatusBar();
 
 	for (size_t i = 0; i < sizeof(FIXES) / sizeof(FIXES[0]); i++) {
 		if (strcmp(name, FIXES[i].program) == 0) {

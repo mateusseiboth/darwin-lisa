@@ -438,3 +438,80 @@ The root is `userland-26/out/system-26.apfs.full-int3`, sha256
   files, 24194 directories, 821 symlinks.
 - **The conf stays int2's e0704957.** HEAD's `dlisa-inject.conf` (440 B) has more entries; they are not in this root.
 - `system-26.apfs.full-f1132de1` was deleted. int2 is kept.
+
+## Part 5 (2026-11-16, host only): the key is not honoured; a direct fix of the notch
+
+ctl2 ran on root 9a91ed47 (HEAD libdlisa) with vendor_boot final19-hbt. The log said
+`UIStatusBarVisualProviderClassName = _UIStatusBarVisualProvider_Split1080_Wide (already so)`, yet every screenshot
+(home, Control Center) still showed "rdar:45025538". The `screen:` lines were unchanged: artwork 2340, type 4, 360x800
+at 3, native 1080, notch 70.83,0 178.35x25.60, UIKit's own pick none.
+
+### Why the key does nothing
+
+The resolver only consults it after `-[UIScreen _isEmbeddedScreen]`. It reads the key through an `NSUserDefaults` that
+UIKit builds itself (`sub_1891d061c`, `initWithSuiteName:@"com.apple.UIKit"` plus a suite of its own), and whichever of
+the two fails here, the `Phone -> Split` path never sees the class. Parts 3 and 4 were the wrong lever. Rather than
+chase that further, the fix now acts on what UIKit compares.
+
+### What UIKit compares, and what makes it match by itself
+
+| Class | native width | reference scale | notch (points) |
+|---|---|---|---|
+| `Split1080` | 1080 | 2.88 | 226 x 34.33 |
+| `Split1080_Wide` | 1080 | 2.88 | 174 x 37.33 |
+
+- **The rule.** UIKit takes a split bar when its `notchSize` equals the screen's exclusion rect times
+  `_nativeScale / referenceScreenScale`.
+- **On this screen.** `_nativeScale` is 3, so the rect `Split1080_Wide` wants is 174 x 37.33 times 2.88/3, which is
+  **167.04 x 35.84**, centred on 360 points at x **96.48**: the 13 mini's notch in this screen's points.
+- **Why the 13 mini type alone would not do.** SpringBoard's own 13 mini notch (type 0xf: 522 x 112 pixels divided by
+  native scale 0.96 x 3 x 1.0417 = 3) is 174 x 37.33, made for nativeScale 2.88. On this screen it would be off by 4 %.
+- **Where the rect comes from.** SpringBoard puts it, once, in every display context it hands out:
+  `+[UISDisplaySingleRectShape sb_thisDeviceDisplayShape]`, its own UIScreen's and every app's
+  `UISDisplayContext.exclusionArea`.
+
+### Changes
+
+- `userland/inject/status-bar.c`:
+  - `readDisplayWidth` (`fbwidth=`, else 1080 with `lisa=1`, else 1125);
+  - `readDisplayScale` (`fbscale=`, else 3);
+  - `computeSplitNotch(width, scale, notchW, notchH, referenceScale)`.
+  - Test: 23 checks, among them 1080 at 3 with Split1080_Wide giving 96.48,0 167.04x35.84 and the X's 1125 at 3 with
+    Split1125 giving 83,0 209x30. `run-tests.sh`: 11 files, 0 failures.
+- `dlisa-inject.c`:
+  - **SpringBoard:** `+[UISDisplaySingleRectShape sb_thisDeviceDisplayShape]` returns the notch of the split bar for
+    the display's width, read from that class's `+notchSize` / `+referenceScreenScale`, once. It logs `status bar:
+    notch 96.48,0.00 167.04x35.84 instead of SpringBoard's 70.83,0.00 178.35x25.60 (what
+    _UIStatusBarVisualProvider_Split1080_Wide wants)`. UIKit in every app then picks Split1080_Wide by itself.
+  - **Every program with UIKit where the library is:** `+[_UIStatusBarVisualProvider_Split
+    visualProviderSubclassForScreen:visualProviderInfo:]` answers that split bar when UIKit found none. It logs `UIKit
+    found no split bar for this screen; ... it is`, which should not appear once the notch matches.
+  - The key of parts 3 and 4 is removed once (`... removed (saved)`).
+  - The probe's "UIKit's own split bar" now calls the original method, so it shows UIKit's own pick.
+  - `dlisa_sbprov=0` leaves everything alone.
+- The safe areas (`sb_thisDeviceDisplayEdgeInfo`) stay type 4's. SpringBoard keeps "iPhone X Zoomed" (320-point icon
+  layout); only the notch changes.
+
+### Option C costed: present 375 x 812 points (1080 x 2340 at 2.88), the 13 mini itself
+
+**Effect.** SpringBoard would get its exact type 0xf: the 13 mini's icon grid, safe areas and notch. UIKit would pick
+Split1080_Wide with nothing changed, in every process. Every app would lay out at the 375-point width it is designed
+for.
+
+**What it takes.**
+1. **Find the native size.** Find where QuartzCore/FrontBoard take a display's native size apart from its mode (the
+   13 mini renders 1125x2436 and shows 1080x2340): the IOMobileFramebuffer properties CADisplay reads for `nativeSize`,
+   static work in QuartzCore.
+2. **Change the driver.** In `MiniIOMobileFramebuffer`, report a 1125x2436 mode with a native 1080x2340, and scale each
+   frame 0.96 uniformly onto the panel with 30 black rows at the top and bottom.
+3. **Pay the cost per frame.**
+   - 5.7 % more pixels for the GPU;
+   - the CPU scaling pass: about 3.6 ms a frame bilinear, 11 ms one in ten (the driver's own numbers), against 0 ms at
+     1:1 today;
+   - unless the scaling moves to the display engine's hardware scaler or the GPU, which is more driver work.
+4. **Effort.** 1 to 2 sessions for 1+2 and a phone run, plus the scaler if the frame time matters; the GPU sessions'
+   frame numbers would all shift.
+
+**Recommendation.** Keep 1080x2400 1:1 with this notch fix for now. Option C is the right target once the display
+scaling is in hardware.
+

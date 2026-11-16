@@ -15,6 +15,12 @@ expect(int ok, const char *what)
 }
 
 static int
+isNear(double got, double want)
+{
+	return got > want - 0.005 && got < want + 0.005;
+}
+
+static int
 isNamed(const char *got, const char *want)
 {
 	return got != NULL && want != NULL ? strcmp(got, want) == 0 : got == want;
@@ -49,6 +55,24 @@ main(void)
 	expect(isNamed(findStatusBarProvider("xfbwidth=1080"), "_UIStatusBarVisualProvider_Split1125"),
 	    "a boot-arg that only ends with fbwidth is another one");
 	expect(isNamed(findStatusBarProvider(NULL), "_UIStatusBarVisualProvider_Split1125"), "no boot-args: the default");
+	expect(readDisplayWidth("lisa=1 cpus=4") == 1080, "the display's width: lisa=1's 1080");
+	expect(readDisplayWidth("fbwidth=1125") == 1125, "the display's width: fbwidth=");
+	expect(readDisplayWidth("gpu=1") == 1125, "the display's width: the kernel's own");
+	expect(readDisplayScale("lisa=1") == 3, "the display's scale: 3");
+	expect(readDisplayScale("fbscale=2") == 2, "the display's scale: fbscale=");
+	{
+		/* Split1080_Wide: notch 174 x 37.33 points at a reference scale of 2.88, on 1080 pixels at 3 (360 points) */
+		DlisaNotch n = computeSplitNotch(1080, 3, 174, 37.0 + 1.0 / 3, 2.88);
+
+		expect(isNear(n.width, 167.04) && isNear(n.height, 35.84), "the 13 mini's notch at 3 instead of 2.88");
+		expect(isNear(n.x, 96.48) && n.y == 0, "centred at the top of 360 points");
+	}
+	{
+		/* Split1125 has no reference scale of its own: the screen's; on the iPhone X's 1125 at 3 it is the X's notch */
+		DlisaNotch n = computeSplitNotch(1125, 3, 209, 30, 0);
+
+		expect(isNear(n.x, 83) && isNear(n.width, 209) && isNear(n.height, 30), "the X's notch, as SpringBoard's type 3");
+	}
 	printf("%s (%d failures)\n", failures ? "FAILED" : "ok", failures);
 	return failures != 0;
 }

@@ -24,11 +24,13 @@ python3 -I "$D/periph-fw/periph-fw.py" header "$STAGE/dlisa.periph_fw.h"
 # the drivers this run wires, and the symbols the linked kernel must then define
 WIRES="$D/buttons/buttons-wire.py $D/torch/torch-wire.py $D/haptic/haptic-wire.py"
 EXPECT="_hakios_buttons_init _dlisa_torch_init _dlisa_haptic_init _dlisa_periph_file"
-for extra in "bt/bt-wire.py:_dlisa_bt_init" "audio/audio-wire.py:${AUDIO_SYMBOL:-_dlisa_sound_init}"; do
-	wire=${extra%%:*}
-	[ -f "$D/$wire" ] && [ "${SKIP_EXTRA:-0}" = 0 ] || continue
-	WIRES="$WIRES $D/$wire"
-	EXPECT="$EXPECT ${extra#*:}"
+# EXTRA="bt audio" (the default) adds those drivers; EXTRA="" or EXTRA=audio leaves the others out
+for extra in ${EXTRA-bt audio}; do
+	case $extra in
+	bt) WIRES="$WIRES $D/bt/bt-wire.py"; EXPECT="$EXPECT _dlisa_bt_init" ;;
+	audio) WIRES="$WIRES $D/audio/audio-wire.py"; EXPECT="$EXPECT _hakios_sound_dsp_up _dlisa_tfa_look" ;;
+	*) echo "periph-build: EXTRA knows bt and audio, not $extra" >&2; exit 2 ;;
+	esac
 done
 
 cat > "$STAGE/inside.sh" <<'EOF'

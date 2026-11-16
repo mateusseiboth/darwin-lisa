@@ -16,7 +16,10 @@
  * sysctl kern.hakios.sensors every 20 ms; a sensor's event goes out when the kernel's count for it moves (proximity:
  * when near/far changes).
  *
- * Boot-arg sensors_hid=0 leaves the services out (the rotation hook above still runs).
+ *   - proximity: backboardd's sensor configurator also wraps a (0xff00, 0x08) service for the screen's modes, and only
+ *     one with Placement 1 (sensor-events.c says why: without it backboardd ends itself).
+ * Boot-arg sensors_hid=MASK picks the services, bit n for sensor n (default 0x0f: proximity off); sensors_hid=0 makes
+ * none (the rotation hook above still runs).
  */
 #include <CoreFoundation/CoreFoundation.h>
 #include <mach/mach_time.h>
@@ -88,8 +91,6 @@ findIOHID(void)
 }
 
 #define HID_CLIENT_SIMPLE               4
-#define PAGE_APPLE_VENDOR               0xff00
-#define PAGE_SENSOR                     0x20
 #define FIELD_LIGHT_ILLUMINANCE         0xc000b
 #define FIELD_IS_BUILT_IN               0x4
 
@@ -144,25 +145,17 @@ makeProximityEvent(const struct dlisa_sensors *s, uint64_t time)
 	return iohid.proximity(NULL, time, proximityMask(proximitySent), 0);
 }
 
-static const struct sensorService {
-	int sensor;
-	const char *product;
-	int page, usage;
-	int alsoPage, alsoUsage;        /* a second usage pair the service conforms to (0: none) */
-	makeEvent_t make;
-} sensorServices[] = {
-	{ SENSOR_ACCEL, "darwin-lisa accelerometer", PAGE_APPLE_VENDOR, 0x03, 0, 0, makeAccelerometerEvent },
-	{ SENSOR_GYRO, "darwin-lisa gyroscope", PAGE_APPLE_VENDOR, 0x09, 0, 0, makeGyroEvent },
-	{ SENSOR_MAG, "darwin-lisa compass", PAGE_APPLE_VENDOR, 0x0a, 0, 0, makeCompassEvent },
-	{ SENSOR_LIGHT, "darwin-lisa ambient light", PAGE_APPLE_VENDOR, 0x04, PAGE_SENSOR, 0x41, makeLightEvent },
-	{ SENSOR_PROXIMITY, "darwin-lisa proximity", PAGE_APPLE_VENDOR, 0x08, 0, 0, makeProximityEvent },
+/* the event each sensor's service sends (the services themselves: sensorServiceInfos[] in sensor-events.c) */
+static const makeEvent_t eventMakers[SENSORS] = {
+	[SENSOR_ACCEL] = makeAccelerometerEvent, [SENSOR_GYRO] = makeGyroEvent, [SENSOR_MAG] = makeCompassEvent,
+	[SENSOR_LIGHT] = makeLightEvent, [SENSOR_PROXIMITY] = makeProximityEvent,
 };
-#define SENSOR_SERVICES (sizeof(sensorServices) / sizeof(sensorServices[0]))
+#define SENSOR_SERVICES SENSOR_SERVICE_INFOS
 
 /* ---- the services ---------------------------------------------------------------------------------------------- */
 
 struct sensorServiceState {
-	const struct sensorService *service;
+	const struct sensorServiceInfo *service;
 	CFMutableDictionaryRef properties;
 	IOHIDServiceClientRef client;
 	uint32_t sent;
@@ -187,7 +180,7 @@ usagePair(int page, int usage)
 }
 
 static CFMutableDictionaryRef
-serviceProperties(const struct sensorService *service)
+serviceProperties(const struct sensorServiceInfo *service)
 {
 	CFMutableDictionaryRef p = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks,
 	    &kCFTypeDictionaryValueCallBacks);
@@ -196,6 +189,9 @@ serviceProperties(const struct sensorService *service)
 	CFArrayAppendValue(pairs, usagePair(service->page, service->usage));
 	if (service->alsoPage != 0) {
 		CFArrayAppendValue(pairs, usagePair(service->alsoPage, service->alsoUsage));
+	}
+	if (service->placement != 0) {
+		CFDictionarySetValue(p, CFSTR("Placement"), cfInt(service->placement));
 	}
 	CFDictionarySetValue(p, CFSTR("PrimaryUsagePage"), cfInt(service->page));
 	CFDictionarySetValue(p, CFSTR("PrimaryUsage"), cfInt(service->usage));
@@ -271,7 +267,7 @@ static const struct hidServiceCallbacks sensorCallbacks = {
 static void
 sendSensorEvent(struct sensorServiceState *state, const struct dlisa_sensors *s)
 {
-	IOHIDEventRef event = state->service->make(s, mach_absolute_time());
+	IOHIDEventRef event = eventMakers[state->service->sensor](s, mach_absolute_time());
 
 	if (event == NULL) {
 		return;
@@ -316,8 +312,9 @@ publishSensorService(IOHIDEventSystemClientRef system, struct sensorServiceState
 }
 
 static void *
-sensorServicesThread(__unused void *argument)
+sensorServicesThread(void *argument)
 {
+	uint32_t mask = (uint32_t)(uintptr_t)argument;
 	uint32_t seen[SENSORS] = { 0 };
 	IOHIDEventSystemClientRef system;
 	unsigned made = 0;
@@ -333,7 +330,11 @@ sensorServicesThread(__unused void *argument)
 	for (size_t i = 0; i < SENSOR_SERVICES; i++) {
 		struct sensorServiceState *state = &sensorStates[i];
 
-		state->service = &sensorServices[i];
+		state->service = &sensorServiceInfos[i];
+		if (!isSensorServiceOn(mask, state->service->sensor)) {
+			say("dlisa-motion: hid: \"%s\" left out (sensors_hid=%#x)\n", state->service->product, mask);
+			continue;
+		}
 		state->properties = serviceProperties(state->service);
 		made += publishSensorService(system, state);
 	}
@@ -361,21 +362,23 @@ sensorServicesThread(__unused void *argument)
 static void
 startSensorServices(void)
 {
-	char args[1024];
+	char args[1024] = "";
 	size_t size = sizeof(args) - 1;
+	uint32_t mask;
 	pthread_t thread;
 
 	if (sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0) {
 		args[size] = 0;
-		if (bootArgValue(args, "sensors_hid", 1) == 0) {
-			say("dlisa-motion: hid: sensors_hid=0: no sensor services\n");
-			return;
-		}
+	}
+	mask = sensorServiceMask(args);
+	if (mask == 0) {
+		say("dlisa-motion: hid: sensors_hid=0: no sensor services\n");
+		return;
 	}
 	if (!findIOHID()) {
 		return;
 	}
-	if (pthread_create(&thread, NULL, sensorServicesThread, NULL) == 0) {
+	if (pthread_create(&thread, NULL, sensorServicesThread, (void *)(uintptr_t)mask) == 0) {
 		pthread_detach(thread);
 	}
 }

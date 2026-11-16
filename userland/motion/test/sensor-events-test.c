@@ -98,9 +98,49 @@ testBootArgs(void)
 	expect(bootArgValue(NULL, "sensors_hid", 4) == 4, "no arguments give the fallback");
 }
 
+static const struct sensorServiceInfo *
+findInfo(int sensor)
+{
+	for (size_t i = 0; i < SENSOR_SERVICE_INFOS; i++) {
+		if (sensorServiceInfos[i].sensor == sensor) {
+			return &sensorServiceInfos[i];
+		}
+	}
+	return NULL;
+}
+
+static void
+testServiceTable(void)
+{
+	const struct sensorServiceInfo *proximity = findInfo(SENSOR_PROXIMITY), *light = findInfo(SENSOR_LIGHT);
+
+	expect(SENSOR_SERVICE_INFOS == SENSORS, "one service per sensor");
+	/* backboardd's +[BKHIDUISensorConfiguratorFactory _proximityServiceWrapper] makes no wrapper (NSNull, then
+	 * -[NSNull applyUIMode:] ends backboardd) for a (0xff00, 8) service whose Placement is not 1 */
+	expect(proximity != NULL && proximity->page == 0xff00 && proximity->usage == 0x08 && proximity->placement == 1,
+	    "proximity is (0xff00, 8) with Placement 1 (top)");
+	expect(light != NULL && light->alsoPage == 0x20 && light->alsoUsage == 0x41, "light also conforms to (0x20, 0x41)");
+	expect(findInfo(SENSOR_ACCEL) != NULL && findInfo(SENSOR_ACCEL)->placement == 0, "accelerometer has no Placement");
+}
+
+static void
+testServiceMask(void)
+{
+	uint32_t byDefault = sensorServiceMask("debug=0x8 sensors=1");
+
+	expect(isSensorServiceOn(byDefault, SENSOR_ACCEL) && isSensorServiceOn(byDefault, SENSOR_LIGHT), "accel and light by default");
+	expect(!isSensorServiceOn(byDefault, SENSOR_PROXIMITY), "proximity is off by default");
+	expect(isSensorServiceOn(sensorServiceMask("sensors_hid=0x1f"), SENSOR_PROXIMITY), "sensors_hid=0x1f takes proximity");
+	expect(sensorServiceMask("sensors_hid=0") == 0, "sensors_hid=0: none");
+	expect(sensorServiceMask("sensors_hid=1") == 1, "sensors_hid=1: the accelerometer alone");
+	expect(sensorServiceMask(NULL) == SENSOR_SERVICES_DEFAULT, "no arguments: the default");
+}
+
 int
 main(void)
 {
+	testServiceTable();
+	testServiceMask();
 	testAcceleration();
 	testRotationAndField();
 	testLight();

@@ -119,3 +119,49 @@ bootArgValue(const char *args, const char *name, long fallback)
 	}
 	return fallback;
 }
+
+/* ---- the services backboardd's event server gets, one per sensor (sensors-hid.c makes them) -------------------- */
+
+#define PAGE_APPLE_VENDOR               0xff00
+#define PAGE_SENSOR                     0x20
+
+struct sensorServiceInfo {
+	int sensor;                     /* SENSOR_* */
+	const char *product;
+	int page, usage;
+	int alsoPage, alsoUsage;        /* a second usage pair the service conforms to (0: none) */
+	int placement;                  /* the "Placement" property (0: none) */
+};
+
+/*
+ * Proximity: backboardd's +[BKHIDUISensorConfiguratorFactory _proximityServiceWrapper] matches (0xff00, 8) and makes a
+ * wrapper only for Placement 1 (top: "discrete prox service %llX top placement"); for any other it logs "ignoring
+ * discrete prox service ... not top placement" and leaves an NSNull among the wrappers, and the first
+ * -applyUIMode: to it ends backboardd (the sns1/ctl1 runs, 2026-11-16). lisa's proximity sensor sits at the top.
+ */
+static const struct sensorServiceInfo sensorServiceInfos[] = {
+	{ SENSOR_ACCEL, "darwin-lisa accelerometer", PAGE_APPLE_VENDOR, 0x03, 0, 0, 0 },
+	{ SENSOR_GYRO, "darwin-lisa gyroscope", PAGE_APPLE_VENDOR, 0x09, 0, 0, 0 },
+	{ SENSOR_MAG, "darwin-lisa compass", PAGE_APPLE_VENDOR, 0x0a, 0, 0, 0 },
+	{ SENSOR_LIGHT, "darwin-lisa ambient light", PAGE_APPLE_VENDOR, 0x04, PAGE_SENSOR, 0x41, 0 },
+	{ SENSOR_PROXIMITY, "darwin-lisa proximity", PAGE_APPLE_VENDOR, 0x08, 0, 0, 1 },
+};
+#define SENSOR_SERVICE_INFOS    (sizeof(sensorServiceInfos) / sizeof(sensorServiceInfos[0]))
+
+/*
+ * Boot-arg sensors_hid=MASK: which services are made, bit n for sensor n (1 accelerometer, 2 gyroscope, 4 compass,
+ * 8 ambient light, 0x10 proximity). Proximity is off by default until a run has shown its wrapper in backboardd.
+ */
+#define SENSOR_SERVICES_DEFAULT ((1u << SENSOR_ACCEL) | (1u << SENSOR_GYRO) | (1u << SENSOR_MAG) | (1u << SENSOR_LIGHT))
+
+static uint32_t
+sensorServiceMask(const char *bootArgs)
+{
+	return (uint32_t)bootArgValue(bootArgs, "sensors_hid", SENSOR_SERVICES_DEFAULT);
+}
+
+static bool
+isSensorServiceOn(uint32_t mask, int sensor)
+{
+	return (mask & (1u << sensor)) != 0;
+}

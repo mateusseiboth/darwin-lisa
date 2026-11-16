@@ -93,12 +93,34 @@ backboardd, `BKIOHIDServiceMatcher -initWithUsagePage:usage:builtIn:dataProvider
 | darwin-lisa gyroscope | 0xff00, 0x09 | | type 20, rad/s |
 | darwin-lisa compass | 0xff00, 0x0a | | type 21, uT |
 | darwin-lisa ambient light | 0xff00, 0x04 | 0x20, 0x41 | type 12, level = whole lux, 0xc000b = lux |
-| darwin-lisa proximity | 0xff00, 0x08 | | type 14, mask 0x440 near / 0 far, sent on change only |
+| darwin-lisa proximity | 0xff00, 0x08 | | type 14, mask 0x440 near / 0 far, sent on change only; `Placement` 1; off by default |
 
 All built-in, `Transport` SPU. A service is made again until the event server opens it (20 tries, 2 s each, as the
 touch screen). The thread reads `kern.hakios.sensors` every 20 ms and sends a sensor's event when the kernel's
 count for it moves. Properties the server sets (`ReportInterval`...) are kept and logged; properties asked for and
-missing are logged once each. Boot-arg `sensors_hid=0` leaves the services out.
+missing are logged once each. Boot-arg `sensors_hid=MASK` picks the services, bit n for sensor n (1 accelerometer,
+2 gyroscope, 4 compass, 8 ambient light, 0x10 proximity); default 0x0f, `sensors_hid=0x1f` adds proximity,
+`sensors_hid=0` makes none. The table of services is in `sensor-events.c` (host-tested), the events in
+`sensors-hid.c`.
+
+### The backboardd crash of the first device runs (2026-11-16, sns1/ctl1), and its fix
+
+The real path passed (SSC, accelerometer about 9840 mm/s2 on the axis that points up, gyro/mag/light events,
+`dlisa-motion` "face up"), but backboardd ended itself 3.5 to 7 s after start, in a loop, with
+`-[NSNull applyUIMode:]: unrecognized selector` right after the proximity service was opened (`ctl1-end.log`
+line 2672: `"darwin-lisa proximity" asked for "Placement"`, then the exception). `sensors_hid=0` brought the UI back
+(ctl2). The throw stack, symbolised with the 23F84 cache (slide 0xc124000) and backboardd (slide 0x4f8c000):
+`__exceptionPreprocess`, `objc_exception_throw`, `___forwarding___`, then backboardd
+`-[BKHIDUISensorServiceMatchingWrapper _lock_applyUIMode:toWrappers:]+0xa4` called from
+`-[BKHIDUISensorServiceMatchingWrapper matcher:servicesDidMatch:]+0xe8`, on the main queue.
+
+`+[BKHIDUISensorConfiguratorFactory _proximityServiceWrapper]` matches `{DeviceUsagePage 0xff00, DeviceUsage 8}`
+and its instantiate block reads the service's `Placement`: 1 gives a `BKHIDUIDiscreteProximityServiceWrapper`
+(or `...HostStateProximityServiceWrapper` when `NeedsHostState` is true; `EnableDebugMode` is also set), anything
+else logs `ignoring discrete prox service %llX not top placement` and returns nil, which the map leaves as an NSNull
+among the wrappers. The fix: the proximity service publishes `Placement` = 1 (lisa's sensor is at the top), and
+proximity is left out unless `sensors_hid` has bit 0x10, until a run shows the wrapper taking it
+(`instantiated BKHIDUIDiscreteProximityServiceWrapper` in `oslog[backboardd]`).
 
 Unit and axis conversions are in `userland/motion/sensor-events.c`, host-tested by `userland/motion/test/run-tests.sh`.
 

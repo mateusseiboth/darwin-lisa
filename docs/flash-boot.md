@@ -353,6 +353,13 @@ file.
 | the GPT (plan B) | `backups/lisa-planb-20261112/sda-head-64x4k.bin` + `sda-tail-64x4k.bin` (before), `sda33-head/tail` (the inner table before) | `dd` of the head and tail blocks; docs/data-volume.md section 7 |
 | userdata | `out/pmos-lisa-r17-20261110/xiaomi-lisa.img` (a fresh pmOS) | ABL `fastboot flash userdata` (erases pmOS's state) |
 
+**Writes of 2026-11-16 (Session 12, all read back):** vendor_boot_a final22-x2436 `1324baa2` (14:00), then
+final19-hbt `bc7a7ea2` again (15:56); super roots int1 `cbfcec90` (14:53), `8739d3b5` (15:16), `9a91ed47` (15:57),
+`31401b2b` (17:00), int5 `c93a8ec8` (17:32), int6 `2b1bf7d9` (after 17:47). `flash-root.sh` stages a 4.7 GB copy of the
+root in pmOS's `/home/mateus` and leaves it there: 13 of them filled pmOS's `/` (70.6 GB) on 2026-11-16 and the next
+`scp` failed before anything was written. Remove the staging copy (`rm /home/mateus/system-26-*.apfs`) after each
+verified write; keep at most the current root's.
+
 ## 5. Open questions
 
 - Watchdog disable value: `VIRT_WDT_CONTROL 2` comes from Linux's hh_virt_wdt, not from a lisa trace. The loader

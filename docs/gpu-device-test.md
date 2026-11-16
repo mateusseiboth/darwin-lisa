@@ -160,6 +160,38 @@ accelerometer works (3338 events): no made-up values`, events growing (accel 636
 accel `29 -277 9842 mm/s2`, light 87000 mlx; `dlisa-motion: gravity 0.03 -0.28 9.85 m/s2 (ADSP) -> face up`. (The
 UI looped in this run: it had no `sensors_hid=0`.)
 
+**Kernel-level and peripheral runs on 9a91ed47 / 31401b2b** (`sensors_hid=0`, no GPU unless said; details for the
+peripherals in `docs/peripherals.md`, the camera in `docs/camera.md`):
+
+| run | kernel | T0 | result |
+|---|---|---|---|
+| cam1 | periph1 | 16:40:30 | pass: PM8008i let out of reset, LDO5/4/2 at 1800/2800/1200 mV, MCLK 19.2 MHz, `chip ID: 0x559b (as Android expects)`, `CSIPHY 2 configured ... settle count 21`, frames 1-24 written with changing checksums, 122646 packets 0 ecc/crc, `cam_dump ... 12648448 bytes written`, `camera: done`. The pictures are black (means at the 10-bit black level 64): the phone lies face up, the back camera on the desk |
+| periph-p1 | periph1 | 16:46:15 | keys: 5 injected presses reach backboardd (`input: sample N type 4`), the lock and wake work, no volume HUD and no screenshot thumbnail on screen; torch: ON 1000, ON 300, off; vibration: `the chip reports 0x30` -> `NOT READY` |
+| periph-bt1 | periph1 | 16:52:03 | `look done`; GPLL0 600 MHz locked; SE7's clocks off so its protocol not read; the supplies not readable |
+| ctl3 | rc3, GPU | 17:00:48 | root 31401b2b (written 17:00): the split bar right on the home screen (`5:03` left, battery right, no `rdar`); log: `sb_thisDeviceDisplayShape] replaced`, `notch 96.48,0.00 167.04x35.84`, `UIKit's own split bar: _UIStatusBarVisualProvider_Split1080_Wide`, `UIStatusBarVisualProviderClassName removed (saved)`. Settings' rows: SwiftUI `CGDrawingLayer` layers (16 of them) drawn as faint dashes; `3 labels shown; 223 layers, 19 that can hold text` |
+| periph-p3 | periph1, no GPU | 17:07:24 | without the GPU Settings is drawn complete and right (title, every row label, "Wi-Fi Off", the search bar) and the status bar shows the time and battery: the missing text is the GPU path's. bluetoothd: `sysctlbyname rebound`, then exits 0 after 4.7 s, 0.5 s, 0.1 s (29 starts); the Bluetooth row shows no value. Sound: `the DSP took 48421 frames a second` (amplifiers off) |
+| periph-hap2 | periph2 | 17:21:33 | vibration passes: `under-voltage flag (0x30) ... noted, not a fault`, `configured, waveforms loaded, standby`, commands 2, 1400 and 10 played |
+| periph-bt2 | periph2 | 17:25:54 | passes: three rails voted through RPMh, `SE7: fw revision 0x204 (protocol 2 = UART)`, `UART ready`, `BT_EN reads 1`, `QCA product 0x00000015 ... firmware set 11`, `local version: HCI 11 ... manufacturer 29 (Qualcomm)` |
+
+**Root int5 `c93a8ec8`** (int4 + libdlisa fec154a7; written 17:32, read back), kernel periph2:
+- **T1-A** (17:33:54, `metal_plugin=AdrenoMetal m2v_clients=metal_test,backboardd`): no frame. backboardd opens the
+  device (`gpu2-metal[backboardd 42]: device Adreno 7c+ Gen 3 open`, `pandora-metal: backboardd has a device` twice),
+  then `MTLCreateSystemDefaultDevice doesn't know what to do with more than one device` -> SIGABRT, 14 times. The GPU
+  did not hang (it gave back all it was given). The 168 `no answer` lines counted by gpu-quietrun are the plug-in's
+  `native-metal: no device answer` property lines, not fences.
+- **T2-A** (17:40:48, today's HakiosMetal, the doc's line): the picture is much worse than on 8739d3b5 with the same
+  plug-in: home without icons or labels, Settings black but for the search bar, the Control Center's tiles square.
+  Bursts: boot 166 swaps at 49.3 a second (median 16.7 ms), the Control Center pull 36 at 58.9; no framebuffer windows
+  (no `metal_fps`), so `scroll_window.py` has nothing to read.
+
+**Root int6 `2b1bf7d9`** (int5 with only the AdrenoMetal executable 99f726b3: one device a process), T1-A again
+(17:51:32, `m2v_clients=backboardd`): the new stack draws the home screen (icons, labels, dock, status bar "5:54" and
+the battery) at +150..+240; at +260/+275 rows of icons cut and shifted. One `backboardd has a device`, one `this process
+has its device already`, no SIGABRT or respawn of backboardd, no `no device answer`. First problem: `binary archive:
+BinaryArchive(InvalidFile { path: "/System/Library/Frameworks/QuartzCore.framework/default.metallib" })`. The 716
+`commandBuffer refused: ... DeviceLost` lines start when the run gives the GPU back (`tu_knl_darwin.cc:887: submit
+failed: 0xe00002d8`).
+
 ## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
 
 Nothing was run on the phone. Question: why the Settings switch track and knob, the Settings cards, the Control

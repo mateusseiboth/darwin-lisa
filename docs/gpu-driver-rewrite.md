@@ -409,6 +409,25 @@ Read: t3a's `gpu2-rwtime` m5 (Submit) under 0.2 ms a call and the swaps per seco
 means the clock gating, and `gpu_hwcg=1` becomes the default; t3c/t3d: which side loses the icons in sysmem; t3e: UBWC or
 not; t3f: bands gone with binning off. Stop at the first that answers.
 
+**t7a (int7, `tu=nobin`), read on the host.** (1) The first problem became `BinaryArchiveMiss` (106 times, `fixed_vert_lph_gen`
+/ `fixed_frag_lph_cpf` and others): with an empty archive in place of QuartzCore's, CoreAnimation asks for its pipelines with
+`MTLPipelineOptionFailOnBinaryArchiveMiss`, and every one was refused; the home's icons were missing until +240 s. The plug-in now
+drops that option (no archive here holds this device's binaries, so every pipeline is made from its library, as Metal makes one
+its archive has): int9. (2) The bands came back without binning, so it is not the bins' visibility: the 240-row steps are the
+GMEM bins' stores, but of a frame the GPU was still writing when the display copied it. The display (`MiniIOMobileFramebuffer`)
+waits for the surface's `drawn` fence, which is the last submission that named the surface when the swap arrived; a frame whose
+submission reaches the kernel after the swap is not waited for, and the CPU copy then races the GPU's stores bin by bin.
+CoreAnimation swaps after `commitAndWaitUntilSubmitted` (the frontend: commit, then `waitUntilScheduled`, which the runtime ends
+once its scheduler handed the batches to `vkQueueSubmit`), so the gap would be between the runtime's scheduling and the kernel,
+or a swap of a surface another process draws into. A stale CPU cache would not make bin-aligned steps (it keeps scattered lines,
+the copy's last ones), and the plug-in cleans every surface a command buffer uses at commit. The run that tells: `tu=sysmem`
+(no bins; a race then shows half-drawn layers, not 240-row steps) and `gpu_log=1 touch_lat=1` (every submission's `tl: Q` and
+every swap's `tl: v ready shown done`, to see a frame's submission land after its swap).
+
+**Root int9** `userland-26/out/system-26.apfs.full-58bd61cd` (sha256
+`58bd61cde4258577ce3615278d0d7a6071c2a89578177ea05686960269006d36`, NOT written): int8 with AdrenoMetal `87a66399`
+(FailOnBinaryArchiveMiss dropped).
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

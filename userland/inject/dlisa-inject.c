@@ -15,6 +15,10 @@
  *       Boot-arg dlisa_uiprobe=NAME,...: touches the app is handed, its main run loop, a display link of its own and
  *       backtraces of a stuck main thread, every 2 s (startUiProbe()).
  *
+ *   every program it is in
+ *       Boot-arg dlisa_launchprobe=NAME,...: the main thread's frames at 1.5, 4, 7 and 9.5 s after the start, for the
+ *       extensions chronod's watchdog kills at 10 s (launch-probe.c, startLaunchProbe()).
+ *
  *   SpringBoard
  *       iOS 26 decides at start whether the Setup Assistant has to run (BYSetupAssistantNeedsToRun: nothing in a
  *       new /private/var says it ran) and whether the device is "bricked" (not activated: mobileactivationd has no
@@ -69,6 +73,7 @@
 #include <unistd.h>
 
 #include "file-protection.c"
+#include "launch-probe.c"
 #include "name-list.c"
 #include "purgeable.c"
 #include "scroll-stroke.c"
@@ -1480,9 +1485,9 @@ setProbeLinkPaused(bool paused)
 }
 
 /* the main thread's pc, lr and frame chain, read while it is suspended (vm_read_overwrite: a bad frame pointer
- * ends the walk instead of faulting) */
+ * ends the walk instead of faulting), after WHAT and MS */
 static void
-sayMainThreadStuck(uint64_t busyMs)
+sayMainThreadFrames(const char *what, uint64_t ms)
 {
 	arm_thread_state64_t state;
 	mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
@@ -1509,8 +1514,7 @@ sayMainThreadStuck(uint64_t busyMs)
 		}
 	}
 	thread_resume(probe.mainThread);
-	used = snprintf(line, sizeof(line), "dlisa[%s]: probe: main thread stuck %llu ms; pc, lr, frames (unslid):",
-	    getprogname(), busyMs);
+	used = snprintf(line, sizeof(line), "dlisa[%s]: %s %llu ms; pc, lr, frames (unslid):", getprogname(), what, ms);
 	for (int i = 0; i < n && used < (int)sizeof(line) - 20; i++) {
 		used += snprintf(line + used, sizeof(line) - (size_t)used, " %lx",
 		    (unsigned long)((frames[i] & 0x0000007fffffffffULL) - slide));
@@ -1556,7 +1560,7 @@ probeThread(__unused void *argument)
 		if (probe.waitedOnce && samples < 40 && busy > PROBE_STUCK_MS + (uint64_t)takenThisSpan * 3000 &&
 		    takenThisSpan < 2) {
 			probe.stuck++;
-			sayMainThreadStuck(busy);
+			sayMainThreadFrames("probe: main thread stuck", busy);
 			samples++;
 			takenThisSpan++;
 			sampledSpan = since;
@@ -1603,6 +1607,39 @@ startUiProbe(void)
 	say("dlisa[%s]: probe: on (touches, main run loop, display link, stuck main thread)\n", getprogname());
 }
 
+static void *
+launchProbeThread(void *argument)
+{
+	uint64_t start = (uint64_t)(uintptr_t)argument, elapsed;
+	int taken = 0;
+
+	pthread_setname_np("dlisa launch probe");
+	while (taken < LAUNCH_PROBE_SAMPLES) {
+		usleep(100000);
+		elapsed = uptimeMillis() - start;
+		if (isLaunchProbeDue(elapsed, taken)) {
+			sayMainThreadFrames("launch probe: main thread at", elapsed);
+			taken++;
+		}
+	}
+	return NULL;
+}
+
+static void
+startLaunchProbe(void)
+{
+	pthread_t thread;
+
+	if (!isNamedHere("dlisa_launchprobe")) {
+		return;
+	}
+	probe.mainThread = mach_thread_self();  /* the constructor runs on the main thread */
+	if (pthread_create(&thread, NULL, launchProbeThread, (void *)(uintptr_t)uptimeMillis()) == 0) {
+		pthread_detach(thread);
+	}
+	say("dlisa[%s]: launch probe: on (the main thread at 1.5, 4, 7, 9.5 s)\n", getprogname());
+}
+
 __attribute__((constructor)) static void
 dlisaInjectInit(void)
 {
@@ -1611,6 +1648,7 @@ dlisaInjectInit(void)
 	pointStderrAtConsole();
 	copyLogToConsole();
 	startUiProbe();
+	startLaunchProbe();
 
 	for (size_t i = 0; i < sizeof(FIXES) / sizeof(FIXES[0]); i++) {
 		if (strcmp(name, FIXES[i].program) == 0) {

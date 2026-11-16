@@ -104,6 +104,11 @@ device once. The image is made by `tools/mkvarvol.py` and written by `tools/var-
   - everyone it is in: stderr points at the console, and boot-arg `dlisa_oslog=all` / `dlisa_oslog=A,B` copies
     every os_log message of those programs to the console (`os_log_set_hook` + `os_log_copy_message_string`).
     `OS_ACTIVITY_DT_MODE` does nothing on a customer build (libtrace honours it only on an internal one).
+  - boot-arg `dlisa_launchprobe=NAME,...`: the main thread's pc, lr and frames at 1.5, 4, 7 and 9.5 s after the
+    program starts (`inject/launch-probe.c`), for chronod's widget and control extensions, which RunningBoard kills at
+    10 s. Since 2026-11-16 the conf also names chronod and those extensions (CalculatorWidget,
+    LauncherControlExtension, AccessibilityControlsExtension, BarcodeScannerWidgetExtension, FitnessWidget,
+    CalendarWidgetExtension, HomeWidget, PodcastsWidget): their stderr (a Swift `Fatal error:` line) reaches the console.
 - `scripts/plist-tweaks.py` — sysroot edits, applied to `out/sysroot-26` in place by `mkimage-trim.sh` before every
   image (tests: `scripts/test_plist_tweaks.py`). It writes
   `System/Library/EventTimingProfiles/D22.Default.plist` (UIKit's default event timing profile for the board the

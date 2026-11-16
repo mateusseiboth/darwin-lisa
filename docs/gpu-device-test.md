@@ -208,6 +208,7 @@ gestures `touch_lat=1 touch_seq=nc@200,up@210,cc@250` unless said; "CC" = the Co
 | t4c | int10, unixnu3 | `tu=sysmem`, `cc@250` | CC right and **not shifted** at +300: the band is the GMEM path's | m5 0.054 ms (max 158 us); no CC burst recorded |
 | t5a | int11, unixnu4 | `m2v_renderarea=1` | the Notification Center clean; band at +300 | gesture 64.0/s (16.1 ms); CC 27.9/s (26.8 ms) |
 | t5d | int12, unixnu4 | `$B` | the lock screen complete: "Mon 16 Nov", big "7:21" in glass over the wallpaper; band at +300 | `vsc grew draw 0 prim 0` in all 27 lines (gmem passes up to 1478, 52177 tiles); CC 27.7/s (20.7 ms) |
+| t6a | int13, unixnu4 | `touch_seq=cc@250,up@262,cc@274,up@286,cc@298` | **GPU hang** at 66 s: `adreno: gpu: no answer: submission 16 is the last, the core has done 13; ring: read up to 479, written up to 651; status 0xe715e5`; turnip `device lost: wait fence failed: 0xe00002d8`; backboardd and SpringBoard SIGSEGV; no frame | before it: SpringBoard `refused drawIndexedPrimitives: textures bound ... f0=550`. The queue's automatic `bootos.sh pmos` brought pmOS back; t6b was stopped in the loader before `oem run`; t6c not run. The run queue now stops without returning to pmOS when a log has `gpu: no answer: submission` |
 
 ## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
 

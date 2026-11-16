@@ -1,83 +1,203 @@
-crates/metal2vulkan-runtime/src/render.rs         | 53 +++++++++++++++++++++++
- crates/metal2vulkan/src/pipeline/link/graphics.rs |  9 +++-
- 2 files changed, 61 insertions(+), 1 deletion(-)
-
---- Changes ---
-
-crates/metal2vulkan-runtime/src/render.rs
-  @@ -3869,6 +3869,17 @@ impl RenderCommandEncoder {
-  +        // darwin-lisa (M2V_RENDER_AREA=1): the pass's render area is the rectangle bounding its draws' scissors within
-  +        // their viewports (`drawn`), where nothing of the pass reaches outside it: no attachment cleared by its load,
-  +        // none resolved, no execution of render commands, no pass whose pipeline is still being made, no tile dispatch,
-  +        // one layer. A tiler (turnip in GMEM) then loads and stores only the bins the draws reach, not the whole
-  +        // framebuffer for a small glass panel; what lies outside is left as it was, as Load/Store leaves it.
-  +        let render_area = match trimmed_render_area(&layout, &drawn, executions.is_empty() && pending.is_empty()
-  +            && dispatches.is_empty() && resolve_instance.is_none() && later_resolves.is_empty())
-  +        {
-  +            Some(area) => area,
-  +            None => render_area,
-  +        };
-           if let Some(first) = &first_texel_copies {
-               core.shadow_copies(first);
-           }
-  @@ -8565,3 +8576,45 @@ mod tests {
-  +
-  +
-  +/// darwin-lisa: whether `M2V_RENDER_AREA=1` asks for trimmed render areas, read once.
-  +fn render_area_trimming() -> bool {
-  +    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-  +    *ON.get_or_init(|| std::env::var("M2V_RENDER_AREA").is_ok_and(|v| v == "1"))
-  +}
-  +
-  +/// darwin-lisa: the render area bounding a pass's draws (`EndPass`'s `drawn`), where trimming is asked for and the pass
-  +/// reaches nothing outside its draws (`plain`: no execution, pending pipeline, tile dispatch or resolve step; checked here:
-  +/// no `Clear` load, no resolve, one layer). `None`: the whole attachment.
-  +fn trimmed_render_area(layout: &PassLayout, drawn: &clear_reach::DrawnArea, plain: bool) -> Option<vk::Rect2D> {
-  +    if !render_area_trimming() || !plain || layout.layers > 1 {
-  +        return None;
-  +    }
-  +    let colors_keep = layout
-  +        .colors
-  +        .iter()
-  +        .flatten()
-  +        .all(|c| c.load != LoadAction::Clear && c.resolve.is_none() && c.copied_resolve.is_none());
-  +    let depth_keeps = layout.depth_stencil.as_ref().is_none_or(|ds| {
-  +        ds.resolve.is_none()
-  +            && ds.depth.is_none_or(|a| a.load != LoadAction::Clear)
-  +            && ds.stencil.is_none_or(|a| a.load != LoadAction::Clear)
-  +    });
-  +    if !colors_keep || !depth_keeps {
-  +        return None;
-  +    }
-  +    let [width, height] = layout.extent;
-  +    let [x0, y0, x1, y1] = drawn.bounds()?;
-  +    let (x1, y1) = (x1.min(width), y1.min(height));
-  +    if x0 >= x1 || y0 >= y1 || (x0 == 0 && y0 == 0 && x1 == width && y1 == height) {
-  +        return None;
-  +    }
-  +    if std::env::var_os("M2V_RENDER_AREA_LOG").is_some() {
-  +        eprintln!("metal2vulkan: render area {x0},{y0} {}x{} of {width}x{height}", x1 - x0, y1 - y0);
-  +    }
-  +    Some(vk::Rect2D {
-  +        offset: vk::Offset2D { x: x0 as i32, y: y0 as i32 },
-  +        extent: vk::Extent2D { width: x1 - x0, height: y1 - y0 },
-  +    })
-  +}
-  +53 -0
-
-crates/metal2vulkan/src/pipeline/link/graphics.rs
-  @@ -446,8 +446,15 @@ pub fn graphics_state(
-  +            // darwin-lisa: but for the 4:4:4 code formats the widget renderer draws into (`RGB8_444_2P`, `RGB10_444_2P`):
-  +            // the fetch reads the render shadow's floats, what the pass wrote (iOS 26's RenderBox uber pipeline fetches its
-  +            // color 0, and every widget pipeline was refused). Unmeasured against Metal's halves.
-  +            let code_444 = metal::format::ycbcr_format(attachment.pixel_format).is_some_and(|f| {
-  +                f.reads == metal::format::YCbCrReads::Codes
-  +                    && f.subsampling == metal::format::ChromaSubsampling::Chroma444
-  +            });
-               if metal::format::rotated_channels(attachment.pixel_format)
-  -                || metal::format::ycbcr_renders(attachment.pixel_format)
-  +                || (metal::format::ycbcr_renders(attachment.pixel_format) && !code_444)
-                   || metal::format::ycbcr_pass_refused(attachment.pixel_format)
-               {
-                   let refused = Unsupported::not_implemented(Feature::Format);
-  +8 -1
+diff --git a/crates/metal2vulkan-runtime/src/encoder.rs b/crates/metal2vulkan-runtime/src/encoder.rs
+index 1194f785..07445702 100644
+--- a/crates/metal2vulkan-runtime/src/encoder.rs
++++ b/crates/metal2vulkan-runtime/src/encoder.rs
+@@ -708,6 +708,11 @@ impl EncoderCore {
+         })?;
+         let texels = copies.iter().map(ShadowCopy::texels_back).sum();
+         (device.shared().counts).shadow_copies_planned(copies.len(), texels);
++        let (texels_in, conversions) = copies.iter().map(ShadowCopy::texels_in).fold(
++            (0u64, 0u64),
++            |(t, c), (texels, converts)| (t + texels, c + u64::from(converts)),
++        );
++        (device.shared().counts).shadow_copies_in(texels_in, conversions);
+         for copy in &copies {
+             if let Step::Keep(merge) = &copy.step {
+                 self.retain(Arc::clone(merge));
+diff --git a/crates/metal2vulkan-runtime/src/lib.rs b/crates/metal2vulkan-runtime/src/lib.rs
+index 4781491b..71e08cf2 100644
+--- a/crates/metal2vulkan-runtime/src/lib.rs
++++ b/crates/metal2vulkan-runtime/src/lib.rs
+@@ -87,6 +87,7 @@ mod families;
+ pub use execution::{ExecutedPipeline, Execution};
+ mod exit_guard;
+ pub use exit_guard::process_exiting;
++pub use render::darwin_lisa_render_area_stats;
+ #[doc(hidden)]
+ pub use exit_guard::{registrations as exit_registrations, Registrations as ExitRegistrations};
+ mod executed_commands;
+diff --git a/crates/metal2vulkan-runtime/src/render.rs b/crates/metal2vulkan-runtime/src/render.rs
+index 5cd377c9..5ca81f45 100644
+--- a/crates/metal2vulkan-runtime/src/render.rs
++++ b/crates/metal2vulkan-runtime/src/render.rs
+@@ -3869,6 +3869,17 @@ impl RenderCommandEncoder {
+             offset: vk::Offset2D { x: 0, y: 0 },
+             extent: vk::Extent2D { width, height },
+         };
++        // darwin-lisa (M2V_RENDER_AREA=1): the pass's render area is the rectangle bounding its draws' scissors within
++        // their viewports (`drawn`), where nothing of the pass reaches outside it: no attachment cleared by its load,
++        // none resolved, no execution of render commands, no pass whose pipeline is still being made, no tile dispatch,
++        // one layer. A tiler (turnip in GMEM) then loads and stores only the bins the draws reach, not the whole
++        // framebuffer for a small glass panel; what lies outside is left as it was, as Load/Store leaves it.
++        let render_area = match trimmed_render_area(&layout, &drawn, executions.is_empty() && pending.is_empty()
++            && dispatches.is_empty() && resolve_instance.is_none() && later_resolves.is_empty())
++        {
++            Some(area) => area,
++            None => render_area,
++        };
+         if let Some(first) = &first_texel_copies {
+             core.shadow_copies(first);
+         }
+@@ -8565,3 +8576,68 @@ mod tests {
+         }
+     }
+ }
++
++
++/// darwin-lisa: whether `M2V_RENDER_AREA=1` asks for trimmed render areas, read once.
++fn render_area_trimming() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("M2V_RENDER_AREA").is_ok_and(|v| v == "1"))
++}
++
++/// darwin-lisa: the render area bounding a pass's draws (`EndPass`'s `drawn`), where trimming is asked for and the pass
++/// reaches nothing outside its draws (`plain`: no execution, pending pipeline, tile dispatch or resolve step; checked here:
++/// no `Clear` load, no resolve, one layer). `None`: the whole attachment.
++fn trimmed_render_area(layout: &PassLayout, drawn: &clear_reach::DrawnArea, plain: bool) -> Option<vk::Rect2D> {
++    if !render_area_trimming() {
++        return None;
++    }
++    RENDER_AREA_STATS[0].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    let area = trimmed_area(layout, drawn, plain)?;
++    let [width, height] = layout.extent;
++    RENDER_AREA_STATS[1].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
++    RENDER_AREA_STATS[2].fetch_add(
++        u64::from(width) * u64::from(height) - u64::from(area.extent.width) * u64::from(area.extent.height),
++        std::sync::atomic::Ordering::Relaxed,
++    );
++    Some(area)
++}
++
++/// darwin-lisa: passes looked at, passes trimmed, and the pixels trimming left out ([`trimmed_render_area`]).
++static RENDER_AREA_STATS: [std::sync::atomic::AtomicU64; 3] = [const { std::sync::atomic::AtomicU64::new(0) }; 3];
++
++/// darwin-lisa: [`RENDER_AREA_STATS`], for the AdrenoMetal plug-in's report.
++pub fn darwin_lisa_render_area_stats() -> [u64; 3] {
++    RENDER_AREA_STATS.each_ref().map(|c| c.load(std::sync::atomic::Ordering::Relaxed))
++}
++
++fn trimmed_area(layout: &PassLayout, drawn: &clear_reach::DrawnArea, plain: bool) -> Option<vk::Rect2D> {
++    if !plain || layout.layers > 1 {
++        return None;
++    }
++    let colors_keep = layout
++        .colors
++        .iter()
++        .flatten()
++        .all(|c| c.load != LoadAction::Clear && c.resolve.is_none() && c.copied_resolve.is_none());
++    let depth_keeps = layout.depth_stencil.as_ref().is_none_or(|ds| {
++        ds.resolve.is_none()
++            && ds.depth.is_none_or(|a| a.load != LoadAction::Clear)
++            && ds.stencil.is_none_or(|a| a.load != LoadAction::Clear)
++    });
++    if !colors_keep || !depth_keeps {
++        return None;
++    }
++    let [width, height] = layout.extent;
++    let [x0, y0, x1, y1] = drawn.bounds()?;
++    let (x1, y1) = (x1.min(width), y1.min(height));
++    if x0 >= x1 || y0 >= y1 || (x0 == 0 && y0 == 0 && x1 == width && y1 == height) {
++        return None;
++    }
++    if std::env::var_os("M2V_RENDER_AREA_LOG").is_some() {
++        eprintln!("metal2vulkan: render area {x0},{y0} {}x{} of {width}x{height}", x1 - x0, y1 - y0);
++    }
++    Some(vk::Rect2D {
++        offset: vk::Offset2D { x: x0 as i32, y: y0 as i32 },
++        extent: vk::Extent2D { width: x1 - x0, height: y1 - y0 },
++    })
++}
+diff --git a/crates/metal2vulkan-runtime/src/shadow.rs b/crates/metal2vulkan-runtime/src/shadow.rs
+index 9e37fb96..88b5fa30 100644
+--- a/crates/metal2vulkan-runtime/src/shadow.rs
++++ b/crates/metal2vulkan-runtime/src/shadow.rs
+@@ -530,6 +530,30 @@ impl<M> ShadowCopy<M> {
+     }
+ }
+ 
++impl<M> ShadowCopy<M> {
++    /// darwin-lisa: the texels a copy in of a 2D texture's image over a buffer's bytes moves (its
++    /// every region's), and whether it is a copy in that converts a surface's two planes.
++    pub(super) fn texels_in(&self) -> (u64, bool) {
++        if !matches!(self.step, Step::Into) {
++            return (0, false);
++        }
++        if matches!(self.copies.source, ShadowSource::Converted { .. }) {
++            return (0, true);
++        }
++        let Some(ShadowTarget::Image { regions, .. }) = self.copies.target() else {
++            return (0, false);
++        };
++        let texels = regions
++            .iter()
++            .map(|r| {
++                let e = r.image_extent;
++                u64::from(e.width) * u64::from(e.height) * u64::from(e.depth)
++            })
++            .sum();
++        (texels, false)
++    }
++}
++
+ impl ShadowCopy {
+     /// The stages the copy runs in: a rotated texture's copies dispatch the rotation kernel, a
+     /// heap's two-plane texture's the two-plane kernel, and a tiled heap texture's the tiled
+diff --git a/crates/metal2vulkan-runtime/src/work_counts.rs b/crates/metal2vulkan-runtime/src/work_counts.rs
+index 7fda01bb..03471dce 100644
+--- a/crates/metal2vulkan-runtime/src/work_counts.rs
++++ b/crates/metal2vulkan-runtime/src/work_counts.rs
+@@ -97,6 +97,8 @@ pub(crate) struct Counters {
+     shadows_zeroed: AtomicU64,
+     shadow_copies: AtomicU64,
+     shadow_texels_copied_back: AtomicU64,
++    shadow_texels_copied_in: AtomicU64,
++    shadow_conversions_in: AtomicU64,
+     replay_logs_kept: AtomicU64,
+     replay_log_bytes: AtomicU64,
+     encoders_reencoded: AtomicU64,
+@@ -536,6 +538,15 @@ impl Counters {
+             .fetch_add(texels_back, Ordering::Relaxed);
+     }
+ 
++    /// darwin-lisa: what an encoder's copies in moved: the texels into 2D images over a buffer's
++    /// bytes, and the copies in that convert a surface's two planes (`Converted`).
++    pub(crate) fn shadow_copies_in(&self, texels: u64, conversions: u64) {
++        self.shadow_texels_copied_in
++            .fetch_add(texels, Ordering::Relaxed);
++        self.shadow_conversions_in
++            .fetch_add(conversions, Ordering::Relaxed);
++    }
++
+     /// A command buffer kept an ended encoder's log of `bytes` bytes (`replay.rs`).
+     pub(crate) fn replay_log_kept(&self, bytes: usize) {
+         self.replay_logs_kept.fetch_add(1, Ordering::Relaxed);
+@@ -948,6 +959,10 @@ pub struct WorkCounts {
+     /// texture over a buffer, a no-copy buffer or an IOSurface plane): every texel, or those
+     /// inside the rectangle bounding a pass's draws' scissors over an attachment it loads.
+     pub shadow_texels_copied_back: u64,
++    /// darwin-lisa: the texels the copies in moved into 2D images over a buffer's bytes.
++    pub shadow_texels_copied_in: u64,
++    /// darwin-lisa: copies in that converted a surface's two planes (`ycbcr.rs`).
++    pub shadow_conversions_in: u64,
+     /// Ended compute and blit encoders whose logs their command buffers kept, as a rebind before
+     /// the first submission may encode them again (`replay.rs`), and the bytes of those logs.
+     pub replay_logs_kept: u64,
+@@ -1106,6 +1121,8 @@ impl Device {
+             shadows_zeroed: counters.shadows_zeroed.load(Ordering::Relaxed),
+             shadow_copies: counters.shadow_copies.load(Ordering::Relaxed),
+             shadow_texels_copied_back: counters.shadow_texels_copied_back.load(Ordering::Relaxed),
++            shadow_texels_copied_in: counters.shadow_texels_copied_in.load(Ordering::Relaxed),
++            shadow_conversions_in: counters.shadow_conversions_in.load(Ordering::Relaxed),
+             replay_logs_kept: counters.replay_logs_kept.load(Ordering::Relaxed),
+             replay_log_bytes: counters.replay_log_bytes.load(Ordering::Relaxed),
+             encoders_reencoded: counters.encoders_reencoded.load(Ordering::Relaxed),

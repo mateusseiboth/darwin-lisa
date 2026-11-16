@@ -546,6 +546,32 @@ refused draw now logs them (`pandora-metal refused drawIndexedPrimitives: textur
 AdrenoMetal `a3b7f299` (the 542 fetch, the bound textures of a refused draw); turnip as int12. The CC three times in one run:
 `touch_seq=cc@250,up@262,cc@274,up@286,cc@298`, screenshots at 258, 282 and 306.
 
+**t6a (int13): the GPU hung, int13 withdrawn (deleted).** At 66 s: `no answer: submission 16 is the last, the core has done
+13`, in submission 14 (SpringBoard, which had just made its 609x270 `RGhA` surfaces), then device lost everywhere. int12 with
+the same kernel did not hang (t5d); int13's one change to what the GPU runs is the fetch of a 542 attachment (an
+`R32G32B32A32_SFLOAT` render shadow read as an input attachment in GMEM), so it is reverted: such a pipeline is refused again
+(host: 542 and 545 refused, 115 made). The refused draws named their textures: SpringBoard's icons bind **pf 550**
+(`RGB10A8_2P_XR10`, a two-plane extended-range texture) at f0 and pf 25 (`R16Float`) at f1; that is the icon work, after the
+GPU's.
+
+**`t5d`**: `vsc grew` stayed 0: the band is not a visibility-stream overflow.
+
+**Root int14** `userland-26/out/system-26.apfs.full-215d11f6` (sha256
+`215d11f6479b152964d2925d728b79249eaae51dde699f759dcbb89d431ad6db`, read back, census 61218 files, 0 bad): int12 with AdrenoMetal
+`c592c0eb` and turnip `7d7559d1`, no 542 fetch:
+- boot-arg `tu_sysload=n`: a pass that loads what it keeps, clears nothing and has at most n draws renders in system memory
+  (turnip `use_sysmem_rendering`). The CC's frames are ~6 full-screen passes that load the framebuffer (t4b B24: 155 of them for
+  24 frames, 383 Mpixels), CoreAnimation resuming the screen's pass after each backdrop blur; in GMEM each loads and stores
+  every bin (~20 MB a pass) for a few draws, in system memory it writes what its draws reach. The GMEM band, if it lives in
+  those passes, goes with them.
+- the 10-second report counts `render_area_passes`, `render_area_trimmed` and `render_area_pixels_left_out`
+  (`m2v_renderarea=1`: t5a did not say whether any pass was trimmed), `shadow_texels_copied_in` and `shadow_conversions_in`
+  (what metal2vulkan copies into shadow images at every encoder: a YCbCr surface is converted again in each encoder that
+  samples it), and prints the first `shadowed-texture` notices (`note ...`).
+- kept from int13: a refused draw logs its bound textures.
+The patches in the repository are now plain `git diff` output (`/usr/bin/git`): the ones committed with int12 and int13 had gone
+through the shell's output filter and did not apply.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

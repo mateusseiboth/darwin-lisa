@@ -1,132 +1,188 @@
-src/freedreno/drm-shim/freedreno_noop.c      |  6 ++++++
- src/freedreno/vulkan/tu_cmd_buffer.cc        | 17 ++++++++++++++---
- src/freedreno/vulkan/tu_device.cc            | 11 +++++++++--
- src/freedreno/vulkan/tu_knl_darwin_redwood.h | 17 +++++++++++------
- src/freedreno/vulkan/tu_pass.cc              | 10 ++++++++++
- 5 files changed, 50 insertions(+), 11 deletions(-)
-
---- Changes ---
-
-src/freedreno/drm-shim/freedreno_noop.c
-  @@ -212,6 +212,12 @@ static ioctl_fn_t driver_ioctls[] = {
-  +   {
-  +      /* darwin-lisa: Adreno 642L (SM7325), Mesa's A635 row; GMEM as the lisa kernel reports it (FD_GPU_ID=635) */
-  +      .gpu_id = 635,
-  +      .chip_id = CHIPID(6, 3, 5, 0),
-  +      .gmem_size = 512 * 1024,
-  +   },
-      {
-         /* First entry is default */
-         .gpu_id = 630,
-  +6 -0
-
-src/freedreno/vulkan/tu_cmd_buffer.cc
-  @@ -217,6 +217,10 @@ tu6_lazy_emit_tessfactor_addr(struct tu_cmd_buffer *cmd)
-  +/* darwin-lisa: how often a binning pass overflowed the visibility streams (each time the pitch doubles for later command
-  + * buffers; the pass that overflowed drew bins without some of their draws), for the plug-in's log. */
-  +static uint64_t pandora_vsc_grew_draw, pandora_vsc_grew_prim;
-  +
-   static void
-   tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
-   {
-  @@ -237,11 +241,15 @@ tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
-  -   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch)
-  +   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch) {
-         dev->vsc_draw_strm_pitch = (dev->vsc_draw_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
-  +      p_atomic_inc(&pandora_vsc_grew_draw);
-  +   }
-   
-  -   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch)
-  +   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch) {
-         dev->vsc_prim_strm_pitch = (dev->vsc_prim_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
-  +      p_atomic_inc(&pandora_vsc_grew_prim);
-  +   }
-   
-      cmd->vsc_prim_strm_pitch = dev->vsc_prim_strm_pitch;
-      cmd->vsc_draw_strm_pitch = dev->vsc_draw_strm_pitch;
-  @@ -4089,12 +4097,15 @@ extern "C" __attribute__((visibility("default"))) size_t tu_pandora_render_stats
-  -   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu) sysmem %llu",
-  +   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu, "
-  +                     "vsc grew draw %llu prim %llu) sysmem %llu",
-                        (unsigned long long)p_atomic_read(&pandora_rp.gmem),
-                        (unsigned long long)p_atomic_read(&pandora_rp.tiles),
-                        (unsigned long long)p_atomic_read(&pandora_rp.binned),
-                        (unsigned long long)p_atomic_read(&pandora_rp.undef_full),
-                        (unsigned long long)p_atomic_read(&pandora_rp.undef_part),
-  +                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_draw),
-  +                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_prim),
-                        (unsigned long long)p_atomic_read(&pandora_rp.sysmem));
-      for (unsigned i = 0; i < ARRAY_SIZE(pandora_rp.reason) && at > 0 && (size_t)at < size; i++) {
-         const char *why = (const char *)p_atomic_read(&pandora_rp.reason[i]);
-  +14 -3
-
-src/freedreno/vulkan/tu_device.cc
-  @@ -3003,8 +3003,15 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
-  -   device->vsc_draw_strm_pitch = 0x1000 + VSC_PAD;
-  -   device->vsc_prim_strm_pitch = 0x4000 + VSC_PAD;
-  +   /* darwin-lisa: TU_DARWIN_VSC_SCALE=n (boot-arg tu_vsc=n, 1 to 16) starts the visibility streams n times larger, so that a
-  +    * heavy first pass does not overflow them (the pass that overflows draws its bins without some of their draws). */
-  +   {
-  +      const char *v = getenv("TU_DARWIN_VSC_SCALE");
-  +      uint32_t scale = v ? (uint32_t) strtoul(v, NULL, 0) : 1;
-  +      scale = scale < 1 ? 1 : scale > 16 ? 16 : scale;
-  +      device->vsc_draw_strm_pitch = 0x1000 * scale + VSC_PAD;
-  +      device->vsc_prim_strm_pitch = 0x4000 * scale + VSC_PAD;
-  +   }
-   
-      if (device->vk.enabled_features.customBorderColors)
-         global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
-  +9 -2
-
-src/freedreno/vulkan/tu_knl_darwin_redwood.h
-  @@ -16,13 +16,15 @@
-  -#define RW_SERVICE "RedwoodGPU"
-  +/* darwin-lisa: our kernel's HakiosGPU (kernel/drivers/gpu/hakios.gpu.cpp) is the same msm-by-selector service under another
-  + * name; TU_DARWIN_RW_SERVICE names another (RedwoodGPU on dada's kernel). */
-  +#define RW_SERVICE_DEFAULT "HakiosGPU"
-   #define RW_SEL(nr) (0x40u + (nr))           /* DRM_COMMAND_BASE + DRM_MSM_x */
-   #define RW_GEM_CLOSE 0x09u                  /* DRM_IOCTL_GEM_CLOSE */
-   #define RW_SURFACE 0x7eu
-  -#define RW_HOST 0x7cu                       /* RedwoodGPU's import of the caller's own pages (kernels from 29 Oct on) */
-  +#define RW_HOST 0x7du                       /* darwin-lisa: HakiosGPU's kHakiosUserMemory (RedwoodGPU's is 0x7c), same record */
-   
-  -struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host */
-  +struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host; hakios.gpu.cpp: struct hakios_user_memory */
-      uint64_t address, bytes;
-      uint32_t handle;                         /* out */
-      uint32_t flags;
-  @@ -518,8 +520,10 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
-  -       * began"), so every wait returned at once and Turnip spun. */
-  -      uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
-  +       * began"), so every wait returned at once and Turnip spun.
-  +       * darwin-lisa: HakiosGPU reads msm's deadline against mach_continuous_time() (hakios.gpu.cpp millisecondsUntil), which is
-  +       * Darwin's CLOCK_MONOTONIC, as hakios-drm hands it over. */
-  +      uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
-         uint64_t deadline = w->timeout_ns > UINT64_MAX - now ? UINT64_MAX / 2 : now + w->timeout_ns;
-         struct drm_msm_wait_fence req = {.fence = (uint32_t)w->fence, .queueid = rw.queue};
-         req.timeout.tv_sec = (int64_t)(deadline / 1000000000ull);
-  @@ -580,7 +584,8 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
-  -   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(RW_SERVICE));
-  +   const char *name = getenv("TU_DARWIN_RW_SERVICE");
-  +   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(name && *name ? name : RW_SERVICE_DEFAULT));
-      if (!service)
-         return false;
-      kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &dw.conn);
-  +11 -6
-
-src/freedreno/vulkan/tu_pass.cc
-  @@ -554,6 +554,16 @@ static void
-  +   /* darwin-lisa: TU_DARWIN_NO_COND_SKIP=1 (the AdrenoMetal plug-in's boot-arg tu_condskip=0): every bin loads and stores its
-  +    * attachments, with geometry or not, as without hw binning (a bin the visibility stream calls empty keeps no stale content).
-  +    */
-  +   static int no_cond_skip = -1;
-  +   if (no_cond_skip < 0) {
-  +      const char *v = getenv("TU_DARWIN_NO_COND_SKIP");
-  +      no_cond_skip = v && *v && *v != '0';
-  +   }
-  +   if (no_cond_skip)
-  +      return;
-      /* With generic clears CmdClearAttachments isn't a draw and doesn't
-       * contribute to bin's geometry.
-       */
-  +10 -0
+diff --git a/src/freedreno/drm-shim/freedreno_noop.c b/src/freedreno/drm-shim/freedreno_noop.c
+index a800f36..e935b42 100644
+--- a/src/freedreno/drm-shim/freedreno_noop.c
++++ b/src/freedreno/drm-shim/freedreno_noop.c
+@@ -212,6 +212,12 @@ static ioctl_fn_t driver_ioctls[] = {
+    ((maj << 24) | (min << 16) | (rev << 8) | (pat))
+ 
+ static const struct msm_device_info device_infos[] = {
++   {
++      /* darwin-lisa: Adreno 642L (SM7325), Mesa's A635 row; GMEM as the lisa kernel reports it (FD_GPU_ID=635) */
++      .gpu_id = 635,
++      .chip_id = CHIPID(6, 3, 5, 0),
++      .gmem_size = 512 * 1024,
++   },
+    {
+       /* First entry is default */
+       .gpu_id = 630,
+diff --git a/src/freedreno/vulkan/tu_cmd_buffer.cc b/src/freedreno/vulkan/tu_cmd_buffer.cc
+index 37d9184..987158d 100644
+--- a/src/freedreno/vulkan/tu_cmd_buffer.cc
++++ b/src/freedreno/vulkan/tu_cmd_buffer.cc
+@@ -217,6 +217,10 @@ tu6_lazy_emit_tessfactor_addr(struct tu_cmd_buffer *cmd)
+       cmd->state.cache.flush_bits |= TU_CMD_FLAG_WAIT_FOR_IDLE;
+ }
+ 
++/* darwin-lisa: how often a binning pass overflowed the visibility streams (each time the pitch doubles for later command
++ * buffers; the pass that overflowed drew bins without some of their draws), for the plug-in's log. */
++static uint64_t pandora_vsc_grew_draw, pandora_vsc_grew_prim;
++
+ static void
+ tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
+ {
+@@ -237,11 +241,15 @@ tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
+    uint32_t vsc_draw_overflow = global->vsc_draw_overflow;
+    uint32_t vsc_prim_overflow = global->vsc_prim_overflow;
+ 
+-   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch)
++   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch) {
+       dev->vsc_draw_strm_pitch = (dev->vsc_draw_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
++      p_atomic_inc(&pandora_vsc_grew_draw);
++   }
+ 
+-   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch)
++   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch) {
+       dev->vsc_prim_strm_pitch = (dev->vsc_prim_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
++      p_atomic_inc(&pandora_vsc_grew_prim);
++   }
+ 
+    cmd->vsc_prim_strm_pitch = dev->vsc_prim_strm_pitch;
+    cmd->vsc_draw_strm_pitch = dev->vsc_draw_strm_pitch;
+@@ -1446,6 +1454,31 @@ use_sysmem_rendering(struct tu_cmd_buffer *cmd,
+       return false;
+    }
+ 
++   /* darwin-lisa: TU_DARWIN_SYSMEM_LOADS=n (the AdrenoMetal plug-in's boot-arg tu_sysload=n): a pass that loads what it keeps,
++    * clears nothing and has at most n draws renders in system memory. In GMEM such a pass loads and stores every bin of the
++    * framebuffer for a few draws (CoreAnimation resumes the screen's pass after each backdrop blur: ~6 full-screen loads and
++    * stores a Control Center frame); in system memory it writes what its draws reach. */
++   {
++      static int sysmem_loads = -1;
++      if (sysmem_loads < 0) {
++         const char *v = getenv("TU_DARWIN_SYSMEM_LOADS");
++         sysmem_loads = v ? atoi(v) : 0;
++      }
++      const struct tu_render_pass *pass = cmd->state.pass;
++      bool loads_all = sysmem_loads > 0 && pass &&
++                       cmd->state.rp.drawcall_count <= (uint32_t) sysmem_loads;
++      for (uint32_t i = 0; loads_all && i < pass->attachment_count; i++) {
++         const struct tu_render_pass_attachment *att = &pass->attachments[i];
++         if (att->clear_mask ||
++             ((att->store || att->store_stencil) && !(att->load || att->load_stencil)))
++            loads_all = false;
++      }
++      if (loads_all) {
++         cmd->state.rp.gmem_disable_reason = "darwin: a loading pass of few draws";
++         return true;
++      }
++   }
++
+    /* This is a case where it's better to avoid GMEM, too many tiles but no HW binning possible. */
+    if (!vsc->binning_possible && vsc->binning_useful) {
+       cmd->state.rp.gmem_disable_reason = "Too many tiles and HW binning is not possible";
+@@ -4089,12 +4122,15 @@ extern "C" __attribute__((visibility("default"))) size_t tu_pandora_render_stats
+ extern "C" __attribute__((visibility("default"))) size_t
+ tu_pandora_render_stats(char *out, size_t size)
+ {
+-   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu) sysmem %llu",
++   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu, "
++                     "vsc grew draw %llu prim %llu) sysmem %llu",
+                      (unsigned long long)p_atomic_read(&pandora_rp.gmem),
+                      (unsigned long long)p_atomic_read(&pandora_rp.tiles),
+                      (unsigned long long)p_atomic_read(&pandora_rp.binned),
+                      (unsigned long long)p_atomic_read(&pandora_rp.undef_full),
+                      (unsigned long long)p_atomic_read(&pandora_rp.undef_part),
++                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_draw),
++                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_prim),
+                      (unsigned long long)p_atomic_read(&pandora_rp.sysmem));
+    for (unsigned i = 0; i < ARRAY_SIZE(pandora_rp.reason) && at > 0 && (size_t)at < size; i++) {
+       const char *why = (const char *)p_atomic_read(&pandora_rp.reason[i]);
+diff --git a/src/freedreno/vulkan/tu_device.cc b/src/freedreno/vulkan/tu_device.cc
+index e50d150..2bb6656 100644
+--- a/src/freedreno/vulkan/tu_device.cc
++++ b/src/freedreno/vulkan/tu_device.cc
+@@ -3003,8 +3003,15 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+    }
+ 
+    /* initial sizes, these will increase if there is overflow */
+-   device->vsc_draw_strm_pitch = 0x1000 + VSC_PAD;
+-   device->vsc_prim_strm_pitch = 0x4000 + VSC_PAD;
++   /* darwin-lisa: TU_DARWIN_VSC_SCALE=n (boot-arg tu_vsc=n, 1 to 16) starts the visibility streams n times larger, so that a
++    * heavy first pass does not overflow them (the pass that overflows draws its bins without some of their draws). */
++   {
++      const char *v = getenv("TU_DARWIN_VSC_SCALE");
++      uint32_t scale = v ? (uint32_t) strtoul(v, NULL, 0) : 1;
++      scale = scale < 1 ? 1 : scale > 16 ? 16 : scale;
++      device->vsc_draw_strm_pitch = 0x1000 * scale + VSC_PAD;
++      device->vsc_prim_strm_pitch = 0x4000 * scale + VSC_PAD;
++   }
+ 
+    if (device->vk.enabled_features.customBorderColors)
+       global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
+diff --git a/src/freedreno/vulkan/tu_knl_darwin_redwood.h b/src/freedreno/vulkan/tu_knl_darwin_redwood.h
+index 55099e2..f962c8f 100644
+--- a/src/freedreno/vulkan/tu_knl_darwin_redwood.h
++++ b/src/freedreno/vulkan/tu_knl_darwin_redwood.h
+@@ -16,13 +16,15 @@
+ #include <time.h>
+ #include "drm-uapi/msm_drm.h"
+ 
+-#define RW_SERVICE "RedwoodGPU"
++/* darwin-lisa: our kernel's HakiosGPU (kernel/drivers/gpu/hakios.gpu.cpp) is the same msm-by-selector service under another
++ * name; TU_DARWIN_RW_SERVICE names another (RedwoodGPU on dada's kernel). */
++#define RW_SERVICE_DEFAULT "HakiosGPU"
+ #define RW_SEL(nr) (0x40u + (nr))           /* DRM_COMMAND_BASE + DRM_MSM_x */
+ #define RW_GEM_CLOSE 0x09u                  /* DRM_IOCTL_GEM_CLOSE */
+ #define RW_SURFACE 0x7eu
+-#define RW_HOST 0x7cu                       /* RedwoodGPU's import of the caller's own pages (kernels from 29 Oct on) */
++#define RW_HOST 0x7du                       /* darwin-lisa: HakiosGPU's kHakiosUserMemory (RedwoodGPU's is 0x7c), same record */
+ 
+-struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host */
++struct rw_host_import {                     /* RedwoodGPU.cpp: struct redwood_host; hakios.gpu.cpp: struct hakios_user_memory */
+    uint64_t address, bytes;
+    uint32_t handle;                         /* out */
+    uint32_t flags;
+@@ -518,8 +520,10 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
+       const NativeAdrenoAbiWaitFence *w = (const NativeAdrenoAbiWaitFence *)in;
+       /* The kernel's clock is mach_absolute_time's (CLOCK_UPTIME_RAW), not CLOCK_MONOTONIC: on dada the two are ~52 s apart, and a
+        * CLOCK_MONOTONIC deadline was always in the kernel's past (g2vk2: "until 28.278769 s, asked for at 80.051689 s: over before it
+-       * began"), so every wait returned at once and Turnip spun. */
+-      uint64_t now = clock_gettime_nsec_np(CLOCK_UPTIME_RAW);
++       * began"), so every wait returned at once and Turnip spun.
++       * darwin-lisa: HakiosGPU reads msm's deadline against mach_continuous_time() (hakios.gpu.cpp millisecondsUntil), which is
++       * Darwin's CLOCK_MONOTONIC, as hakios-drm hands it over. */
++      uint64_t now = clock_gettime_nsec_np(CLOCK_MONOTONIC);
+       uint64_t deadline = w->timeout_ns > UINT64_MAX - now ? UINT64_MAX / 2 : now + w->timeout_ns;
+       struct drm_msm_wait_fence req = {.fence = (uint32_t)w->fence, .queueid = rw.queue};
+       req.timeout.tv_sec = (int64_t)(deadline / 1000000000ull);
+@@ -580,7 +584,8 @@ rw_call_inner(uint32_t method, const void *in, size_t in_size, void *out, size_t
+ static bool
+ rw_open(void)
+ {
+-   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(RW_SERVICE));
++   const char *name = getenv("TU_DARWIN_RW_SERVICE");
++   io_service_t service = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching(name && *name ? name : RW_SERVICE_DEFAULT));
+    if (!service)
+       return false;
+    kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &dw.conn);
+diff --git a/src/freedreno/vulkan/tu_pass.cc b/src/freedreno/vulkan/tu_pass.cc
+index 23f76a6..fff706e 100644
+--- a/src/freedreno/vulkan/tu_pass.cc
++++ b/src/freedreno/vulkan/tu_pass.cc
+@@ -554,6 +554,16 @@ static void
+ tu_render_pass_cond_config(struct tu_device *device,
+                            struct tu_render_pass *pass)
+ {
++   /* darwin-lisa: TU_DARWIN_NO_COND_SKIP=1 (the AdrenoMetal plug-in's boot-arg tu_condskip=0): every bin loads and stores its
++    * attachments, with geometry or not, as without hw binning (a bin the visibility stream calls empty keeps no stale content).
++    */
++   static int no_cond_skip = -1;
++   if (no_cond_skip < 0) {
++      const char *v = getenv("TU_DARWIN_NO_COND_SKIP");
++      no_cond_skip = v && *v && *v != '0';
++   }
++   if (no_cond_skip)
++      return;
+    /* With generic clears CmdClearAttachments isn't a draw and doesn't
+     * contribute to bin's geometry.
+     */

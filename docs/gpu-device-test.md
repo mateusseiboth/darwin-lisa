@@ -119,6 +119,14 @@ gestures (the run below), not one window of one boot.
   sched_prefer_wait holds. A core that enters the idle loop with something queued polls its first turn.
 - `machine_track_platform_idle` once on entering and once on leaving the idle loop, not twice a turn.
 - the lisa per-core rows padded to a 64-byte line each (`[MAX_CPUS][8]`, aligned 64).
+- `apply.sh` now treats its series as a stack (fixed the same day): sched-idle-quiet edits lines of sched-prefer-select,
+  so "its reverse applies" no longer told whether select was in, and a second run re-applied 4 of select's 13 hunks
+  (sched_prim.c and .rej files of 15:05:36 in the shared xnu-work). It now takes the series off a scratch copy of the
+  touched files from the last patch to the first, applies only what is missing, and writes nothing unless all of it
+  applies. Proved on copies of xnu-work: twice in a row on the full tree (25 already applied, nothing changed) and from
+  the series taken off (27 files patched, then 25 already applied; the 21 files equal the tree). The shared tree's
+  sched_prim.c was put back to the s14 one (`3c766b2f...` = original + ui + select + quiet; sched_clutch.c `45817b0b...`
+  = original + select, untouched) under `flock .build.lock`, the .orig/.rej files removed, sched_prim.c touched.
 - Host tests: `sh kernel/patches/test/run.sh` builds the helper blocks of sched-prefer-select and sched-idle-quiet
   against stand-ins: both PASS (the new one: default mask, `wfi=1`, mask 0, a holding core polls, one line a core).
 

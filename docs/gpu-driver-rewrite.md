@@ -505,6 +505,31 @@ over 35): 60 fps. The clock gating Linux programs is what the sysmem icons neede
 `938a5722d4adf003106dbbd40c50385b7601281329c58d125212ef403df30979`): int10 with AdrenoMetal `7c55b1a8` (render area option,
 RGBA16Float_XR). Lines (with the quietrun's prefix): `$B m2v_renderarea=1 $G` 449, `$B gpu_irq=1 $G` 442, both 459.
 
+**t4b and t4c: the band is the GMEM path, not the swap.** t4b (`fb_settle_us=2000`) still left the band in the CC's last frame
+(+300), broke the NC's transition (+228) and cost fps; t4c (`tu=sysmem`) drew the CC right at +280 and +300. Read on the host:
+- The settle's counts say little: turnip names every IOSurface its process imported in every submission (`GPU_SUBMIT_BO_TRACK`),
+  so any later backboardd submission bumps every surface's `drawn`. The 16 "came after the swap" lines are not late frames, and
+  `settle()`'s reuse test (`drawn` changed) fails after every frame. `fb_settle_us` stays off.
+- The surfaces the display takes are 6 and 7 (CoreAnimation double-buffers), copied whole on each swap; after swap 2215 (283 s)
+  no swap came, so the panel kept that copy. The screenshots' seams are at fixed rows: 728 in both t4b-q5 and t4b-q6, plus 1214
+  and 1942 in q5 (bands of different frames of the opening). Fixed rows across runs point to the tiler, not to a race with the
+  CPU copy; t4c shows none.
+- GMEM in these runs: 3376 passes, 2768 with hw binning, ~49 bins each, no stored-but-undefined attachment. With binning,
+  turnip skips the load and the store of a bin whose visibility stream has no draw (`cond_load_allowed`/`cond_store_allowed`,
+  `tu_pass.cc`), and a binning pass that overflows the visibility streams draws its bins without some draws (turnip only
+  doubles the pitch for later command buffers, `tu6_lazy_init_vsc`). Either leaves bins with an older frame. The CC's opening
+  is the heaviest pass of the run.
+
+**Root int12** `userland-26/out/system-26.apfs.full-2bfc0622` (sha256
+`2bfc0622d938120caa5e6598b968eb4db38e173a58d6bb943229013f024832e5`, read back, census 61218 files, 0 bad): int11 with AdrenoMetal
+`ddb71374` and turnip `3ee69c77`:
+- the plug-in's log line `turnip: gmem ...` now counts `vsc grew draw N prim M` (each a binning pass that overflowed);
+- boot-arg `tu_vsc=n` (1-16): the visibility streams start n times larger (draw 4 KiB, prim 16 KiB a pipe at n=1);
+- boot-arg `tu_condskip=0`: every bin loads and stores, binning kept;
+- `getBytes` of a private texture goes through a blit into a shared buffer (t4c's first problem `Copy(CpuAccessPrivate)`).
+Order of the runs: plain int12 (read `vsc grew`), then `tu_vsc=8`, then `tu_condskip=0`; `tu_bb=nobin` and `tu_bb=sysmem` work on
+int11 already. If none clears the band in GMEM and sysmem keeps the CC's fps, `tu_bb=sysmem` becomes backboardd's default.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

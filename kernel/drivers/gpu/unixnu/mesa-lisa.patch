@@ -1,6 +1,9 @@
 src/freedreno/drm-shim/freedreno_noop.c      |  6 ++++++
+ src/freedreno/vulkan/tu_cmd_buffer.cc        | 17 ++++++++++++++---
+ src/freedreno/vulkan/tu_device.cc            | 11 +++++++++--
  src/freedreno/vulkan/tu_knl_darwin_redwood.h | 17 +++++++++++------
- 2 files changed, 17 insertions(+), 6 deletions(-)
+ src/freedreno/vulkan/tu_pass.cc              | 10 ++++++++++
+ 5 files changed, 50 insertions(+), 11 deletions(-)
 
 --- Changes ---
 
@@ -16,6 +19,64 @@ src/freedreno/drm-shim/freedreno_noop.c
          /* First entry is default */
          .gpu_id = 630,
   +6 -0
+
+src/freedreno/vulkan/tu_cmd_buffer.cc
+  @@ -217,6 +217,10 @@ tu6_lazy_emit_tessfactor_addr(struct tu_cmd_buffer *cmd)
+  +/* darwin-lisa: how often a binning pass overflowed the visibility streams (each time the pitch doubles for later command
+  + * buffers; the pass that overflowed drew bins without some of their draws), for the plug-in's log. */
+  +static uint64_t pandora_vsc_grew_draw, pandora_vsc_grew_prim;
+  +
+   static void
+   tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
+   {
+  @@ -237,11 +241,15 @@ tu6_lazy_init_vsc(struct tu_cmd_buffer *cmd)
+  -   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch)
+  +   if (vsc_draw_overflow >= dev->vsc_draw_strm_pitch) {
+         dev->vsc_draw_strm_pitch = (dev->vsc_draw_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
+  +      p_atomic_inc(&pandora_vsc_grew_draw);
+  +   }
+   
+  -   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch)
+  +   if (vsc_prim_overflow >= dev->vsc_prim_strm_pitch) {
+         dev->vsc_prim_strm_pitch = (dev->vsc_prim_strm_pitch - VSC_PAD) * 2 + VSC_PAD;
+  +      p_atomic_inc(&pandora_vsc_grew_prim);
+  +   }
+   
+      cmd->vsc_prim_strm_pitch = dev->vsc_prim_strm_pitch;
+      cmd->vsc_draw_strm_pitch = dev->vsc_draw_strm_pitch;
+  @@ -4089,12 +4097,15 @@ extern "C" __attribute__((visibility("default"))) size_t tu_pandora_render_stats
+  -   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu) sysmem %llu",
+  +   int at = snprintf(out, size, "gmem %llu (tiles %llu, hw binning %llu, undefined store full %llu part %llu, "
+  +                     "vsc grew draw %llu prim %llu) sysmem %llu",
+                        (unsigned long long)p_atomic_read(&pandora_rp.gmem),
+                        (unsigned long long)p_atomic_read(&pandora_rp.tiles),
+                        (unsigned long long)p_atomic_read(&pandora_rp.binned),
+                        (unsigned long long)p_atomic_read(&pandora_rp.undef_full),
+                        (unsigned long long)p_atomic_read(&pandora_rp.undef_part),
+  +                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_draw),
+  +                     (unsigned long long)p_atomic_read(&pandora_vsc_grew_prim),
+                        (unsigned long long)p_atomic_read(&pandora_rp.sysmem));
+      for (unsigned i = 0; i < ARRAY_SIZE(pandora_rp.reason) && at > 0 && (size_t)at < size; i++) {
+         const char *why = (const char *)p_atomic_read(&pandora_rp.reason[i]);
+  +14 -3
+
+src/freedreno/vulkan/tu_device.cc
+  @@ -3003,8 +3003,15 @@ tu_CreateDevice(VkPhysicalDevice physicalDevice,
+  -   device->vsc_draw_strm_pitch = 0x1000 + VSC_PAD;
+  -   device->vsc_prim_strm_pitch = 0x4000 + VSC_PAD;
+  +   /* darwin-lisa: TU_DARWIN_VSC_SCALE=n (boot-arg tu_vsc=n, 1 to 16) starts the visibility streams n times larger, so that a
+  +    * heavy first pass does not overflow them (the pass that overflows draws its bins without some of their draws). */
+  +   {
+  +      const char *v = getenv("TU_DARWIN_VSC_SCALE");
+  +      uint32_t scale = v ? (uint32_t) strtoul(v, NULL, 0) : 1;
+  +      scale = scale < 1 ? 1 : scale > 16 ? 16 : scale;
+  +      device->vsc_draw_strm_pitch = 0x1000 * scale + VSC_PAD;
+  +      device->vsc_prim_strm_pitch = 0x4000 * scale + VSC_PAD;
+  +   }
+   
+      if (device->vk.enabled_features.customBorderColors)
+         global_size += TU_BORDER_COLOR_COUNT * sizeof(struct bcolor_entry);
+  +9 -2
 
 src/freedreno/vulkan/tu_knl_darwin_redwood.h
   @@ -16,13 +16,15 @@
@@ -52,3 +113,20 @@ src/freedreno/vulkan/tu_knl_darwin_redwood.h
          return false;
       kern_return_t kr = IOServiceOpen(service, mach_task_self(), 0, &dw.conn);
   +11 -6
+
+src/freedreno/vulkan/tu_pass.cc
+  @@ -554,6 +554,16 @@ static void
+  +   /* darwin-lisa: TU_DARWIN_NO_COND_SKIP=1 (the AdrenoMetal plug-in's boot-arg tu_condskip=0): every bin loads and stores its
+  +    * attachments, with geometry or not, as without hw binning (a bin the visibility stream calls empty keeps no stale content).
+  +    */
+  +   static int no_cond_skip = -1;
+  +   if (no_cond_skip < 0) {
+  +      const char *v = getenv("TU_DARWIN_NO_COND_SKIP");
+  +      no_cond_skip = v && *v && *v != '0';
+  +   }
+  +   if (no_cond_skip)
+  +      return;
+      /* With generic clears CmdClearAttachments isn't a draw and doesn't
+       * contribute to bin's geometry.
+       */
+  +10 -0

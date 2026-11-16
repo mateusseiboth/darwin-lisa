@@ -1,5 +1,165 @@
 # GPU on the phone: the run book (one session)
 
+## Session 12 (2026-11-16 13:42 onwards, on the phone): posters, Settings, status bar, S14, compression, S15, turnip T0, peripherals
+
+One trip, the owner away (no finger windows after S11-A; every gesture is `touch_seq` or `dlisa_scroll`). Phone in
+pmOS between runs; every run ended in pmOS (`tools/bootos.sh pmos`), 0 `no answer` lines in every run, no hang, no
+panic. Logs in `research/hackios-xnu-kernel/logs/`; the host side in `darwin-lisa/logs/run-<tag>.out`. From hbt-x1 on,
+the runs use a frozen copy of `gpu-quietrun.sh` taken from HEAD between runs (another worker's edit of the script at
+13:56, during S11-A, broke that run after its last screenshot: bash reads a script as it goes).
+
+State at the start, checked: vendor_boot_a final19-hbt `bc7a7ea2` (read back from pmOS), root `2ef33580` (flash log).
+
+**poster-f3** (T0 13:44:17; root 2ef33580, final19-hbt, rc3, cpus=4; the "Posters, part 3" line, 460 characters).
+CollectionsPoster no longer dies: 0 `Terminating app due to uncaught exception` (the one `xstat=0x6` is safetyalertsd),
+`Resolving default wallpaper collections for device name 'iPhone'` -> `Collections~iphone.plist`, Stripes `2939274C`
+loaded, `Creating new descriptor with identifier '7365'` for `PRPosterRoleLockScreen`, PosterBoard `(...
+CollectionsPoster) Finished SUCCESSFULLY`. Not yet: no `DefaultWallpapers~iphone` line, `selected poster uuid: (null)`
+/ `posterUUIDOrdering is empty`: no poster made, the home black (`poster-f3-q1/q2/q4.png`), the Notification Center's
+big clock on black (`q3`). Cause found on the host afterwards (handover, Posters part 4: PosterBoard hangs on
+donotdisturbd). HomeButtonType: home indicator present, SpringBoard started once (no crash loop), the 13 mini grid, but
+the status bar shows only `rdar:45025538` at the left. `q5` (+320) caught a home-screen transition (a row cut).
+
+**S11-A** (T0 13:52:13; same set; Session 11's line, 453 characters). The scripted strokes ran (`scroll: 8 strokes from
+uptime 255.068 to 272.159 s`) but SpringBoard got them (probe: ~90 touches every 2 s, began/moved/ended); Preferences:
+`main thread stuck 596 ms` (221 s), `stuck 3533 ms` (223 s), then `runloop 0 turns` in every probe to 325 s.
+Settings opened with icons and cells and no text at all (`gpu-s11a-q3.png` against `gpu-s9a-q3.png`); the list did
+not move (`q4` = `q3`), then shifted up ~190 px (`q5`). `scroll_window.py`: FAIL (0 frames; the snapshot log has no
+stamped framebuffer lines, the end log was lost with the script). Cause found on the host afterwards: Session 11 part 2
+(configd's InterfaceNamer wait, fixed in 073ce1b2 / int1).
+
+**hbt-x1** (T0 14:02:43; vendor_boot_a **final22-x2436 `1324baa2`** written 14:00 and read back, the previous one
+saved as `backups/vendor_boot_a-before-20261116-1400-1324baa2.img`; home-button-type.md part 2's line, 428
+characters). `init26: VAR ls_reset: 4 LaunchServices store(s) and 3 installd marker(s) / MobileGestalt cache removed`.
+FAIL: every screenshot still has `rdar:45025538` (Control Center too, `q4`). Gestures were posted on time
+(`touch_synth: seq nc/up/cc posted`) but the UI answered ~30 s late on this first boot after `ls_reset`: `q2` (+255)
+still home, `q3` (+285) Notification Center, `q4` (+315) Control Center with correct glass (round tiles, rims,
+sliders), `q5` (+345) the Control Center still open and shifted up. Home icons were blank (labels only) in `q1/q2`
+(LaunchServices seeding again); the next boots had them back.
+
+**glfill on pmOS** (Session 13's GL reference, `userland-26/out/glfill/glfill` 03c74c8c, as root, renderD128
+surfaceless, phoc left running). devfreq `3d00000.gpu`: 315/450/550 MHz, simple_ondemand, min 315 MHz raised to 550
+for the runs and restored. Per full-screen 1080x2400 draw, GPU timer (us):
+
+| case | GMEM | sysmem | sysmem,noubwc |
+|---|---|---|---|
+| opaque, a constant | 295 | 295 | 670 |
+| blended, a constant | 379 | 380 | 1449 |
+| blended, 4x4 nearest highp (probe's tri_tex) | 362 | 363 | 1450 |
+| blended, 4x4 linear mediump, lod bias (CA's samb) | 374 | 376 | 1449 |
+| opaque copy 1080x2400 RGBA8 | 1517 | 1517 | 1471 |
+| blended 1080x2400 RGBA8 1:1 | 2140 | 2139 | 2096 |
+| blended 1080x2400 RGBA16F 1:1 (CA's backdrop) | 1073 | 1075 | 2742 |
+| blended 540x1200 RGBA16F stretched | 567 | 568 | 1779 |
+| two samples (RGBA8 + 4x4) | 2100 | 2098 | 2095 |
+
+Framebuffer fetch is not offered by freedreno. With UBWC (freedreno's default) a blended full-screen quad costs
+0.38 ms; without it 1.45 ms. hakios-metal's probe (0.91 blended, 1.80 with a sample) sits between: the target's
+compression is the ~4x. DSI mode 1080x2400; `trans_stat` 315->550 34, 550->315 35; the dri debugfs node is
+`/sys/kernel/debug/dri/1`, not 0.
+
+**S14** (kernel `kernel-16k-s14-idle.bak` bf4df15f, root 2ef33580, final22-x2436; Session 14's lines, two boots an
+arm: S14-A 14:15:36, S14-B 14:22:25, S14-A2 14:29:36, S14-B2 14:36:14). WFI on the A55s with the GPU ran without a
+hang in both cpus=7 boots. `frame_bursts.py`, the boot's bursts and the gestures in order (nc, up, nc, up, nc, up):
+
+| run | boot swaps / s / >35 ms | nc swaps / s / <18 % | up swaps / s / <18 % | anim. commits on time / late / stall | A55 draws |
+|---|---|---|---|---|---|
+| S14-A (7) | 457 / 57.3 / 8 | 77 / 33.3 / 39.0 | 493 / 46.2 / 71.6 | 382 / 20 / 6 | 2.0 % |
+| S14-A2 (7) | 366 / 54.9 / 9 | 90 / 36.7 / 46.7 | 445 / 47.1 / 73.7 | 333 / 30 / 14 | 2.3 % |
+| S14-B (4) | 355 / 54.0 / 16 | 97 / 33.0 / 40.2 | 480 / 49.0 / 77.3 | 313 / 16 / 2 | 0 |
+| S14-B2 (4) | 452 / 55.5 / 12 | 98 / 37.4 / 52.0 | 492 / 49.9 / 76.0 | 353 / 12 / 4 | 0 |
+| A+A2 | 823 / 56.2 / 17 | 167 / 35.1 / 43.1 | 938 / 46.7 / 72.6 | 715 / 50 / 20 | |
+| B+B2 | 807 / 54.8 / 28 | 195 / 35.1 / 46.2 | 972 / 49.4 / 76.7 | 666 / 28 / 6 | |
+
+Verdict, two boots summed: 1 passes (the boot burst), 2 fails (the share under 18 ms of the nc opens, 6.7 % under B),
+3 fails (stalls 20 against B's 6 + 2). **`final23-s14-x2436` NOT written**; vendor_boot_a stays final22-x2436
+(cpus=4). S14-C not run (it cannot change the decision). For 60 fps: the boot's first 80-150 frames already come at
+60-61 swaps a second on both arms; the gestures stay at 33-37 a second (nc opens) and 47-50 (closing to home). Blank
+home icons showed in S14-B and S14-A2, not in S14-A: not the cores.
+
+**Root int1 `cbfcec90`** written 14:53 (read back). **int1-a** (T0 14:55:34, no GPU arguments; the handover's line).
+Clock passes: `init26: CLOCK no clock set the calendar (19 s): it is epoch= 1794855332 + 19 s = 1794855351 now`
+(T0 + 17 s), launchd lines dated `2026-11-16 14:55:53`, "Mon 16 Nov" in the Notification Center and on the Calendar
+icon. Posters not yet: the four DND methods `replaced` in PosterBoard, but no `Got mode assertion`, no `did not answer
+in 2500 ms`, no `initial events`, no `Setting up default wallpaper`; PosterBoard's oslog ends at `gallery updated ...
+12 sections, 88 items`. The Notification Center shows the date only. CalculatorWidget's launch probe: the same frames
+at 1.5, 4, 7 and 9.5 s (`232273cd4 23227730c 23227722c 232277078 1bd95b984 ...`); 0 `Fatal error`.
+
+**int1-b** (S11-B: S11-A's line on int1, T0 15:04:07). Settings no longer hangs: Preferences gets the scripted
+strokes (43-87 touches every 2 s), its run loop turns (57-199 a probe), busiest 74-392 ms. The list scrolls.
+`scroll_window.py`: 11.3, 32.6, 29.2, 29.6 frames a second in the four windows inside the strokes (FAIL only on the
+first window, the scroll's start); GPU 13.6 ms a submission (164 in 5 s). Settings still draws no text at all, so the
+missing text is not configd's wait.
+
+**Root `8739d3b5`** (int1 + HakiosMetal glass11 `9e29ff9c` + libdlisa 174255e0 with the forced status bar), written
+15:16 after freeing pmOS's disk (13 staging roots had filled `/`; the first copy failed before anything was written).
+Compression runs (S9's line without `up@262`, so that C fits in 460: `touch_seq=tap:56800:5600@190,cc@280`, times
+"150 200 225 240 255 275 290 305"):
+
+| run | boot-args | backboardd GPU a buffer | HakiosGPU a submission | `compressed framebuffer` | pictures |
+|---|---|---|---|---|---|
+| ubwc-A (15:18:05) | none | 0.59 ms (542 / 922) | 0.07 ms | 0 | CC corners and rims; Settings without text |
+| ubwc-B (15:25:44) | `metal_ubwc_fb=1` | 7.42 ms (10319 / 1390) | 1.37 ms | 5 (IOSurface 22, 26, 27, 29, 351) | as A |
+| ubwc-C (15:34:16) | `metal_ubwc_fb=1 metal_ubwc_rt=1` | 17.62 ms (26477 / 1503) | 1.52 ms | 5 | CC sliders without their fill |
+
+Neither B nor C passes (criterion: B 20 % under A). Idle, B's buffers hold 2 passes where A's hold 1. Refusals the same
+7 kinds in all three. The status bar: `UIStatusBarVisualProviderClassName = _UIStatusBarVisualProvider_Split1125
+(saved)`, then `(already so)`, and `screen: ... UIKit's own split bar: none (rdar:45025538)`; the screen kept
+`rdar:45025538`. After ubwc-B, `bootos.sh pmos` got `the loader refused: a kernel is running (oem stop ends it)` once;
+a second call went to pmOS (no hang: the run had ended normally).
+
+**s15a** (T0 15:41:55) and **s15b** (15:48:39), Session 15's line on 8739d3b5. The two 1080x2400 pass kinds:
+`a0 1080x2400 fmt 80 S load 2|1 store 1 (surface) a1 1080x2400 fmt 115 S load 0 store 1`; no memoryless (`M`)
+attachment in any of 111 / 120 `trace: pass` lines. `trace: so far 0 draws fetched attachment 0 ..., 305 constant
+ranges pushed as zeros for an unbound buffer (last: fixed_frag_lph_cph buffer 2)` (before it `fixed_vert_lph_spc
+buffer 3`). The clipping defects are all there (`gpu-s15a-q3/q6.png`): the Airplane switch's track square, Settings'
+cards with square corners, the Control Center's round buttons cut flat at the bottom, slider fills square. s15c was
+not run: the owner stopped the tests of the current GPU driver (it will be redone).
+
+**Root `9a91ed47`** (int3 + bluetoothd: libdlisa 7249bc09 with the Split1080_Wide status bar from the boot-args, the
+text probe, dlisa-motion; written 15:57, read back) with **vendor_boot_a final19-hbt `bc7a7ea2`** again (artwork 2340,
+written and read back). Every UI run on this root crash-looped backboardd until `sensors_hid=0`:
+
+| run | T0 | line | result |
+|---|---|---|---|
+| poster-f5 | 15:58:48 | the posters' line, `ld_disable=missing ls_reset=1` | no UI (the console only): backboardd `-[NSNull applyUIMode:]: unrecognized selector`, SIGABRT after 6.9 s, respawned again and again; runningboardd kills SpringBoard and PosterBoard at each respawn. PosterBoard got as far as `donotdisturbd did not answer in 2500 ms; taken as no Focus` and `Role coordinator for role 'PRPosterRoleLockScreen' ... successfully processed initial events`, never `Setting up default wallpaper(s)` |
+| uiprobe1 | 16:07:07 | GPU, `dlisa_uiprobe=1 ld_disable=missing`, tap Settings, `cc@260` | the same loop (13 `applyUIMode`) |
+| ctl1 | 16:16:04 | as uiprobe1 without `ld_disable` | the same loop (15): not `ld_disable`, not `ls_reset` |
+| ctl2 | 16:33:23 | ctl1 + `sensors_hid=0` | UI back: 0 `applyUIMode`, one backboardd. The cause is dlisa-motion's virtual HID services (accelerometer, gyroscope, compass, ambient light) |
+
+ctl2's pictures: the status bar still shows `rdar:45025538` (home and Control Center) although SpringBoard logs
+`UIStatusBarVisualProviderClassName = _UIStatusBarVisualProvider_Split1080_Wide (already so, from the boot-args)` and
+`screen: artwork 2340, home button type 2, SpringBoard type 4 (iPhone X (D22, Zoomed))`. Settings' text probe: `1
+windows, 165 views, 3 labels shown` (`Settings` twice, `Search`): the list's cells carry no labels; on screen only
+"Search" is drawn. The Control Center's round buttons are still empty.
+
+**Turnip T0 on pmOS** (`docs/gpu-driver-rewrite.md` section 7; as root, GPU 550 MHz, restored to 315 MHz; phoc left
+running). The first binary (545c0413) shaded nothing (its vertex buffer was empty); its numbers are void. With
+930a9f21 and 5535d43e (`samples shaded in the main pass` 20736000 / 5140800 home), GPU time a command buffer,
+medians of 300:
+
+| scene | GPU | submit + wait | record |
+|---|---|---|---|
+| main (8 full-screen layers, UBWC) | 2.61 ms | 3.68 ms | 148 us |
+| main, `TU_DEBUG=sysmem` | 2.37 ms | 3.42 ms | 84 us |
+| linear target | 3.76 ms | 4.82 ms | 148 us |
+| home (81 draws) | 0.92 ms | 1.84 ms | 394 us |
+| fetch | 7.65 ms (sysmem 7.12, gmem 7.65) | 9.43 ms | 208 us |
+| fetch1 | 3.30 ms | 4.40 ms | 208 us |
+| fetchbar | 7.75 ms | 9.88 ms | 221 us |
+| blur | 3.29 ms | 4.35 ms | 205 us |
+
+`caps`: `rasterizationOrderColorAttachmentAccess 1`. The home pass goes to GMEM (`tiledRender=true`, 20 bins of
+544x240, UBWC); fetch too. Against our core: home 0.92 ms against 5.6-7.0, main 2.61 against 6.3-6.9; fetch ~2.9x
+main (fetch1 1.26x).
+
+**sns1** (kernel `kernel-16k-periph1.bak` 40815677, 9a91ed47, no GPU, T0 16:25:34): the real sensors path works:
+`ATTACHED TO THE SENSORS PD (stream 0x1805 ...)`, `THE SENSORS PD'S LISTENER IS UP`, the registry files served,
+`accel/gyro/mag enabled (streaming): accepted`, `ambient_light enabled (on change): accepted`, `sensors_fake=2: the
+accelerometer works (3338 events): no made-up values`, events growing (accel 6365 -> 6921, mag 12781 -> 13897),
+accel `29 -277 9842 mm/s2`, light 87000 mlx; `dlisa-motion: gravity 0.03 -0.28 9.85 m/s2 (ADSP) -> face up`. (The
+UI looped in this run: it had no `sensors_hid=0`.)
+
 ## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
 
 Nothing was run on the phone. Question: why the Settings switch track and knob, the Settings cards, the Control

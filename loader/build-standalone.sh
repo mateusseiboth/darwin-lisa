@@ -42,7 +42,7 @@
 #   ARTWORK       /product artwork-device-subtype instead of the identity's (identity-artwork.patch): the artwork of the
 #                 screen the kernel gives iOS. 2436 for the kernel's default 1125x2436 (the iPhone X's), so that
 #                 SpringBoard's screen type, its notch and UIKit's split status bar agree (docs/home-button-type.md).
-#                 Empty (default): the identity's (2340 on the 13 mini). build-combined.sh sets 2436 when GEOMETRY is empty
+#                 Empty (default): the identity's (2340 on the 13 mini). Only for the kernel's own 1125x2436 (no lisa=1)
 #   NAME          the name in the output files (default standalone). Never the name of an image already flashed
 #   LISA_DEFAULTS 1: lisa=1 instead of the hardware arguments (touchscreen=1 touch_avdd_ldo= touch_chip= touch_goodix_a=
 #                 cpufreq=1 cpufreq_max= and, with WIFI=1, wifi_irq= wifi_mac=): the kernel has them built in

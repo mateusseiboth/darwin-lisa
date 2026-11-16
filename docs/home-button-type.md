@@ -317,3 +317,101 @@ Rollback:
 - The key stays on darwin_var and keeps the Split1125 bar, which is harmless.
 - To remove it, boot this root once with `dlisa_sbprov=0`.
 
+## Part 4 (2026-11-16, host only): the probe's numbers, and the fix that fits them
+
+ubwc-A (root 8739d3b5, libdlisa 174255e0 = part 3) printed:
+
+```
+status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = _UIStatusBarVisualProvider_Split1125 (saved)
+screen: artwork 2436, home button type 2, SpringBoard type 4 (iPhone X (D22, Zoomed))
+screen: 360x800 points at 3.00, native 1080x2400 at 3.000, corner 33.33, notch UISDisplaySingleRectShape 70.83,0.00 178.35x25.60; UIKit's own split bar: none (rdar:45025538)
+```
+
+The screenshots still showed "rdar:45025538".
+
+### Cause: the screen is 360 x 800 points, not 375 x 812
+
+- **Where the size comes from.** `lisa=1` carries the kernel's built-in `fbwidth=1080 fbheight=2400`
+  (`kernel/drivers/bootargs/lisa-defaults-wire.py`). Every line since final14 has `lisa=1`, so the display is the
+  panel's own 1080x2400 at 3x: 360 x 800 points, a size no iPhone has.
+- **SpringBoard.** No spec matches exactly. With no home button its size fallback ends at type 4, "iPhone X (D22,
+  Zoomed)", whatever the artwork.
+  - Type 4's notch is the X's 249, 0, 627 x 90 pixels divided by the zoomed X's native scale 1125/320 = 3.5156. That
+    gives 70.83, 0, 178.35 x 25.60, exactly the probe's numbers.
+- **UIKit.** At 1080 native pixels only `Split1080` and `Split1080_Wide` pass the width test (reference scale 2.88). The
+  ratio is 3/2.88 = 1.0417, so the notch they would see is 185.8 x 26.7. `Split1080` wants 226 x 34.33 and
+  `Split1080_Wide` wants 174 x 37.33, so neither matches and UIKit shows the placeholder.
+- **Why part 2 and part 3 missed.**
+  - Part 2 assumed the kernel's 1125x2436.
+  - Part 3 wrote Split1125 asynchronously at SpringBoard's start, after UIKit had already resolved its bars (UIKit
+    reads the key when it makes a bar). The key was saved, so the next start would have used it.
+  - Split1125 is the wrong class for a 1080-pixel screen in any case.
+- **Side note.** `Split1080_Wide`'s notch (174 x 37.33 at 2.88) is exactly SpringBoard's 13 mini notch (type 0xf,
+  522 x 112 pixels divided by 3) times 3/2.88. With type 0xf on this 1080-pixel screen at 3x, UIKit would choose the
+  13 mini's bar by itself. Type 0xf only matches at 375 x 812 points, though.
+
+### Options weighed
+
+| Option | Effect | Cost |
+|---|---|---|
+| A. libdlisa writes `Split1080_Wide` (the 13 mini's bar) for 1080 pixels, synchronously at SpringBoard's start | the 13 mini's own split bar on the panel's 1:1 picture; every app of the user | nothing on the display; SpringBoard keeps "iPhone X Zoomed" (320-point icon layout) |
+| B. `fbwidth=1125 fbheight=2436` + artwork 2436 (final22) | the system is natively an iPhone X: type 3, notch 209 x 30, Split1125, no override | 5.7 % more pixels to draw, and the 0.96 x 0.985 scale onto the panel (bilinear: 3.6 ms a frame, 11 ms one in ten, per the framebuffer driver's notes), not 1:1; the GPU sessions' numbers change |
+| C. a 1080 x 2340 panel at 2.88 (375 x 812 points scaled, as on the 13 mini) | the real 13 mini: type 0xf, Split1080_Wide by UIKit's own choice | a display driver change (a scaled mode, native size separate from the mode) plus 60 letterboxed rows; not done |
+
+**Chosen: A.** It keeps the panel 1:1. B stays available (`LISA_DEFAULTS=0` or an explicit
+`fbwidth=1125 fbheight=2436` with `ARTWORK=2436`). C is the real fix of the screen type, later.
+
+### Changes
+
+- `userland/inject/status-bar.c`: the width is `fbwidth=` from the line, else 1080 with `lisa=1`, else 1125. 1080 gives
+  `_UIStatusBarVisualProvider_Split1080_Wide`. New `findStatusBarProviderForWidth`. Test: 15 checks, all
+  `run-tests.sh` files at 0 failures.
+- `dlisa-inject.c`: the key is set in SpringBoard synchronously at start, so the first start already uses it, and
+  saved to cfprefsd on the side. 30 s in, the width UIScreen reports is checked against the boot-arg guess; when it
+  differs, the right class is saved for the next start ("from the screen's width").
+- `loader/build-combined.sh`: no more `ARTWORK=2436` default. That default was wrong with `lisa=1` (part 2's premise).
+  The artwork stays the identity's 2340.
+
+**vendor_boot.** The artwork does not matter at 360 x 800, so go back to the identity's 2340 with images already built:
+- rc3 / cpus=4: `out/vendor_boot-lisa-final19-hbt.img` (`bc7a7ea2`). It equals final22-x2436 apart from the artwork.
+- s14 / cpus=7: `out/vendor_boot-lisa-final21-s14-idle.img` (`6ce52f26`), which has HBT and no artwork.
+
+final22/final23 (2436) also work with this fix, but they show the X's artwork. No new vendor_boot is needed.
+
+| Piece | What | sha256 |
+|---|---|---|
+| `userland-26/out/libdlisa-sbprov2/libdlisa.dylib` | 8739d3b5's libdlisa (174255e0, source 8e30b5c, rebuilt byte for byte at the canonical path) + this change only | `bf0619c67fd137819711019550ea11720143cf5dbb72686a0eb247606deb2687` |
+| HEAD's libdlisa (this commit, with bluetooth and the text probe) | `build-inject.sh` | 71948b30 (built here, not installed) |
+| root `userland-26/out/system-26.apfs.full-f1132de1` | 8739d3b5 with only libdlisa changed. Built from a hard-link copy of `out/sysroot-26` (copy deleted after; the shared sysroot is untouched) holding 8739d3b5's five own files (HakiosMetal glass11 9e29ff9c, launchd dbeb1522, InterfaceNamer `Info.plist` aa6f1292, `dlisa-inject.conf` dd9abccb, libdlisa replaced by bf0619c6), then `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB. 61212 files, 24194 directories, 821 symlinks, 4,999,610,368 B. The five files were read back from the image | `f1132de17144ce723356524077b4a417e1ed448dfdb2ae487fe1c29bed4e72cb` |
+
+### Test (root write; vendor_boot final19-hbt, or keep final22, which also works)
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-f1132de1        # reads back f1132de1
+# optional, the identity's artwork back: PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-vendorboot.sh out/vendor_boot-lisa-final19-hbt.img  # bc7a7ea2
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh hbt-x3 "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 cpus=4 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 touch_seq=nc@200,up@230,cc@260,up@290" "150 215 245 275 305"; bash darwin-lisa/tools/bootos.sh pmos
+grep -a -E "dlisa\[SpringBoard\]: (status bar|screen)|Using overridden status bar" research/hackios-xnu-kernel/logs/hbt-x3-end.log
+```
+
+Pass:
+1. `status bar: ... = _UIStatusBarVisualProvider_Split1080_Wide (saved, from the boot-args)`. It replaces part 3's
+   Split1125 on darwin_var. On the next start it reads `already so`.
+2. No second `status bar:` line "from the screen's width". If one appears, the boot-arg guess was wrong; it names the
+   class saved for the next start.
+3. The `screen:` lines are unchanged in substance: 360x800, native 1080x2400, type 4, UIKit's own choice none. They
+   record the cause, and UIKit's own choice is not what is drawn.
+4. Every screenshot from the first one shows the time at the top left and battery and Wi-Fi at the top right. No
+   "rdar", no red bar on the lock screen, and the same inside Control Center (`cc@260`).
+5. `Using overridden status bar visual provider class` appears if UIKit's NSLog reaches the console. It is not
+   required.
+
+If a later run turns up an app without the bar: apps read the same key through cfprefsd, so `defaults` on the phone
+(`com.apple.UIKit`) is where to look.
+
+Rollback:
+- `tools/flash-root.sh userland-26/out/system-26.apfs.full-8739d3b5`.
+- The key stays on darwin_var (Split1080_Wide) and keeps working with the older root, whose libdlisa would write
+  Split1125 again at its start.
+- `dlisa_sbprov=0` on a boot of this root removes the key.
+

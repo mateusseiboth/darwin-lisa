@@ -34,6 +34,14 @@ main(void)
 	    "1170: the iPhone 12's");
 	expect(isNamed(findStatusBarProvider("fbwidth=828 fbheight=1792 fbscale=2"), "_UIStatusBarVisualProvider_Split828"),
 	    "828: the XR's");
+	expect(isNamed(findStatusBarProvider("cpus=4 lisa=1 gpu=1"), "_UIStatusBarVisualProvider_Split1080_Wide"),
+	    "lisa=1: the kernel's built-in fbwidth=1080 fbheight=2400, the 13 mini's split bar");
+	expect(isNamed(findStatusBarProvider("lisa=1 fbwidth=1125 fbheight=2436"), "_UIStatusBarVisualProvider_Split1125"),
+	    "an fbwidth on the line wins over lisa=1's");
+	expect(isNamed(findStatusBarProvider("lisa=0"), "_UIStatusBarVisualProvider_Split1125"), "lisa=0: the kernel's 1125");
+	expect(isNamed(findStatusBarProviderForWidth(1080), "_UIStatusBarVisualProvider_Split1080_Wide"),
+	    "by the width UIScreen reports: 1080");
+	expect(findStatusBarProviderForWidth(1000) == NULL, "by a width no split bar has: none");
 	expect(findStatusBarProvider("fbwidth=1000") == NULL, "a width no split bar has: none");
 	expect(findStatusBarProvider("fbwidth=1080 dlisa_sbprov=0") == NULL, "dlisa_sbprov=0: none, UIKit chooses");
 	expect(isNamed(findStatusBarProvider("dlisa_sbprov=1"), "_UIStatusBarVisualProvider_Split1125"),

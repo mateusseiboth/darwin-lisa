@@ -22,12 +22,13 @@ M=$(cd "$(dirname "$0")/../.." && pwd)
 export KERNEL=${KERNEL:-$M/research/hackios-xnu-kernel/kernel-16k-final1.bak}
 export IDENTITY=${IDENTITY:-$M/darwin-lisa/.work/identity/identity-d16.h}
 export GEOMETRY=${GEOMETRY-1080x2400}
-# the kernel's own framebuffer (no GEOMETRY) is the iPhone X's 1125x2436: its artwork, or SpringBoard's notch and UIKit's
-# split status bar disagree (docs/home-button-type.md). ARTWORK= (empty) keeps the identity's
-[[ -n $GEOMETRY ]] || export ARTWORK=${ARTWORK-2436}
 export NAME=${NAME:-combined}
 export LISA_DEFAULTS=${LISA_DEFAULTS:-1}
 export WIFI=${WIFI:-1}
+# ARTWORK (identity-artwork.patch) stays the identity's (2340) unless asked: with lisa=1 the kernel's built-in
+# fbwidth=1080 fbheight=2400 makes the screen 360 x 800 points, which no iPhone has, SpringBoard falls back to "iPhone X
+# (D22, Zoomed)" whatever the artwork, and the status bar is chosen by libdlisa (status-bar.c). 2436 fits only the
+# kernel's own 1125x2436, with LISA_DEFAULTS=0 and no GEOMETRY (docs/home-button-type.md, part 4)
 FEATURES=${FEATURES-rtc=1 adsp=1 battmgr=2}
 export EXTRA_ARGS="$FEATURES${EXTRA_ARGS:+ $EXTRA_ARGS}"
 [[ -f $IDENTITY ]] || { echo "build-combined: no identity $IDENTITY (xnuloader/mkidentity.py)" >&2; exit 1; }

@@ -1775,6 +1775,25 @@ rebindMainImport(const char *symbol, void *replacement)
 	return replaced;
 }
 
+/* bt-virtual.c: 23F84's cached "in a VM" answer preset to 1 before main() asks for it */
+static void
+presetVmmAnswer(void)
+{
+	intptr_t slide = _dyld_get_image_vmaddr_slide(0);
+	const uint32_t *getter = (const uint32_t *)(uintptr_t)(BLUETOOTHD_VMM_GETTER + (uint64_t)slide);
+
+	if (!isKnownVmmGetter(getter)) {
+		say("dlisa[%s]: bt: not 23F84's bluetoothd (the VM getter's code differs): its cached answer left alone\n",
+		    getprogname());
+		return;
+	}
+	*(volatile uint8_t *)(uintptr_t)(BLUETOOTHD_VMM_FLAG + (uint64_t)slide) = 1;
+	atomic_thread_fence(memory_order_release);
+	*(volatile long *)(uintptr_t)(BLUETOOTHD_VMM_ONCE + (uint64_t)slide) = ~0L;
+	say("dlisa[%s]: bt: the VM answer is preset to 1 (dispatch_once at main+%#llx done): the virtual controller\n",
+	    getprogname(), BLUETOOTHD_VMM_ONCE - 0x100000000ULL);
+}
+
 static void
 fixBluetoothd(void)
 {
@@ -1791,6 +1810,7 @@ fixBluetoothd(void)
 	}
 	say("dlisa[%s]: bt: sysctlbyname rebound in %u slot(s) of bluetoothd's imports\n", getprogname(),
 	    rebindMainImport("sysctlbyname", (void *)sysctlbynameForBluetoothd));
+	presetVmmAnswer();
 }
 
 /* ---- which program gets which fix ------------------------------------------------------------------ */

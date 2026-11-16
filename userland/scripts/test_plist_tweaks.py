@@ -161,5 +161,57 @@ class IphoneWallpaperLookupsTest(unittest.TestCase):
         self.assertFalse(os.path.exists(os.path.join(empty, "Library/Wallpaper")))
 
 
+class InterfaceNamerTimeoutTest(unittest.TestCase):
+    INFO = "System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist"
+
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.path = os.path.join(self.root, self.INFO)
+        writePlist(self.path, {"Builtin": True, "CFBundleIdentifier": "com.apple.SystemConfiguration.InterfaceNamer"})
+
+    def read(self):
+        with open(self.path, "rb") as f:
+            return plistlib.load(f)
+
+    def testBothWaitsAreShort(self):
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        info = self.read()
+        self.assertEqual(info["WaitStackTimeout"], tweaks.INTERFACE_NAMER_TIMEOUT)
+        self.assertEqual(info["WaitQuietTimeout"], tweaks.INTERFACE_NAMER_TIMEOUT)
+
+    def testTheWaitsAreRealNumbersAboveZero(self):
+        # configd takes them only as a CFNumber greater than 0 (else its 300 s and 240 s)
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        self.assertIsInstance(self.read()["WaitStackTimeout"], float)
+        self.assertGreater(tweaks.INTERFACE_NAMER_TIMEOUT, 0)
+        self.assertLessEqual(tweaks.INTERFACE_NAMER_TIMEOUT, 15)
+
+    def testTheRestOfTheBundleInfoStays(self):
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        self.assertTrue(self.read()["Builtin"])
+        self.assertEqual(self.read()["CFBundleIdentifier"], "com.apple.SystemConfiguration.InterfaceNamer")
+
+    def testAHardLinkedCopyIsNotWrittenThrough(self):
+        # images are built from hard-linked copies of the sysroot: the shared file must keep its bytes
+        shared = os.path.join(tempfile.mkdtemp(), "Info.plist")
+        os.link(self.path, shared)
+        with open(shared, "rb") as f:
+            before = f.read()
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        with open(shared, "rb") as f:
+            self.assertEqual(f.read(), before)
+
+    def testRunTwiceIsTheSame(self):
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        first = self.read()
+        tweaks.saveInterfaceNamerTimeouts(self.root)
+        self.assertEqual(self.read(), first)
+
+    def testNoBundleMakesNothing(self):
+        empty = tempfile.mkdtemp()
+        self.assertIsNone(tweaks.saveInterfaceNamerTimeouts(empty))
+        self.assertFalse(os.path.exists(os.path.join(empty, self.INFO)))
+
+
 if __name__ == "__main__":
     unittest.main()

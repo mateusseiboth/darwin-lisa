@@ -9,6 +9,8 @@ Besides the LaunchDaemons it adds two files (run before every image: mkimage-tri
     System/Library/EventTimingProfiles/D22|D16.Default.plist  UIKit's default event timing profile for the boards the
                                                             loader can name (else a "Misconfigured Device" alert)
     private/etc/dlisa-ld-groups.conf                        the groups init26's boot-arg ld_disable= knows
+    System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist  WaitStackTimeout/WaitQuietTimeout 10 s
+                                                            (SCNetworkInterfaceCopyAll waited 300 s+ for them)
 
 containermanagerd (EnablePressuredExit removed)
     launchd sends a clean, idle daemon with EnablePressuredExit a SIGTERM under memory pressure. This port runs
@@ -216,6 +218,34 @@ def saveIphoneWallpaperLookups(sysroot):
     return made
 
 
+INTERFACE_NAMER_INFO = "System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist"
+INTERFACE_NAMER_TIMEOUT = 10.0
+
+
+def saveInterfaceNamerTimeouts(sysroot):
+    """configd's InterfaceNamer posts *QUIET* in Plugin:InterfaceNamer once IOKit is quiet with the network stack
+    found, or *TIMEOUT* when its timer runs out: WaitStackTimeout (default 300 s from configd's start, for the
+    IONetworkStack this kernel never has) and then WaitQuietTimeout (240 s). SCNetworkInterfaceCopyAll waits for one of
+    them (SCDynamicStoreNotifyWait), and Settings calls it on its main thread at launch (-[... ethernetNetworkInterfaces]
+    under hasEthernetNetworkInterfaces): run S11-A, Settings frozen from uptime 221 s on, no text, its touches left to
+    SpringBoard. The bundle's Info.plist sets both waits (a number above 0); 10 s puts *TIMEOUT* ~10 s after configd
+    starts. Written by replacing the file: the image copies are hard-linked to the shared sysroot."""
+    path = os.path.join(sysroot, INTERFACE_NAMER_INFO)
+    if not os.path.exists(path):
+        return None
+    with open(path, "rb") as f:
+        info = plistlib.load(f)
+    info["WaitStackTimeout"] = INTERFACE_NAMER_TIMEOUT
+    info["WaitQuietTimeout"] = INTERFACE_NAMER_TIMEOUT
+    replacement = path + ".new"
+    with open(replacement, "wb") as f:
+        plistlib.dump(info, f, fmt=plistlib.FMT_BINARY)
+    shutil.copystat(path, replacement)
+    os.replace(replacement, path)
+    print(f"plist-tweaks: {INTERFACE_NAMER_INFO}: WaitStackTimeout and WaitQuietTimeout {INTERFACE_NAMER_TIMEOUT:g} s")
+    return path
+
+
 def savePlist(path, value):
     with open(path, "wb") as f:
         plistlib.dump(value, f, fmt=plistlib.FMT_BINARY)
@@ -231,3 +261,4 @@ if __name__ == "__main__":
     saveLdGroups(SYSROOT, os.path.join(os.path.dirname(os.path.abspath(__file__)), "lean-daemons.txt"))
     saveLoggingPrivateData(SYSROOT)
     saveIphoneWallpaperLookups(SYSROOT)
+    saveInterfaceNamerTimeouts(SYSROOT)

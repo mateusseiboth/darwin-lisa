@@ -186,6 +186,63 @@ worker), the lock-to-home window and the Control Center (`cc@250`) carry the gla
 Files: `kernel/drivers/gpu/tools/glfill.c`, `build-glfill.sh`, `sweep-listing-analysis.patch` (analysis only, not
 built into the plug-in), `ir3-survey.py`.
 
+## Session 11, part 2 (2026-11-16, host only): S11-A on the phone, Settings stuck in configd's interface wait
+
+S11-A ran (root 2ef33580, vendor_boot final19-hbt, `research/hackios-xnu-kernel/logs/gpu-s11a*`, no end log). The
+scripted scroll ran (`scroll: 8 strokes from uptime 255.068 to 272.159 s`), the touches went to SpringBoard (its
+probe: ~90 touches every 2 s), and Preferences' probe: `main thread stuck 596 ms` (221 s), `stuck 3533 ms` (223 s),
+then `runloop 0 turns` and 0 display link calls in every window to 325 s. Settings on screen: icons and cells, no
+text in the list (`gpu-s11a-q3.png`); the search field's "Search" is drawn.
+
+**Where the main thread stays** (`ipsw dyld a2s` on the 23F84 cache, unslid frames of the 3533 ms sample):
+`mach_msg2_trap` <- `SCDynamicStoreNotifyWait` <- SystemConfiguration's "Waiting for IOKit to quiesce (or timeout)"
+loop (`func_1aec6687c`) <- `__SCNetworkInterfaceCopyAllWithPreferences` <- Preferences.framework
+`ethernetNetworkInterfaces` (socket(), then `SCNetworkInterfaceCopyAll`) <- `hasEthernetNetworkInterfaces` <- a
+Swift concurrency job on the main actor. The 596 ms sample is SwiftUI/AttributeGraph layout of the same launch.
+
+`SCNetworkInterfaceCopyAll` waits until `Plugin:InterfaceNamer` holds `*QUIET*`, `*COMPLETE*` or `*TIMEOUT*`.
+configd's InterfaceNamer (built into `/usr/libexec/configd`) posts `*QUIET*` once IOKit is quiet with the
+IONetworkStack found, and `*TIMEOUT*` from a run-loop timer: armed at start for `WaitStackTimeout` (default 300.0 s,
+`0x4072c00000000000` at 0x10002a79c), pushed to now + `WaitQuietTimeout` (default 240.0 s) each time a network
+interface shows up; it reads both from its bundle's Info.plist, a number above 0 (0x10002a6c4..). This kernel has no
+IONetworkStack (only lo0 and utun0), so nothing is posted until ~300 s after configd starts (~40 s): any app that
+asks for the network interfaces in its first ~5.5 minutes waits that long on whichever thread asked. With HBT 2
+Settings asks on its main thread during launch (S9's classic identity did not get there).
+
+The rest follows from the stuck launch: the list's text belongs to the frames after the first one, which never
+come; the scene never finishes launching, so the event server keeps the touches on SpringBoard. Separate, and not
+from this: SpringBoard's status bar reads `😳 rdar:45025538` (`gpu-s11a-q2.png`), UIKit's placeholder when it has
+"No status bar visual provider for screen ... (width, scale, idiom, cornerRadius)": the HBT identity's screen type
+and the 1125x2436 screen do not match a provider (`_UIStatusBarVisualProvider_Split1080`, `Split1125`, ...); the
+final22-x2436 artwork work is on that.
+
+**Fix:** `userland/scripts/plist-tweaks.py` `saveInterfaceNamerTimeouts` (also in `userland-26/scripts/`, run by
+every image build): `System/Library/SystemConfiguration/InterfaceNamer.bundle/Info.plist` gets `WaitStackTimeout` =
+`WaitQuietTimeout` = 10.0, so `*TIMEOUT*` is posted ~10 s after configd starts, long before any app. The file is
+replaced, not written through (image copies are hard links). Tests: `python3 -I userland/scripts/test_plist_tweaks.py`
+(23 OK, 6 new).
+
+**Root `userland-26/out/system-26.apfs.full-073ce1b2`** (`073ce1b29b6817c1...`, 4,999,610,368 B, 61212 files):
+2ef33580 with only that Info.plist changed (0c91d17e -> aa6f1292). Hard-link copy of `out/sysroot-26` (unchanged
+since 2ef33580; copy deleted) with glass9 13ea2c9a and libdlisa ef2a85a2, then `saveInterfaceNamerTimeouts`,
+`mkapfs.py -z`. Read back: the same 86228 paths as 2ef33580; libdlisa ef2a85a2, `HakiosMetal` 13ea2c9a, `Info.plist`
+3769fa7f, the wallpaper plists 9112d616 / 0f164ac4, `dlisa-inject.conf` 86a53398, `dlisa-ld-groups.conf` 820c3683;
+InterfaceNamer's 10.0 / 10.0. NOT written. (libdlisa is still ef2a85a2: the later PosterBoard change in HEAD, df57e4f,
+is not in it.) The shared sysroot's Info.plist is unchanged; the next image built with the script carries the fix.
+
+**Run S11-B** (one boot, root only; vendor_boot and kernel as S11-A): `tools/flash-root.sh
+userland-26/out/system-26.apfs.full-073ce1b2` (reads back 073ce1b2), then S11-A's line as tag `gpu-s11b` (453
+characters). Pass, in this order:
+1. `grep -a "dlisa\[Preferences\]: probe" gpu-s11b*.log`: no `main thread stuck` after the launch (one sample under
+   ~1 s during it is fine) and `runloop` turns above 0 in the windows after 225 s;
+2. `gpu-s11b-q3.png`: Settings with its text (title, row labels);
+3. during the strokes (uptime 255-272) Preferences' probe counts the touches (began/moved/ended) and SpringBoard's
+   does not;
+4. `python3 -I darwin-lisa/tools/scroll_window.py research/hackios-xnu-kernel/logs/gpu-s11b-end.log`: PASS, every
+   whole 5 s window inside the strokes at least 15 frames a second.
+If 1 fails with the same backtrace, configd did not take the keys (then `dlisa_oslog=configd` for its
+`timed out waiting for IOKit to quiesce` line). Rollback: `tools/flash-root.sh userland-26/out/system-26.apfs.full-2ef33580`.
+
 ## Session 11 (2026-11-13, host only): Settings "draws nothing while scrolled" is a run with no scroll in it
 
 Nothing was run on the phone. Question: why Settings stops making frames while a finger scrolls it (Session 10, S9-A/B).

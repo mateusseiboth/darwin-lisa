@@ -256,6 +256,47 @@ worker), the lock-to-home window and the Control Center (`cc@250`) carry the gla
 Files: `kernel/drivers/gpu/tools/glfill.c`, `build-glfill.sh`, `sweep-listing-analysis.patch` (analysis only, not
 built into the plug-in), `ir3-survey.py`.
 
+**glfill on pmOS (run by the device worker, 550 MHz, Mesa 26.2.6), us a full-screen 1080x2400 draw:**
+
+| case | freedreno default (UBWC) | `FD_MESA_DEBUG=sysmem` | `sysmem,noubwc` |
+|---|---|---|---|
+| opaque, a constant | 295 | 295 | 670 |
+| blended, a constant | 379 | 380 | 1449 |
+| blended, 4x4 sample (any precision, filter, bias, prefetch or not) | 361-376 | 363-376 | 1448-1451 |
+| opaque, 1080x2400 RGBA8 1:1 (noise: incompressible) | 1517 | 1517 | 1471 |
+| blended, 1080x2400 RGBA8 1:1 | 2140 | 2139 | 2096 |
+| blended, 1080x2400 RGBA16F 1:1 | 1073 | 1075 | 2742 |
+| blended, 540x1200 RGBA16F stretched | 567 | 568 | 1779 |
+
+GMEM and sysmem cost the same; the compressed target is the factor (~4x on a blended full screen), not the sampler: a
+4x4 sample costs freedreno nothing over the blend in either layout, where session 9's probe paid ~0.85 ms for it
+(not explained yet). LOD bias and prefetch change nothing. Our linear sysmem draw (0.9 ms blended) sits between
+freedreno's compressed (0.38) and its tiled-uncompressed (1.45).
+
+**glass10 / glass11 (built, not run).** `hakios-metal-y-ubwc-fetch.patch` (core): a framebuffer fetch from a pass
+whose attachments include a compressed one opens a pass of its own (the tail before it flushes the colour cache),
+instead of the in-pass barrier; the candidate fix for S9-B's square Control Center (the UBWC words, WZYX swap, clear
+values and per-MRT flags were checked against turnip and agree; the in-pass fetch is the one road that differs from
+the sampling that drew the glass right). Test `a_fetch_from_a_compressed_target_reads_it_from_a_pass_of_its_own`.
+`HakiosMetalCA-ubwc-fb.patch` (plug-in), boot-arg `metal_ubwc_fb=1`: the display's framebuffer surfaces (1M pixels or
+more, BGRA8/RGBA8, one plane, not rotated) are drawn into a compressed copy that the 2D engine lays into the surface at
+the command buffer's commit (the rotated-framebuffer road, rotation 0); a Load finds the last frame in the copy,
+filled from the surface when the copy is new or the surface's seed moved. Expected from glfill: a full-screen layer
+of the main pass ~0.9 -> ~0.4 ms, less ~0.7 ms for the copy at commit. Plug-ins: glass10 `d9e3bdbd`
+(`userland-26/out/plugin-glass10/`); glass11 `9e29ff9c` = glass10 + session 15's clip diagnostics
+(`clip-diag/build.sh`, `userland-26/out/plugin-glass11/`). Core tests with the whole series: 267, the same 14
+pre-existing failed checks. Without the boot-args both behave as glass9. No root of this session: glass11 goes into
+the combined root the clip worker assembles.
+
+Run (on that root, three boots as S9's, `metal_fps=1 cpus=4`): A no new boot-arg, B `metal_ubwc_fb=1`, C
+`metal_ubwc_fb=1 metal_ubwc_rt=1`. Read the GPU a buffer (`fps:` GPU busy, `passes timed`, HakiosGPU `the GPU worked`),
+the count of `compressed framebuffer N over IOSurface` lines (one per surface expected; one per frame would mean a fill
+every frame), refusals, and the pictures (Settings with its text against `gpu-s9a-q3.png`, the glass, the Control
+Center's corners and rims against `gpu-s9a-q7.png`). Pass for B: GPU a buffer at least 20 % under A, same pictures.
+
+Seen, not chased: on the fake GPU a flat draw after a fetching draw in one pass faults ("fragment constants at vec4 0,
+1 of them: past the stage's constlen of 0"): the third draw of the session-13 test, left out of it.
+
 ## Session 11, part 2 (2026-11-16, host only): S11-A on the phone, Settings stuck in configd's interface wait
 
 S11-A ran (root 2ef33580, vendor_boot final19-hbt, `research/hackios-xnu-kernel/logs/gpu-s11a*`, no end log). The

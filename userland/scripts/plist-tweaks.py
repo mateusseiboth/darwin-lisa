@@ -96,7 +96,13 @@ UI_SHELLS = ("com.apple.ClarityBoard", "com.apple.checkerboard", "com.apple.devi
 #   core at 100 % for 20-40 s (kernel cpuload=5000 "tl: busy 4:PerfPowerService/1996"), and SpringBoard, which
 #   reports its events to it, followed the finger at a crawl: Notification Center 25-90 s late, the app switcher's
 #   transition still under way a minute later. Nothing here needs its metrics (2026-11-11, gpu-nc6 and gpu-nc7).
-ALWAYS_DISABLED = ("com.apple.CommCenter", "com.apple.PerfPowerServices", "com.apple.PerfPowerServicesExtended")
+#   identityservicesd: its executable is not in the 23F84 image (launchd: "Missing executable detected"), yet its Mach
+#   services stay advertised, so a client's message waits for a launch that never comes. IDS's synchronous connect
+#   ("Requesting connectionID 1 usingSync YES") never returned in donotdisturbd, which therefore never activated its
+#   listener: no Do Not Disturb client was ever accepted (SpringBoard, PosterBoard; run int1-a, 2026-11-16). Disabled,
+#   the lookup fails at once.
+ALWAYS_DISABLED = ("com.apple.CommCenter", "com.apple.PerfPowerServices", "com.apple.PerfPowerServicesExtended",
+                   "com.apple.identityservicesd")
 # The "loops" group (opt-in: ld_disable=loops): the services that die every time they start on this port, so they only
 # cost a spawn each time and leave a client waiting while launchd throttles them. Seen in every host run of
 # 2026-11-12 (gpu-c2: wifip2pd 28 exits with exit(1) after 56 ms, one every 10 s, without wifid; cryptexd 15 SIGTRAPs
@@ -131,6 +137,33 @@ def readPresentLabels(sysroot, wanted):
     return [label for label in wanted if label in present]
 
 
+# The "missing" group (opt-in: ld_disable=missing): every LaunchDaemon whose executable is not in the image. Each one
+# advertises its Mach services and can leave a synchronous client waiting for ever, as identityservicesd did.
+CRYPTEX_PREFIXES = {"System/Cryptexes/OS/": "private/preboot/Cryptexes/OS/",
+                    "System/Cryptexes/App/": "private/preboot/Cryptexes/App/"}
+
+
+def isProgramPresent(sysroot, program):
+    relative = program.lstrip("/")
+    candidates = [relative] + [moved + relative[len(prefix):] for prefix, moved in CRYPTEX_PREFIXES.items()
+                               if relative.startswith(prefix)]
+    return any(os.path.exists(os.path.join(sysroot, candidate)) for candidate in candidates)
+
+
+def readMissingProgramLabels(sysroot):
+    missing = []
+    for name in sorted(os.listdir(os.path.join(sysroot, LD))):
+        if not name.endswith(".plist"):
+            continue
+        with open(os.path.join(sysroot, LD, name), "rb") as f:
+            job = plistlib.load(f)
+        program = job.get("Program") or (job.get("ProgramArguments") or [None])[0]
+        label = job.get("Label")
+        if program and label and label not in missing and not isProgramPresent(sysroot, program):
+            missing.append(label)
+    return missing
+
+
 def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DISABLED, crashLooping=CRASH_LOOPING):
     labels = readLabels(sysroot, listing)
     chunks = [labels[i:i + size] for i in range(0, len(labels), size)]
@@ -144,6 +177,9 @@ def saveLdGroups(sysroot, listing, size=LD_GROUP_SIZE, alwaysDisabled=ALWAYS_DIS
     looping = readPresentLabels(sysroot, crashLooping)
     if looping:
         lines.append("loops " + " ".join(looping))
+    missing = readMissingProgramLabels(sysroot)
+    if missing:
+        lines.append("missing " + " ".join(missing))
     path = os.path.join(sysroot, LD_GROUPS)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:

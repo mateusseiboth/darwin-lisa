@@ -97,6 +97,36 @@ class LdGroupsTest(unittest.TestCase):
         self.assertEqual(tweaks.CRASH_LOOPING,
                          ("com.apple.wifip2pd", "com.apple.syncdefaultsd", "com.apple.security.cryptexd"))
 
+    def testDefaultsDisableIdentityServices(self):
+        """identityservicesd's executable is not in the 23F84 image: its Mach services stay advertised, IDS's
+        synchronous connect never returns, and donotdisturbd never accepts a client (run int1-a)."""
+        self.assertIn("com.apple.identityservicesd", tweaks.ALWAYS_DISABLED)
+
+    def testMissingGroupHasTheLabelsWhoseProgramIsAbsent(self):
+        daemons = os.path.join(self.root, "System/Library/LaunchDaemons")
+        writePlist(os.path.join(daemons, "com.apple.gone.plist"), {"Label": "com.apple.gone", "Program": "/usr/libexec/gone"})
+        writePlist(os.path.join(daemons, "com.apple.here.plist"), {"Label": "com.apple.here",
+                                                                   "ProgramArguments": ["/usr/libexec/here", "-x"]})
+        writePlist(os.path.join(daemons, "com.apple.app.plist"), {"Label": "com.apple.app",
+                                                                  "Program": "/System/Cryptexes/App/usr/libexec/app"})
+        writePlist(os.path.join(daemons, "com.apple.appgone.plist"), {"Label": "com.apple.appgone",
+                                                                      "Program": "/System/Cryptexes/App/usr/libexec/appgone"})
+        for present in ("usr/libexec/here", "private/preboot/Cryptexes/App/usr/libexec/app"):
+            os.makedirs(os.path.dirname(os.path.join(self.root, present)), exist_ok=True)
+            open(os.path.join(self.root, present), "w").close()
+        path = tweaks.saveLdGroups(self.root, self.listing, 3)
+        with open(path) as f:
+            groups = {line.split()[0]: line.split()[1:] for line in f if line.strip() and not line.startswith("#")}
+        self.assertEqual(groups["missing"], ["com.apple.appgone", "com.apple.gone"])
+
+    def testMissingGroupIsNotDisabledByDefault(self):
+        daemons = os.path.join(self.root, "System/Library/LaunchDaemons")
+        writePlist(os.path.join(daemons, "com.apple.gone.plist"), {"Label": "com.apple.gone", "Program": "/usr/libexec/gone"})
+        path = tweaks.saveLdGroups(self.root, self.listing, 3, alwaysDisabled=("com.apple.c",))
+        with open(path) as f:
+            groups = {line.split()[0]: line.split()[1:] for line in f if line.strip() and not line.startswith("#")}
+        self.assertNotIn("com.apple.gone", groups["default"])
+
     def testFileGoesToPrivateEtc(self):
         path = tweaks.saveLdGroups(self.root, self.listing, 3)
         self.assertEqual(path, os.path.join(self.root, "private/etc/dlisa-ld-groups.conf"))

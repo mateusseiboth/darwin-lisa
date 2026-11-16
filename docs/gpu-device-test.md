@@ -55,13 +55,15 @@ gestures (the run below), not one window of one boot.
 Kernel `research/hackios-xnu-kernel/kernel-16k-s14-idle.bak` (`bf4df15f63b98fe6...`; `kernel26.nopac` is this build
 now) = s8-select + sched-idle-quiet. For host runs: `KERNEL=kernel-16k-s14-idle.bak`.
 
-`out/vendor_boot-lisa-final21-s14-idle.img` (`6ce52f2624d1bf5a...`; RAM: `out/loader-usb-lisa-final21-s14-idle.hkub`
-`3b5ed61bc3992d06...`), a real `build-combined.sh` build: `GEOMETRY= CPUS=7 NAME=final21-s14-idle
-KERNEL=research/hackios-xnu-kernel/kernel-16k-s14-idle.bak EXTRA_ARGS="noidle=1 tz=America/Campo_Grande gpu=1 metal=1
-dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"`. Word by word against final19-hbt: only
-`cpus=4` -> `cpus=7` and the epoch; against final20-sel7-hbt only the epoch; 450 characters. Its loader differs from
-final20's in 3 bytes (the epoch). NOT flashed. Built before the uncommitted `ARTWORK` change to `loader/build-*.sh`
-(13:56:40), so the identity's own artwork, as final19. A rebuild with that change needs `ARTWORK=` to stay so.
+`out/vendor_boot-lisa-final23-s14-x2436.img` (`1f24a44b094a66b1...`; RAM: `out/loader-usb-lisa-final23-s14-x2436.hkub`
+`248d914b61cdfdd3...`), a real `build-combined.sh` build on the newest base, final22-x2436 (`1324baa2` = final19-hbt +
+artwork 2436): `GEOMETRY= CPUS=7 NAME=final23-s14-x2436 KERNEL=research/hackios-xnu-kernel/kernel-16k-s14-idle.bak
+EXTRA_ARGS="noidle=1 tz=America/Campo_Grande gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1
+interrupt-masked-debug-mode=0 metal_all=1"` (the log says `artwork-device-subtype: 2436`). Word by word against
+final22-x2436: only `cpus=4` -> `cpus=7` and the epoch; 450 characters. Its loader differs from final22's in 1 byte
+(the epoch). NOT flashed. If final22 has not booted on the phone yet, its first boot needs `ls_reset=1`
+(docs/flash-boot.md). `out/vendor_boot-lisa-final21-s14-idle.img` (`6ce52f26`, built first, on final19's loader without
+the artwork) is superseded: do not flash it.
 
 ### The run (one trip, host runs only, phone in pmOS, any root, vendor_boot untouched)
 
@@ -105,9 +107,9 @@ frames in 5 s` and its histogram are still in the log.
 4. no hang, 0 `no answer`, S14-A's screenshots the same to the eye as S14-B's at the same times.
 
 When S14-A is within 3 % under S14-B on 1 or 2, it is the spread: run both again and judge on the two boots summed.
-On a pass: `tools/flash-vendorboot.sh out/vendor_boot-lisa-final21-s14-idle.img` (reads back `6ce52f26`), then the
-cold boot with no host command and a screenshot at +4/+5 min. Rollback: final19-hbt `bc7a7ea2` or final17-cpus4
-`2e7f0b85`. S14-C against S14-A says how much of it is WFI; if S14-C equals S14-A, keep the mask anyway (the A55s cool
+On a pass: `tools/flash-vendorboot.sh out/vendor_boot-lisa-final23-s14-x2436.img` (reads back `1f24a44b`), then the
+cold boot with no host command and a screenshot at +4/+5 min. Rollback: final22-x2436 `1324baa2`, final19-hbt
+`bc7a7ea2` or final17-cpus4 `2e7f0b85`. S14-C against S14-A says how much of it is WFI; if S14-C equals S14-A, keep the mask anyway (the A55s cool
 and the A78s keep the shared lines).
 
 ## Session 11 (2026-11-13, host only): Settings "draws nothing while scrolled" is a run with no scroll in it

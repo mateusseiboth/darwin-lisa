@@ -27,6 +27,10 @@ least-effort way to a working GPU without writing a shader translator of our own
    16.5 (this chip), T733 a 33.7 ms median frame interval (this chip at 315 MHz, iPadOS 17), IOS-26-Hot 52.9 presents
    a second on a 60 Hz panel with live backdrop blur switched off (A640). Then T1/T2 put the stack on iOS 26 beside
    today's driver (boot-arg selected) for the fps of the same gestures, Liquid Glass blur on.
+   **Status 2026-11-16:** T0 passed (home 0.92 ms against 5.6-7.0, main 2.61 against 6.3-6.9; fetch where only the
+   reading layer has the rasterization-order flag 1.26x main); T0b passed on the host (every one of the 251 pipelines
+   CoreAnimation linked on lisa translates and compiles through turnip for the A635, no patch needed); T1 built (the
+   bundle and test root int4 `a7d9c8b9`, not written); T1/T2 runs are next (section 7).
 4. Keep our AIR to NIR front end as the fallback translator, not the plan: Mesa's runtime lets NIR go straight into
    turnip (`VkPipelineShaderStageNirCreateInfoMESA`), so the hybrid exists, but it costs a binding-model lowering and
    a Metal object layer we would write ourselves (section 4, option B2).
@@ -223,10 +227,54 @@ Pass: `home` (81 draws, SpringBoard's shape) well under our core's 5.6-7.0 ms a 
 (8 layers) well under 6.3-6.9 ms; `fetch` within ~1.5x of `main`. If turnip on the real chip is not clearly faster
 than our core on the same scenes, stop: the problem is not the command layer.
 
+**T0 result (2026-11-16, pmOS, 550 MHz, medians of 300): passed.** The first run (`545c0413`) measured nothing: the
+vertex buffer was never written, every quad was four vertices at (0,0), and its GPU column (main 9.4 us) was the
+command processor alone. Fixed in `tu-capass.c` (the quads written, plus an occlusion query on the first frame that
+prints the samples the main pass shaded: 20,736,000 for 8 full screens, 5,140,800 for `home`); the rerun's counts
+matched. GPU time: `main` 2.61 ms (ours 6.3-6.9, ~2.5x faster), `linear` 3.76 ms, `home` 0.92 ms in GMEM (ours 5.6-7.0,
+6-7x), `main` sysmem 2.37 ms, `blur` 3.29 ms, `fetch` 7.64 ms (2.9x `main`). The fetch cost is turnip's
+`SINGLE_PRIM_MODE`: the rasterization-order flag is per pipeline (`tu_pipeline.cc:3788,4420`), FLUSH_PER_OVERLAP in GMEM,
+so 8 overlapping full-screen layers that all read the attachment serialise. Two scenarios added to separate it:
+`fetch1` (only the last layer reads `[[color(0)]]`, the other 7 blend in fixed function with a pipeline without the
+flag, which is what metal2vulkan does: the flag only on a pipeline whose fragment function reads an attachment) 3.30 ms,
+1.26x `main`, inside the criterion; `fetchbar` (no rasterization order: a subpass self-dependency and a by-region
+barrier between draws) 7.75 ms, no better; `fetch` with `TU_DEBUG=sysmem` 7.12, `gmem` 7.65. So CoreAnimation's mix,
+where few draws read the framebuffer, pays little, and the barrier road is not worth forcing. Recording costs the CPU
+17-18 us a full-screen draw on the phone (4.9 us on `home`).
+
 **T0b (host, after T0).** metal2vulkan's translator over QuartzCore 26's `default.metallib` (the 189 functions our
 front end was measured on: 173 translate, all 37 vertex and 128 fragment compile) and the SPIR-V through the host
 turnip of section 6 (drm-shim, `FD_GPU_ID=635`) into ir3: the coverage count against ours, on the host, before any
 boot. Needs cargo to fetch metal2vulkan's crates (a download, for the owner to allow).
+
+**T0b result (2026-11-16, host).** `kernel/drivers/gpu/unixnu/m2v-coverage/` makes every pipeline through
+metal2vulkan's runtime as the AdrenoMetal plug-in does (`newRenderPipelineStateWithDescriptor:` /
+`newComputePipelineStateWithFunction:`: AIR to SPIR-V, then `vkCreate*Pipelines` on the host turnip of Mesa `85fda3b` +
+dada's patch, drm-shim as the A642L, which compiles to ir3; checked with `IR3_SHADER_DEBUG=disasm`). The translator is
+dada's pin (`720ef1c` + `metal2vulkan-720ef1c-dada.patch`), the libraries the sysroot's (QuartzCore's from the OS
+cryptex: a universal metallib whose AIR slice is the one Metal hands the plug-in). The pipelines are the ones CoreAnimation
+linked on lisa (`cases-from-logs.py` over HakiosMetal's logs: functions, colour formats, constant sets; a trace line, where
+there is one, adds the vertex constants and attachments 1 and 2). Results in `m2v-coverage/results-2026-11-16.tsv`:
+
+| What | metal2vulkan + turnip (A635) | Our core (Session 15 and before) |
+| --- | --- | --- |
+| Pipelines CoreAnimation linked on lisa (all logs, 251 distinct: functions + formats + constants) | 251 ok | linked (they come from its logs) |
+| `fixed_frag_lph_cph` specialisations: the 79 of gpu-c1/c2/d2/d3, poster-f2, s9a/b (the "78"); 126 in all logs | 79 ok; 126 ok | 78 compiled |
+| Liquid Glass and blur: `glass_background_sdf(_no_bleed)`, `glass_foreground_sdf`, `glass_background(_no_bleed)`, `variable_blur_downsample_frag`, `narrow_blur_7..23`, `downsample_4/8`, `single_pass_blur_3` (render) | all ok | drawn (render) |
+| `VariableBlurrer::downsample` (`variable_blur_downsample_compute`), `variable_blur_copy_base_mip_compute`, `compute_sum_luma`, `compute_average_luma`, `rgb_to_420f`, `compute_apl*` | 11 of QuartzCore's 24 kernels ok | 8 of 24 compile |
+| QuartzCore's `tile_*` kernels (13) | refused: `NeedsInput(TileAttachments)`, Apple tile shading; CoreAnimation uses them only on a GPU family with tile functions, which the plug-in does not claim | not compiled |
+| QuartzCore's vertex functions | 37 of 37 | 37 of 37 |
+| QuartzCore's fragment functions | 126 of 128 (the others paired with a vertex function of theirs; `brim_*` need an integer attachment 0, `path_blit_frag*` attachments 1 BGRA8 and 2 R32Float) | 128 compile |
+| `inplace_copy_lph/lpf` | refused: raster order groups need `fragmentShaderPixelInterlock`, which turnip on a6xx does not expose; no log shows CoreAnimation using them | compile |
+| Function constants, incl. RenderBox's `uint4 _shader_state` | ok | ok after the wide-constants patch |
+| RenderBox `custom_effect_*`, `primitive_custom_*` (`custom_fn`) | translated; need the caller's linked function (`NeedsInput(LinkedFunction custom_fn)`), which metal2vulkan takes as `MTLLinkedFunctions`; dada found the glass these draw missing until linked | refused (`custom_fn.MTL_VISIBLE`, a function value) |
+| Framebuffer fetch `[[color(n)]]` and memoryless attachment 1 (the uber shader's mask) | every logged constant set ok | fetch slots by patch |
+
+No pipeline CoreAnimation used on lisa needs a patch to metal2vulkan or turnip. What is left: `inplace_copy` (if it
+ever shows, a fallback without raster order groups), `tile_*` (not used without tile support), and `custom_fn` (a
+runtime check on the phone: the linked path). Cold compile on the host: median 9.5 ms a pipeline (Ryzen 7 5800X, Mesa's
+disk cache off; the uber shader 10.9 ms, worst 64 ms), so the phone's first boot compiles for seconds: the plug-in's
+shared cache directory (`/private/var/mobile/Library/Caches/com.darwin-lisa.m2v-shared/`) keeps them for the next.
 
 **T1. The UniXNU userland on iOS 26, over today's kernel, beside today's driver (first frame).**
 No kernel change: dada's `tu_knl_darwin_redwood.h` with `HakiosGPU` as the service and 0x7d for host pages. Userland:
@@ -236,6 +284,50 @@ with the iOS 26 changes of dada and IOS-26-Hot (`phone/metal2`), installed as a 
 `metal_plugin=AdrenoMetal`. Marks: `metal_test` draws and reads back through it; backboardd composites the lock screen
 through the new plug-in with no software fallback line.
 
+**T1 build (2026-11-16, host; nothing written to the phone, no kernel change).** `kernel/drivers/gpu/unixnu/`:
+`fetch-src.sh` (the upstream pins of dada's `gpu2/`, dada's three patches, then ours), `build-turnip-ios.sh`,
+`build-bridge.sh`, `build-plugin.sh`, `build-root.sh`. All on this host's clang 22 + ld64.lld and the iPhoneOS 26.5 SDK,
+plain arm64, relabelled arm64e by `userland/inject/arm64e-mark.py` as HakiosMetal is (this userland has no pointer
+authentication, so rustup's `aarch64-apple-ios` std serves; dada needed a nightly with `-Zbuild-std` and a pauthtest
+target for real arm64e). Rust 1.98.1 from rustup with that target; glslang 16.0.0 built by hand (no cmake here: Mesa
+now needs glslang for its fp64 library).
+
+- Turnip: Mesa `85fda3b` + `mesa-85fda3b-dada.patch` + `mesa-lisa.patch`, `-Dfreedreno-kmds=darwin`, no `TU_DEBUG` by
+  default (autotune). `mesa-lisa.patch` changes dada's `tu_knl_darwin_redwood.h`, the NativeAdreno-over-msm adapter:
+  service `HakiosGPU` (`TU_DARWIN_RW_SERVICE` names another), host pages by our selector `0x7d` (same record as
+  RedwoodGPU's `0x7c`, off unless `tu_host_import=1`, as dada had it), and the fence deadline on `CLOCK_MONOTONIC`, the
+  clock our `millisecondsUntil()` reads (`mach_continuous_time`; dada's kernel reads `CLOCK_UPTIME_RAW`). Our kernel
+  answers every parameter the adapter asks or the adapter's fallback is the value msm gives this chip (GMEM_BASE 0,
+  UCHE_TRAP_BASE, VA range); the `0x8000` track flag on surfaces is ignored by `submit()`, which marks every named
+  surface `drawn` anyway. UBWC stays on for turnip's own images (highest bank bit 14, swizzle 6, macrotile 1 from
+  `hakios_gpu_parameter()`). Also the drm-shim row for the host (`FD_GPU_ID=635`).
+- Bridge: metal2vulkan `720ef1c` + `metal2vulkan-720ef1c-dada.patch` (it already holds AdrenoMetal's seven
+  `bridge/patches`), `libnative_metal_bridge.a` for `aarch64-apple-ios`.
+- Plug-in: AdrenoMetal `c6d29ca` + `nativemetal-dada.patch` + `nativemetal-lisa.patch`: files beside the bundle in
+  `/System/Library/Extensions` (dada's `/redwood/lib` fallback gone), no pipeline-cache export (dada's RedwoodGPU
+  tunnel), the shared cache directory renamed, and boot-args: `pandora_tu_debug=` or the short `tu=` (TU_DEBUG: `gmem`,
+  `sysmem`, `bos` for the BO census; empty by default, where dada forced `nocb,bos`), `m2v_clients=a,b,c` (which processes get a
+  device, in place of `NativeAdrenoMetal.clients`, which is `*`), `tu_host_import=1`. The kernel's accelerator keeps
+  `MetalPluginClassName` = `HakiosMetalDevice`, which `AdrenoMetal.bundle` does not have, so Metal takes the bundle's
+  `NSPrincipalClass` (`NativeAdrenoMetalDevice`), as on dada.
+- Bundle `/System/Library/Extensions/AdrenoMetal.bundle`: `AdrenoMetal` `287c8563`, `libvulkan_freedreno.dylib`
+  `f13f1296` (both arm64e-labelled), `Info.plist` `bd4b3f00`, `SOURCES` `4d2346b8` (where the source is, for the
+  licence); beside it `NativeAdrenoMetal.clients` (`*`).
+- Test root **int4** `userland-26/out/system-26.apfs.full-a7d9c8b9` (sha256
+  `a7d9c8b9f792189c5ff0fbb5cd2e8db960fc04c13ab80666928a5ef0ac070df2`, 4,999,610,368 B, NOT written): root 9a91ed47
+  (int3 + bluetoothd) with libdlisa `c8b291b8` (`out/libdlisa-sbnotch`: the split bar's notch and the text probe, as
+  root 31401b2b), libdlisa-motion `677f8faf` (the proximity Placement fix, taken out of root 5c001ebc), the bundle and
+  the clients file. `EXTRA=... build-root.sh`: hard-link copy of `out/sysroot-26` (shared sysroot untouched) with
+  9a91ed47's own files taken out of it (`apfs.py cat`: ld-groups 2beca308, inject.conf b6d0f0b4, launchd dbeb1522,
+  HakiosMetal 9e29ff9c, InterfaceNamer `Info.plist` aa6f1292, bluetoothd aaa02518) and the two libraries above,
+  `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB. Read back: every one of those files and the bundle's
+  four, census 61,218 files (9a91ed47 + 5), 24,195 directories, 821 symlinks, 15,961 checksums, 0 bad. It replaces
+  5c001ebc and the first T1 root b915770a (both deleted); 31401b2b is kept.
+
+**Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
+change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
+(`gpuWait()` polls every 200 us, released lock), then B1n.
+
 **T2. The measurement that decides.** Same root, same gestures as Session 6/13 (lock to home swipe, Settings scroll,
 Control Center opened from the home screen), two boots: today's plug-in and AdrenoMetal (turnip's autotune, then
 UniXNU's `TU_DEBUG=gmem` default). Read `MiniIOMobileFramebuffer: from one frame to the next` (interval histogram)
@@ -244,6 +336,54 @@ scroll, Session 6) and at or under 11.1 ms (90 Hz) in the swipe, with Liquid Gla
 (the coverage table of section 5; IOS-26-Hot reached its 52.9 fps with it off). Fail on fps with the GPU idle means
 the CPU side (metal2vulkan or the fence path): profile with UniXNU's frame diagnostics, then consider B1n (interrupts,
 async submit) before touching turnip.
+
+**T1/T2 plan, autonomous (no owner at the phone).** Root int4 (below); the kernel of root 9a91ed47's runs
+(`kernel-16k-periph1.bak` 40815677, or whichever the coordinator has as current); gestures by the kernel's synthetic
+touch (`touch_seq=`, `kernel/drivers/touch/dlisa.touch_synth.c`) and libdlisa's scripted scroll (`dlisa_scroll=SECS`,
+inside backboardd), Sessions 6/13/15's: Settings opened from home by the tap at 56800:5600, its list scrolled, then the
+Control Center pulled over it; the lock-to-home swipe is the boot's own unlock animation (`dlisa_unlock=1`, the burst of
+~160 swaps `frame_bursts.py` takes from the 5 s windows; Session 14's extra `nc`/`up` pairs do not fit the line). fps by
+swaps: `touch_lat=1` gives every swap's `tl: s` line (`tools/frame_bursts.py`), and the scroll's windows
+(`tools/scroll_window.py`); both the same with either plug-in, so the columns compare. Base line as Session 15's without
+HakiosMetal's own boot-args (`metal_all`, `metal_spec_wait`, which only the today's-driver line keeps), with
+`sensors_hid=15` (0x0f). Full lines, the quietrun's 170 characters included: T1-A 423, T2-A 459, T2-B 454, T2-C 455
+(`tu=` is the plug-in's short name for `pandora_tu_debug=`; T2-C leaves out `cc@250` to fit).
+
+```sh
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 interrupt-masked-debug-mode=0 cpus=4 sensors_hid=15"
+T="150 200 215 240 260 275"
+G="touch_lat=1 touch_seq=tap:56800:5600@190,cc@250 dlisa_scroll=215"   # Settings, its scroll, Control Center
+K=kernel-16k-periph1.bak
+# T1-A: the new stack's first frame, metal_test and the render server alone (metal_test: draws and reads back)
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t1a "$B metal_plugin=AdrenoMetal m2v_clients=metal_test,backboardd" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# T2-A: today's driver (the column to beat)   T2-B: the new stack, turnip's autotune, every process (clients file: *)
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t2a "$B metal_all=1 metal_spec_wait=1 $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t2b "$B metal_plugin=AdrenoMetal $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# T2-C: the new stack with every pass in GMEM (UniXNU's default); no Control Center pull
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t2c "$B metal_plugin=AdrenoMetal tu=gmem touch_lat=1 touch_seq=tap:56800:5600@190 dlisa_scroll=215" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+The tap at 56800:5600 is Session 11/15's (Settings from the home screen); check it against T1-A's +150 screenshot,
+since the home page of these roots may differ. Read, in this order, each criterion its own mark:
+
+| Mark | Where | Pass |
+| --- | --- | --- |
+| first frame | `gpu2-metal[backboardd ...]` without `no device`; `pandora-metal: backboardd has a device`; no `gpu2-turnip ... refused`; the +150 screenshot | the lock screen or home drawn by the GPU, no software-renderer line |
+| home | +150/+200 screenshots (after the unlock) | icons, wallpaper, dock |
+| Settings with glass | +215/+240 screenshots | cards with round corners, the navigation bar's glass blurred |
+| Control Center with corners | +260/+275 screenshots | round modules, slider fills inside their pills, no square behind AirPlay |
+| fps, scroll | frame intervals over the scroll window (`scroll_window.py`) | median under today's (18-21 ms, Session 6) |
+| fps, gestures | the lock-to-home burst and the Control Center pull (`frame_bursts.py`) | median frame interval at or under 11.1 ms (90 Hz) with the glass blur on |
+| GPU | `pandora-metal B*` lines (Turnip's render passes, every 10 s) and `tl: f` waits | GPU idle while frames are late means the CPU side: profile before changing turnip |
+
+Rollback: the same root without `metal_plugin=` boots today's HakiosMetal (9e29ff9c); the root itself rolls back to
+9a91ed47 or 31401b2b with `tools/flash-root.sh`.
+
+Last resort, owner's decision of 2026-11-16, not implemented: if Liquid Glass alone keeps the new stack over the frame
+budget once everything else is tried, it can be turned off the way iOS does it, by Accessibility: Reduce Transparency
+(`UIAccessibilityIsReduceTransparencyEnabled`, the `com.apple.Accessibility` preference behind it) and, if needed,
+Increase Contrast, set before SpringBoard starts by a libdlisa boot-arg (as libdlisa sets other preferences). It is
+cheap and reversible (drop the boot-arg), and measured only after the runs above with the glass on.
 
 **T3. Then remove the old core** (hakios-metal, its 17 patches and `HakiosMetalCA.m`), keeping the AIR to NIR
 front end in the tree as the B2 fallback until T2 has passed on two roots.
@@ -280,3 +420,31 @@ LD_PRELOAD=host/src/freedreno/drm-shim/libfreedreno_noop_drm_shim.so FD_GPU_ID=6
 The iOS build: the same tree, `--cross-file userland-26/gpu-build/mesa/cross.ini`, `PKG_CONFIG_LIBDIR` at its
 `pkgconfig/`, `-Dvulkan-drivers=freedreno -Dfreedreno-kmds=msm -Dtools=` and the options above. Both builds were
 deleted after the measurements (disk).
+
+## 9. The UniXNU stack for lisa: files, build, licences (T0b, T1)
+
+`kernel/drivers/gpu/unixnu/`, in build order (sources and builds in `userland-26/gpu-build/unixnu/`, outside git):
+
+| File | What |
+| --- | --- |
+| `fetch-src.sh` | the upstream pins dada's `gpu2/` patches apply to (Mesa `85fda3b`, metal2vulkan `720ef1c`, AdrenoMetal `c6d29ca`, AdrenoPM4, NativeMobileDisplay for one header, Adreno830's `NativeAdrenoABI.h`), dada's patches (hakios-arm64e-dada `f1ae906`) as the commit `dada` of each tree, ours on top; glslang 16.0.0 built by hand |
+| `mesa-lisa.patch` | the adapter to HakiosGPU (service, `0x7d`, `CLOCK_MONOTONIC`) and the A642L row of drm-shim |
+| `nativemetal-lisa.patch` | the plug-in's paths, no cache export, boot-args `pandora_tu_debug=`/`tu=`, `m2v_clients=`, `tu_host_import=` |
+| `build-host-turnip.sh` | turnip for the host over drm-shim (T0b, tu-capass) |
+| `m2v-coverage/` | T0b: `cases-from-logs.py`, `main.rs` (the harness over metal2vulkan's runtime), `build.sh`, `run.sh`; `cases-2026-11-16.tsv` and `results-2026-11-16.tsv` |
+| `build-turnip-ios.sh` | `libvulkan_freedreno.dylib`, Darwin backend, arm64 iOS |
+| `build-bridge.sh` | `libnative_metal_bridge.a`, `aarch64-apple-ios` (rustup 1.98.1) |
+| `build-plugin.sh` | `AdrenoMetal.bundle` + `NativeAdrenoMetal.clients`, relabelled arm64e |
+| `build-root.sh` | a test root: BASE's files, the bundle, `EXTRA=` files; read back |
+| `SOURCES` | goes into the bundle: where its source is |
+
+`kernel/drivers/gpu/tools/turnip-proto/tu-capass.c`: the T0 program, fixed (vertex buffer) and with `fetch1`/`fetchbar`.
+
+**Licences.** metal2vulkan is GPL-2.0-or-later OR LGPL-3.0-or-later. `AdrenoMetal` links it statically, so a bundle
+given to anyone must come with the complete corresponding source of metal2vulkan as built (the upstream commit, dada's
+patch) and, under the LGPL option, what is needed to relink the rest; the simplest compliance is to offer the source of
+the whole bundle. That is kept reachable by reference: `fetch-src.sh` pins every upstream commit and dada's repository
+commit, and our changes are the two `*-lisa.patch` files in this repository; the bundle carries `SOURCES`, which says
+so. Mesa (turnip), AdrenoMetal, AdrenoPM4 and dada's patches to them are MIT; NativeMobileDisplay (one header) and
+UniXNU's core are BSD-2-Clause-Patent. If the upstreams ever disappear, a copy of the `src/` trees (about 700 MB, mostly
+Mesa) is what to keep beside a published image.

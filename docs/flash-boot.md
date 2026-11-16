@@ -15,6 +15,7 @@ Hard rules for every step: never touch slot b, never `--slot all`, never `set_ac
 
 | Artifact | sha256 (first 16) | What |
 |---|---|---|
+| `out/u-boot-lisa-hostwait.img` | `6dfb2f4573f64fa2` | built 2026-11-16, NOT flashed: `out/u-boot-lisa-recovery.img` (2e20b724, on boot_a) + the fix for the 2026-11-13 trip (U-Boot fastboot never on USB after the loader). Each USB gadget probe resets the controller (BCR + QSCRATCH: PIPE clock from UTMI, VBUS valid) and the power domain is no longer collapsed at the end of a gadget; `fastboot usb` gives up after 30 s with no PC (`fastboot_host_wait`) and the menu then starts postmarketOS after 10 s; `fastboot flash`/`erase`/`getvar partition-*` work on any UFS partition (`vendor_boot_a`). `.config` differs: the fastboot block backend on `scsi` instead of MMC. u-boot-lisa README "USB after the loader". Test in RAM first (section 3, A6); rollback `u-boot-lisa-recovery.img` 2e20b724 |
 | `out/u-boot-lisa-ums.img` | `a1f926c019727047` | `u-boot-lisa-ossel.img` + ums that says why it ended (`fastboot getvar ums`), stays in U-Boot fastboot when it fails, and ends only on a real eject. Same `.config` |
 | `out/u-boot-lisa-ossel.img` | `796474c9b931dc67` | U-Boot boot image (v3, gzip kernel, no ramdisk). Same `.config` as the flashed one; only the environment differs: `osel_check` and the "USB disk" menu entry |
 | `out/vendor_boot-lisa-final17-cpus4.img` | `2e7f0b8571398f8a` | **on vendor_boot_a since 2026-11-12 12:25** (read back OK): a real `loader/build-combined.sh` build, `GEOMETRY= CPUS=4 NAME=final17-cpus4 KERNEL=research/hackios-xnu-kernel/kernel-16k-consolidated-rc3.bak EXTRA_ARGS="noidle=1 tz=America/Campo_Grande gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"`. The line differs from final14-var only in `cpus=4` (only the four A78: 36 fps against ~30, GPU session 7) and the epoch. Rollback: final14-var `d2b8e825` (`out/vendor_boot-lisa-final14-var.img`) with `tools/flash-vendorboot.sh` from pmOS |
@@ -35,7 +36,9 @@ Hard rules for every step: never touch slot b, never `--slot all`, never `set_ac
 On the phone after the 2026-11-13 night trip: boot_a 2e20b724, vendor_boot_a final17-cpus4 `2e7f0b85`, super = root
 `system-26.apfs.full-8d63b36c` (written 00:31, read back; before it efed09de at 00:05, and e07b4390 before that). At
 00:38 `bootos.sh uboot` left the phone in U-Boot with no fastboot on USB (handover-2026-11-12.md, Session 10 on the
-phone). Next writes: root 2ef33580 and vendor_boot final19-hbt `bc7a7ea2`.
+phone). Cause and fix: u-boot-lisa README "USB after the loader" (`out/u-boot-lisa-hostwait.img`); until that image is
+on boot_a, do not use `bootos.sh uboot` or `bootos.sh ums` on the flashed U-Boot. Next writes: root 2ef33580 and
+vendor_boot final19-hbt `bc7a7ea2`.
 
 Note: `out/u-boot-lisa.img` is NOT the flashed U-Boot. It is an older mainline build (`U-Boot 2025.04-rc1-g0532f74d`,
 header v0, `bootcmd=bootefi bootmgr`, no menu, no hakios command). Don't use it as a rollback.
@@ -88,8 +91,8 @@ through.
 
 **The USB disk (`ums 0 scsi 0`)** is mainline U-Boot's standard Qualcomm-phone entry (`qcom-phone.env` has the same
 line). The tree's f_mass_storage handles 4096-byte LUNs (`blkbits` from the block size), and the UFS uclass sends
-WRITE10 with `UTP_HOST_TO_DEVICE`. U-Boot's own `fastboot flash` only knows MMC, so ums is the PC's write path. Reads
-are validated first (step B2). The first real write is the image itself, and it is read back in full.
+WRITE10 with `UTP_HOST_TO_DEVICE`. U-Boot's own `fastboot flash` only knew MMC before `u-boot-lisa-hostwait.img` (which
+writes any UFS partition), so ums is the PC's write path on the flashed U-Boot. Reads are validated first (step B2). The first real write is the image itself, and it is read back in full.
 
 On the PC the disk is vendor `Linux`, model `UMS disk 0` (`bootos.sh` and `ums-guard.sh` match that; the
 `File-Store Gadget` string in f_mass_storage is never sent). With `u-boot-lisa-ums.img`, `ums_disk` restarts the
@@ -158,6 +161,38 @@ tools/bootos.sh uboot         # U-Boot's fastboot; fastboot reboot -> HakiOS
 
 Also check, with the user if possible: a cold power-on still shows the 5 s menu and lands in HakiOS, and Volume
 Down still opens the menu.
+
+**A6 `out/u-boot-lisa-hostwait.img` (6dfb2f45): U-Boot's USB after the loader, and fastboot flash on UFS.** Steps 1 to 7
+write nothing: a hang there ends with a long press of Power, and the phone comes back on the flashed U-Boot.
+Keep `journalctl -kf | grep -E 'idProduct|disconnect'` open on the PC for every step.
+
+1. **[READ-ONLY]** from pmOS: `sudo head -c 761856 /dev/disk/by-partlabel/boot_a | sha256sum` must be
+   `2e20b72408b9ef94...` (`out/u-boot-lisa-recovery.img`, the rollback). Note `sudo blockdev --getsize64
+   /dev/disk/by-partlabel/vendor_boot_a` and `sudo head -c 360448 /dev/disk/by-partlabel/vendor_boot_a | sha256sum`.
+2. **[RAM-ONLY]** `tools/abl-fastboot.sh`, then `fastboot boot out/u-boot-lisa-hostwait.img` (retry if "Sending"
+   hangs). The menu, 5 s, then the flashed loader: `tools/bootos.sh state` says `loader`.
+3. **[RAM-ONLY] the 2026-11-13 path:** `tools/bootos.sh uboot`. Pass: `18d1:4ee0` on the PC within a few seconds of
+   the loader's disconnect, and `fastboot getvar product` answers. Fail, the new way: within ~45 s the menu shows "USB:
+   no PC answered (...)" and postmarketOS starts after 10 s; bootos.sh says so. In pmOS nothing is lost; the reason
+   word in the message (`nohost`, `udc -19`, ...) says where it stopped.
+4. **[READ-ONLY]** in U-Boot's fastboot: `fastboot getvar partition-type:vendor_boot_a` (raw), `fastboot getvar
+   partition-size:vendor_boot_a` (the size from 1), `fastboot getvar partition-size:boot_a`, and a name that does not
+   exist (`FAIL no partition ... on scsi`). Then `fastboot oem console` and look for "on scsi N and M" (a name on two
+   units): none is expected for these names.
+5. **[RAM-ONLY] the loader after U-Boot's fastboot** (home-button-type.md, A): `fastboot stage
+   out/loader-usb-lisa-final19-hbt.hkub`, `fastboot oem run:"hakios load fastboot"`, `fastboot continue` twice. Pass:
+   the loader comes up (`18d1:d00d`, product `xnuloader`). Then `tools/bootos.sh pmos` (bootos from that loader).
+6. **[RAM-ONLY, USER PRESENT] the timeout:** a new RAM boot as in 2, with Volume Down held while U-Boot starts (the
+   menu without the countdown). Pull the cable and pick "Enable fastboot mode". After 30 s the menu says "USB: no PC
+   answered (nohost)" and postmarketOS starts after 10 s. Plug the cable back: pmOS on USB. (A cable pulled while
+   fastboot is already talking to the PC is not seen: the board cannot sense VBUS, so that fastboot stays up.)
+7. **[RAM-ONLY]** `tools/bootos.sh ums` (read-only use: B2) and an eject: the phone restarts.
+8. **[WRITES: vendor_boot_a, APPROVAL]** only after 1 to 7 pass, and with the same bytes that step 1 found there:
+   the `out/vendor_boot-lisa-*.img` whose sha matches (the table above; `backups/vendor_boot_a-before-*` otherwise).
+   `fastboot flash vendor_boot_a FILE`, `fastboot reboot`, then in pmOS read it back with the size of the file.
+   Rollback: `tools/flash-vendorboot.sh` from pmOS with the same file.
+9. **[WRITES: boot_a, APPROVAL]** as A3 with `out/u-boot-lisa-hostwait.img`, read back `6dfb2f45...`. Rollback:
+   `out/u-boot-lisa-recovery.img` (`2e20b724`) the same way, from pmOS (`dd`) or ABL (`fastboot flash boot_a`).
 
 ### B. Read-only survey (decides the branch)
 

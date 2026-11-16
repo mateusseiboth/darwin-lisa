@@ -5,7 +5,8 @@
 #   tools/bootos.sh pmos                  boot postmarketOS and wait until its SSH answers
 #   tools/bootos.sh hakios                back to the HakiOS loader (fastboot product "xnuloader")
 #   tools/bootos.sh ums                   the phone's UFS LUN 0 as a USB disk on this PC; prints /dev/sdX
-#   tools/bootos.sh uboot                 U-Boot's own fastboot (for "fastboot oem run:...")
+#   tools/bootos.sh uboot                 U-Boot's own fastboot ("fastboot oem run:...", "fastboot flash vendor_boot_a");
+#                                         with no PC on USB U-Boot falls back to postmarketOS (u-boot-lisa)
 #   tools/bootos.sh menu                  U-Boot's boot menu, without the countdown
 #   tools/bootos.sh pmos-shell            postmarketOS's initramfs recovery shell (telnet 172.16.42.1:23); needs the
 #                                         U-Boot with the recovery entry (osel_5) and a loader that knows the target
@@ -191,8 +192,14 @@ ums)
 	;;
 uboot)
 	ask_loader uboot
-	wait_for 30 uboot-fastboot || die "U-Boot's fastboot did not come up"
-	say "U-Boot fastboot is up (fastboot oem run:CMD, fastboot reboot)"
+	if ! wait_for 45 uboot-fastboot; then
+		# U-Boot gives up after fastboot_host_wait (30 s) with no PC on USB, then its menu starts postmarketOS after
+		# 10 s (u-boot-lisa/board/qualcomm/hakios-lisa.env, fastboot_nohost): the phone is never left invisible
+		say "U-Boot's fastboot did not come up: waiting for U-Boot's fallback (postmarketOS)"
+		wait_pmos_ssh && die "U-Boot's fastboot did not come up; the phone fell back to postmarketOS ($PMOS_USER@$PMOS_HOST)"
+		die "U-Boot's fastboot did not come up, and postmarketOS did not answer within ${WAIT_PMOS}s (state: $(state))"
+	fi
+	say "U-Boot fastboot is up (fastboot oem run:CMD, fastboot flash PARTITION FILE, fastboot reboot)"
 	;;
 menu) ask_loader menu ;;
 pmos-shell)
@@ -207,5 +214,5 @@ pmos-shell)
 	done
 	say "the recovery shell is up: telnet $PMOS_HOST 23 (tools/pmos-debug-shell.py CMD...)"
 	;;
-*) sed -n '2,12s/^# \{0,1\}//p' "$0"; exit 2 ;;
+*) sed -n '2,13s/^# \{0,1\}//p' "$0"; exit 2 ;;
 esac

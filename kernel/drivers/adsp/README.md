@@ -13,6 +13,7 @@ Status (2026-11-10, offline only; nothing here has run on the phone yet):
 | 2. battmgr: fuel gauge, health, cycles, current with lisa's sign, charger status | Done in code, feeds HakiosBattery. Charging needs no host command (see "Charging") |
 | 3. Sensors through the SSC | Kernel QMI/protobuf client + iOS rotation hook done and host-tested |
 | 4. The sensors PD's FastRPC file server (`sensors_rpc=1`) | Written 2026-11-10 evening, offline: protocol + file server host-tested (237 checks), kernel side syntax- and link-checked, staging + wire scripts tested. NOT in final1; needs a final2 build and has never run on the phone (see "Sensors: FastRPC") |
+| 5. iOS side (2026-11-16) | `kernel-16k-sensors1.bak` = s14-idle + `sensors-wire.py`; backboardd gets built-in HID services for accelerometer, gyroscope, compass, ambient light and proximity (`userland/motion/sensors-hid.c`). On the phone so far: ADSP up, SSC answers, no SUIDs without the FastRPC server (evening-b1b). Test plan, findings and shas: `docs/sensors.md` |
 
 ## Files
 
@@ -32,7 +33,7 @@ Status (2026-11-10, offline only; nothing here has run on the phone yet):
 | `dlisa.fastrpc.c` | The kernel's side (`sensors_rpc=1`): an SMMU context for stream 0x1805, the payload memory, attach to the sensors PD, the listener thread; sysctl `kern.hakios.sensors_rpc` |
 | `dlisa.fastrpc.h` | Its interface with `hakios.adsp.c`. Present in the tree (sensors-wire.py) = the hooks are compiled in |
 | `fw-sensors-stage.py` | `stage` (vendor `etc/sensors` + registry + socinfo into `research/hackios-xnu-kernel/fw-sensors/`, git-ignored, packed as `sensors.fs`), `check`, `header` (the `.incbin` header), `dump-persist` (the phone's persist `sensors/`, read-only, from pmOS over SSH) |
-| `sensors-wire.py` | After `adsp-wire.py`: copies the three files and `hakios.adsp.c`, adds `dlisa.fastrpc.c` under `hakios_adsp`, generates `bsd/dev/dlisa.sensors_fs.h`. Idempotent, `XNU_WORK=` for a dry run |
+| `sensors-wire.py` | After `adsp-wire.py`: copies the three files, `hakios.adsp.c` and `dlisa.ssc.c` (since 2026-11-16: the tree had kept final1's), adds `dlisa.fastrpc.c` under `hakios_adsp`, generates `bsd/dev/dlisa.sensors_fs.h`. Idempotent, `XNU_WORK=` for a dry run |
 | `test/run-fastrpc-tests.sh` | Host tests: `fastrpc-test.c` (the proto, gcc+UBSan, clang ASan+UBSan, valgrind), `sensors-stage-test.sh` + `sensors-archive-test.c` (staging, and the archive read back through the server) |
 
 ## Where the firmware lives (2026-11-10, the evening integration)

@@ -19,6 +19,10 @@
  * argument (checked by its type encoding), else an instance of a subclass made here whose -orientation returns ours.
  *
  * Inert unless the kernel has kern.hakios.sensors (the hakios_adsp tag) and the sensors give an accelerometer.
+ *
+ * sensors-hid.c (included below) also publishes the sensors as built-in HID services in backboardd's event server
+ * (accelerometer, gyroscope, compass, ambient light, proximity), for UIAccelerometer, CoreBrightness and the
+ * proximity processor; boot-arg sensors_hid=0 leaves them out.
  * Logs to /dev/console as "dlisa-motion: ...".
  */
 #include <Block.h>
@@ -60,6 +64,7 @@ say(const char *format, ...)
 /* ---- the kernel's sensors: the same structure as kernel/drivers/adsp/dlisa.ssc.c -------------------------- */
 
 enum { SENSOR_ACCEL, SENSOR_GYRO, SENSOR_MAG, SENSOR_LIGHT, SENSOR_PROXIMITY, SENSORS };
+#define SENSOR_IDS_DEFINED      /* (sensor-events.c takes these) */
 
 struct dlisa_sensors {
 	uint32_t size;
@@ -379,6 +384,8 @@ available(__unused id self, __unused SEL selector)
 	return true;
 }
 
+#include "sensors-hid.c"
+
 /* kind '-': an instance method, '+': a class method */
 static void
 replace(char kind, const char *selectorName, IMP replacement)
@@ -421,4 +428,5 @@ dlisaMotionInit(void)
 	replace('+', "isDeviceOrientationAvailable", (IMP)available);
 	replace('-', "isDeviceOrientationAvailable", (IMP)available);
 	say("dlisa-motion: the device orientation comes from the kernel's sensors (source %u, found %#x)\n", s.source, s.found);
+	startSensorServices();
 }

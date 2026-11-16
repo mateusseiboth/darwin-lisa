@@ -11,7 +11,7 @@ docker run --rm -v $M:$M darwin-lisa/unixnu-toolchain:latest sh -c '
 	S='"$M"'/research/hackios-xnu-kernel/xnu-deps/theos/sdks-git/iPhoneOS16.5.sdk
 	clang -target arm64-apple-ios16.0 -isysroot $S -O1 -Wall -fblocks -dynamiclib \
 	    --ld-path='"$M"'/research/hackios-xnu-kernel/xnu-deps/host/bin/ld64-lld \
-	    -install_name /usr/local/lib/libdlisa-motion.dylib -lobjc \
+	    -install_name /usr/local/lib/libdlisa-motion.dylib -lobjc -framework CoreFoundation \
 	    -Wl,-fixup_chains -Wl,-adhoc_codesign -o /tmp/libdlisa-motion.dylib '"$HERE"'/dlisa-motion.c >&2 &&
 	cat /tmp/libdlisa-motion.dylib' > "$HERE/out/libdlisa-motion.dylib.tmp"
 python3 -I "$M/darwin-lisa/userland/inject/arm64e-mark.py" "$HERE/out/libdlisa-motion.dylib.tmp"

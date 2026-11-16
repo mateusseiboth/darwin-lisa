@@ -6,6 +6,7 @@
 #   bsd/dev/dlisa.fastrpc_proto.h  the wire formats and the file server (host-tested: test/run-fastrpc-tests.sh)
 #   bsd/dev/dlisa.fastrpc.h        its presence switches hakios.adsp.c's hooks on (__has_include)
 #   bsd/dev/hakios.adsp.c          (re-copied) the channel "fastrpcglink-apps-dsp" and the hooks
+#   bsd/dev/dlisa.ssc.c            (re-copied) the SSC client that goes with it (sensors told of late are asked again)
 #   bsd/dev/dlisa.sensors_fs.h     generated: the staged sensor files linked in (.incbin of fw-sensors/sensors.fs;
 #                                  Qualcomm's and the phone's files: never in git). FW_SENSORS= (empty) leaves them out,
 #                                  and the server then says so and serves nothing.
@@ -49,7 +50,7 @@ require(os.path.join(T, "config/MASTER"), "<hakios_adsp>", "the ADSP tag (run ad
 require(os.path.join(T, "bsd/conf/files"), "bsd/dev/dlisa.ssc.c", "the ADSP files (run adsp-wire.py first)")
 require(os.path.join(T, "bsd/dev/hakios.platform.c"), "hakios_smmu_lock", "the SMMU lock shared with the Wi-Fi")
 
-for name in ("dlisa.fastrpc_proto.h", "dlisa.fastrpc.h", "dlisa.fastrpc.c", "hakios.adsp.c"):
+for name in ("dlisa.fastrpc_proto.h", "dlisa.fastrpc.h", "dlisa.fastrpc.c", "hakios.adsp.c", "dlisa.ssc.c"):
     copy(name)
 
 files = os.path.join(T, "bsd/conf/files")

@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
 # darwin-lisa (the UniXNU stack, T2): the GPU init that Linux does for this chip and our driver leaves at the reset values,
-# behind boot-arg gpu_hwcg=1, for the band test of docs/gpu-driver-rewrite.md section 7 (whole bin rows of an older frame
-# with binning on; our own core showed the same with binning, pmOS's turnip on Linux does not).
+# on by default since t3b (2026-11-16: the home and the Control Center right, 60 fps in the lock-to-home gesture); boot-arg
+# gpu_hwcg=0 leaves it out (the reset values, as before).
 #
-#   bsd/dev/hakios.adreno.c   after RB_DBG_ECO_CNTL, with gpu_hwcg=1:
+#   bsd/dev/hakios.adreno.c   after RB_DBG_ECO_CNTL, unless gpu_hwcg=0:
 #     - the hardware clock gating, Linux's a6xx_set_hwcg() with the A635's table (a660_hwcg in drivers/gpu/drm/msm/adreno/
 #       a6xx_catalog.c; unixnu-adreno6xx's NativeAdrenoA6xxHwInit.cpp has the same 49 values for the A642L): the GMU's CGC
 #       mode 0x00020202, delay 0x10111, hysteresis 0x5555; the SP clock off while the table is written; RBBM_CLOCK_CNTL
 #       0x8aa8aa82;
 #     - the bicubic weights Linux writes for the a650 family (TPL1_BICUBIC_WEIGHTS_TABLE).
-#   Without the boot-arg nothing changes. CP protection (Linux's a660_protect) is left out: it is no candidate for the bands and
+#   CP protection (Linux's a660_protect) is left out: it is no candidate for the bands and
 #   could fault on a register a command buffer writes.
 #
 # Run in the toolchain container like the other wires (build-kernel.sh does). Idempotent. XNU_WORK=<dir> for another tree.
@@ -39,12 +39,12 @@ MARK = "darwin-lisa (kernel/drivers/gpu/unixnu/kernel-wire.py): boot-arg gpu_hwc
 
 rows = "\n".join("\t\t\t\t{ %#05x, 0x%08x }," % r for r in HWCG)
 BLOCK = f'''	/*
-	 * {MARK}: the hardware clock gating Linux programs for
+	 * {MARK} (default, gpu_hwcg=0 leaves it out): the hardware clock gating Linux programs for
 	 * this GPU (a6xx_set_hwcg with the A635's a660_hwcg; the GMU's CGC mode, delay and hysteresis; the SP clock off while the
 	 * table is written) and the bicubic weights of the a650 family, which this driver otherwise leaves at their reset values.
 	 */
 	{{
-		uint32_t hwcg = 0;
+		uint32_t hwcg = 1;
 
 		PE_parse_boot_argn("gpu_hwcg", &hwcg, sizeof(hwcg));
 		if (hwcg) {{
@@ -72,7 +72,15 @@ BLOCK = f'''	/*
 '''
 
 s = open(ADRENO).read()
-if MARK in s:
+OFF = "\t\tuint32_t hwcg = 0;\n\n\t\tPE_parse_boot_argn(\"gpu_hwcg\""
+if MARK in s and OFF in s:
+    # the first version (off unless gpu_hwcg=1): on by default now
+    s = s.replace(OFF, OFF.replace("hwcg = 0;", "hwcg = 1;"))
+    s = s.replace(f" * {MARK}: the hardware", f" * {MARK} (default, gpu_hwcg=0 leaves it out): the hardware")
+    with open(ADRENO, "w") as f:
+        f.write(s)
+    print("  [ok]   hakios.adreno.c: gpu_hwcg on by default")
+elif MARK in s:
     print("  [skip] hakios.adreno.c: gpu_hwcg already wired")
 elif s.count(ANCHOR) != 1:
     print(f"  [FAIL] hakios.adreno.c: anchor found {s.count(ANCHOR)} times (need 1)")
@@ -84,5 +92,5 @@ else:
             sys.exit(2)
     with open(ADRENO, "w") as f:
         f.write(s.replace(ANCHOR, ANCHOR + BLOCK))
-    print("  [ok]   hakios.adreno.c: gpu_hwcg=1 (Linux's clock gating and bicubic weights)")
+    print("  [ok]   hakios.adreno.c: Linux's clock gating and bicubic weights (default; gpu_hwcg=0 leaves them out)")
 print("### UNIXNU KERNEL WIRE DONE")

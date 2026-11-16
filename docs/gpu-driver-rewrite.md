@@ -448,6 +448,30 @@ bridge now keeps the defined bits (cache 0-3, storage 4-7, hazard tracking 8-9) 
 `cd5a49c409178c7ffb3d5f51b9208e22a947129ca2ebf98036d9b5457f19623e`, NOT written): int9 with AdrenoMetal `6aca30f8` (resource
 options).
 
+**t3b (int8 + unixnu1 + `gpu_hwcg=1`): the best run so far.** Submit 0.063 ms a call; the home whole from +228 s and the Control
+Center right (glass, corners, icons, sliders, player); the lock-to-home gesture 54.1 swaps/s, median 16.6 ms (37 under 18 ms, one
+over 35): 60 fps. The clock gating Linux programs is what the sysmem icons needed, so it is the default in
+**`kernel-16k-unixnu3.bak`** (sha256 `b802850f4ab8181af95019ab00adbf7451d2589f9d9e4f25d55c96363f4e987c`: unixnu2 with
+`gpu_hwcg` on unless `gpu_hwcg=0`; `fb_settle_us` still off by default). Read on the host:
+
+- **The Control Center's opening (26.8 swaps/s, median 33.6 ms) is GPU time in many render passes over the whole framebuffer.**
+  A still home frame is 1 pass, 14 draws, 2.5 Mpixels, 1.0 ms from commit to completion. The CC's opening frames are up to
+  64 passes, 289 draws and 45.6 Mpixels of attachments, 28-39 ms each (`pandora-metal ... K` lines; frames of 18-22 passes
+  11-33 ms, of 5 passes 7-8 ms). In GMEM every pass loads and stores its whole render area where binning finds geometry, and
+  CoreAnimation's glass passes load the framebuffer (`pf 80 load 1`: 114-160 such passes in 10 s, 280-395 Mpixels): the
+  bandwidth of full-screen loads and stores, not the draws. The bridge's CPU stays small (1.9-3.9 % of a core; a draw 64-105 us,
+  a pass's end 235-480 us), and its `waitUntilScheduled` took 6.9 ms a commit in the CC's first 10 s (the scheduler waiting
+  for the events of the frame before), 0.1 ms later. Levers, in order of cost: `tu=sysmem` for the CC (a pass with small draws
+  then costs the pixels it draws, not the framebuffer twice; the sysmem icons are right now that the clock gating is on); then
+  a render area that is the union of the pass's scissors (metal2vulkan begins a pass with the whole attachment; turnip loads
+  and stores only the render area's bins), a runtime change; then the fence's interrupt (B1n) for the waits between frames.
+- **Buffers: not a leak so far.** 334 for a minute of the still home, then 935-939 once the gestures and the CC ran, and flat after
+  (275 MB): the runtime's pools grew to the CC's working set. T2-B's growth to 1402 was with the old submit. To check again
+  after a few minutes of gestures.
+- **The Notification Center.** The `nc` swipe was posted at kernel 228.8 s and the display took 23 swaps in 228-230 s, then
+  nothing until the `up` at 238: the pull ran and stopped; whether the panel then showed the Center or the home again needs a
+  picture between 230 and 238 s of kernel time (about +212..+219 in the quietrun's times).
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

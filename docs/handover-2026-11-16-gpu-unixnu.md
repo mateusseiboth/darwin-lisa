@@ -16,6 +16,7 @@ run lines: [gpu-driver-rewrite.md](gpu-driver-rewrite.md) sections 7 and 9.
 | root **int9** `userland-26/out/system-26.apfs.full-58bd61cd`: int8 with `AdrenoMetal` `87a66399` (pipelines no longer refused on a binary-archive miss). Read back, census 61218 files, 0 bad | `58bd61cde4258577ce3615278d0d7a6071c2a89578177ea05686960269006d36` |
 | root **int10** `userland-26/out/system-26.apfs.full-cd5a49c4`: int9 with `AdrenoMetal` `6aca30f8` (private MTLResourceOptions bits dropped, not refused). Read back, census 61218 files, 0 bad | `cd5a49c409178c7ffb3d5f51b9208e22a947129ca2ebf98036d9b5457f19623e` |
 | kernel `research/hackios-xnu-kernel/kernel-16k-unixnu2.bak`: unixnu1 + display-wire (one display start) + boot-arg `fb_settle_us=N` (the swap waits for a frame's submission that came after it) | `9dbfde4ff9dcfd983ddb38b17721ad7379dc0af94df17c8f65a47c6e7aea8e71` |
+| kernel `research/hackios-xnu-kernel/kernel-16k-unixnu3.bak`: unixnu2 with Linux's clock gating ON by default (`gpu_hwcg=0` leaves it out); `fb_settle_us` off by default | `b802850f4ab8181af95019ab00adbf7451d2589f9d9e4f25d55c96363f4e987c` |
 | `AdrenoMetal.bundle/AdrenoMetal` (plug-in + metal2vulkan bridge, arm64e label) | `287c85636a137ed7f62e741c7cac5af8a1167d347685d7ad0c71a4b00943f00e` |
 | `AdrenoMetal.bundle/libvulkan_freedreno.dylib` (turnip, Darwin backend over HakiosGPU) | `f13f1296d65419edb3caea8fd3c581944fbed0f26c6ff0177e6772b941f7d098` |
 | `userland-26/out/tu-capass/tu-capass` (T0, fixed, with `fetch1`/`fetchbar`) | `5535d43eacfcd36b57f4594830e52f60ec8abb47e04efea88a7b5edf7d10040a` |

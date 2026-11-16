@@ -3,7 +3,9 @@
 #   bsd/dev/dlisa.sound.c      sound=1..4: MI2S port, ASM/ADM/AFE, the test tone, /dev/hakios-audio's sink,
 #                              kern.hakios.sound_status / sound_tone
 #   bsd/dev/dlisa.tfa9873.c    the amplifiers over bit-banged I2C (GPIO 12/13)
-#   bsd/dev/dlisa.tfa9873.h    (beside them: included as "dlisa.tfa9873.h")
+#   bsd/dev/dlisa.tfa9873.h    (beside them: included as "dlisa.tfa9873.h", as are the two below)
+#   bsd/dev/dlisa.tfa9873.flags.h   the status registers decoded, the fault rules
+#   bsd/dev/dlisa.tfa9873.tuning.h  Xiaomi's container items (tfa-cnt.py), sound_tune=1|2
 # Options under the tag: DLISA_SOUND, and HAKIOS_SOUND, which drops hakios.stubs.c's empty hakios_sound_dsp_up(),
 # _dsp_down() and _quiesce() (dlisa.sound.c defines them; hakios.adsp.c already calls them at the right moments), so
 # nothing in hakios.adsp.c or hakios.stubs.c is edited. No init call: the entry is hakios_sound_dsp_up(), called by
@@ -25,6 +27,8 @@ w.require("bsd/dev/hakios.platform.c", "LCK_MTX_DECLARE(hakios_smmu_lock", "the 
 w.require("bsd/sys/hakios.audio.h", "hakios_adsp_apr_events(hakios_apr_events_t handler);", "the APR interface")
 
 w.copy(os.path.join(HERE, "dlisa.tfa9873.h"), "bsd/dev/dlisa.tfa9873.h")
+w.copy(os.path.join(HERE, "dlisa.tfa9873.flags.h"), "bsd/dev/dlisa.tfa9873.flags.h")
+w.copy(os.path.join(HERE, "dlisa.tfa9873.tuning.h"), "bsd/dev/dlisa.tfa9873.tuning.h")
 w.copy(os.path.join(HERE, "dlisa.tfa9873.c"), "bsd/dev/dlisa.tfa9873.c")
 w.copy(os.path.join(HERE, "dlisa.sound.c"), "bsd/dev/dlisa.sound.c")
 w.append_once("bsd/conf/files", "bsd/dev/dlisa.sound.c",

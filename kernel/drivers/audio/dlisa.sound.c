@@ -1398,7 +1398,7 @@ void
 hakios_sound_dsp_up(void)
 {
 	thread_t thread;
-	uint32_t amps = DLISA_TFA_TOP | DLISA_TFA_BOTTOM, reset = 0, dcdc = 1;
+	uint32_t amps = DLISA_TFA_TOP | DLISA_TFA_BOTTOM, reset = 0, dcdc = 1, tune = 1;
 
 	if (!PE_parse_boot_argn("sound", &level, sizeof(level)) || level == 0) {
 		return;
@@ -1410,15 +1410,17 @@ hakios_sound_dsp_up(void)
 	PE_parse_boot_argn("sound_amps", &amps, sizeof(amps));
 	PE_parse_boot_argn("sound_amp_reset", &reset, sizeof(reset));
 	PE_parse_boot_argn("sound_dcdc", &dcdc, sizeof(dcdc));
+	PE_parse_boot_argn("sound_tune", &tune, sizeof(tune));
 	seconds = seconds == 0 ? 1 : seconds > 10 ? 10 : seconds;
 	if (level >= 2 && seconds > TONE_MAX_MS / 1000) {
 		seconds = TONE_MAX_MS / 1000;           /* the test tone: three seconds at most */
 	}
 	atten_db = atten_db < ATTEN_MIN_DB ? ATTEN_MIN_DB : atten_db > ATTEN_MAX_DB ? ATTEN_MAX_DB : atten_db;
 	pause_ms = pause_ms > 5000 ? 5000 : pause_ms;
-	dlisa_tfa_configure(amps, reset != 0, dcdc != 0);
-	say("sound: level %u (sound_secs %u, sound_atten %u dB, sound_amps %u%s%s); the DSP's audio services are up\n", level, seconds,
-	    atten_db, amps & 3, reset ? ", sound_amp_reset" : "", dcdc ? "" : ", sound_dcdc=0");
+	tune = tune > 2 ? 2 : tune;
+	dlisa_tfa_configure(amps, reset != 0, dcdc != 0, tune);
+	say("sound: level %u (sound_secs %u, sound_atten %u dB, sound_amps %u, sound_tune %u%s%s); the DSP's audio services are up\n",
+	    level, seconds, atten_db, amps & 3, tune, reset ? ", sound_amp_reset" : "", dcdc ? "" : ", sound_dcdc=0");
 	state("starting");
 	running = true;
 	if (kernel_thread_start(sound_thread, NULL, &thread) != KERN_SUCCESS) {

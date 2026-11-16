@@ -1,0 +1,28 @@
+--- a/src/freedreno/drm-shim/freedreno_noop.c
++++ b/src/freedreno/drm-shim/freedreno_noop.c
+@@ -159,6 +159,12 @@
+ 
+ static const struct msm_device_info device_infos[] = {
+    {
++      /* darwin-lisa prototype: Adreno 642L (SM7325), Mesa's A635 row; GMEM as the lisa kernel reports it */
++      .gpu_id = 635,
++      .chip_id = CHIPID(6, 3, 5, 0),
++      .gmem_size = 512 * 1024,
++   },
++   {
+       /* First entry is default */
+       .gpu_id = 630,
+       .chip_id = CHIPID(6, 3, 0, 0xff),
+--- a/src/c11/threads.h
++++ b/src/c11/threads.h
+@@ -118,6 +118,10 @@
+ typedef pthread_t       thrd_t;
+ typedef pthread_key_t   tss_t;
+ typedef pthread_mutex_t mtx_t;
++/* host prototype: glibc 2.43 declares C23's once_flag/call_once in stdlib.h (included above) */
++#  undef ONCE_FLAG_INIT
++#  define once_flag mesa_once_flag
++#  define call_once mesa_call_once
+ typedef pthread_once_t  once_flag;
+ #  define ONCE_FLAG_INIT PTHREAD_ONCE_INIT
+ #  ifdef PTHREAD_DESTRUCTOR_ITERATIONS

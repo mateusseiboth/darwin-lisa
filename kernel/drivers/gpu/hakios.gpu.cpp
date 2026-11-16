@@ -192,6 +192,14 @@ struct hakios_show {
 #define GPU_PATIENCE_MS         5000            /* for a buffer or a submission that somebody waits for without a limit */
 #define GPU_ASK_AGAIN_US        200             /* while waiting for the core: how long between two looks at how far it is */
 #define GPU_PUSH_AGAIN_MS       4               /* a surface is pushed out of the cache again for a submission this long after the last */
+/*
+ * darwin-lisa (the UniXNU stack): a buffer of a submission with this flag is named so that its "drawn" mark follows the
+ * submission, and is not pushed out of the cache. Turnip's NativeAdreno adapter (tu_knl_darwin_redwood.h, RedwoodGPU's
+ * GPU_SUBMIT_BO_TRACK) names every IOSurface its process has imported in every submission, so that the display waits for
+ * the last writer; the AdrenoMetal plug-in pushes the surfaces a command buffer really uses itself (sys_dcache_flush).
+ * Pushing them all here cost 2-5 ms of every submission (T2-B: Submit 55 calls, 134 ms; seven surfaces, 69 MB).
+ */
+#define GPU_SUBMIT_BO_TRACK     0x8000
 
 static IOLock * gGPULock;                       /* around everything that is the GPU's (hakios_gpu_...) */
 static bool gGPUReported;
@@ -1027,7 +1035,7 @@ HakiosGPUUserClient::submit(struct msm_gem_submit * request)
 	for (uint32_t i = 0; i < request->nr_bos; i++) {
 		struct gpu_buffer * b = buffer(bos[i].handle);
 
-		if (b == NULL) {
+		if (b == NULL || (bos[i].flags & GPU_SUBMIT_BO_TRACK)) {
 			continue;
 		}
 		if (b->surface != NULL) {

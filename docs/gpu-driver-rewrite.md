@@ -346,6 +346,69 @@ now needs glslang for its fp64 library).
 - `submit failed: 0xe00002d8` (kIOReturnNotReady), `queue lost`, then 700 `DeviceLost`: after `oem stop` (the GPU given back at +287.9 s), as expected; the device stays lost for the process, which ends with the run. HakiosGPU answers NotReady only at the end of a run.
 - Memory: the BO census (`gpu2-turnip ... holds`) rose to 305 buffers / 190 MB while the home screen was built and then held at 333-335 buffers / 209-210 MB for the last ~90 s (11 blocks of 16-32 MB are 200 MB of it: the runtime's 16 MiB heaps and full-screen targets). No growth while idle; T2's gestures are where to look again.
 
+**T2-B / T2-C on int6 (2026-11-16) and what was read on the host.** T2-B (autotune, every process): the iOS 26 wallpaper and a
+right Control Center (glass, blur, corners, sliders), but the home's icons gone (labels only) and Settings' content missing;
+swaps per second boot 36.9, Settings 29.4, CC 36.2 against today's driver's 49.3 and 58.9. T2-C (`tu=gmem`): the whole home
+right for the first time (wallpaper, every icon, widget, glass dock), 52 swaps/s at first, then 18-30. So:
+
+- **The icons are lost in sysmem passes.** In T2-B turnip ran 49 passes in sysmem, all in backboardd's first 10 s, when CA
+  renders and caches the icons' layers (`B0 turnip: ... sysmem 49`, the count never moves after); every later pass went to
+  GMEM. With every pass in GMEM (T2-C) they are there. The producers draw them right (iconservicesagent's and SpringBoard's
+  `surface probe` read back `RGhA` 168x168 / 120x120 with data). Turnip cleans CCU at the end of every command buffer
+  (`tu_EndCommandBuffer`), and our submit invalidates CCU at the start as Linux does, so the sysmem path itself is Linux's;
+  what differs from Linux in our kernel is the GPU's init (below), and the CCU and the RB are what sysmem leans on. Next runs
+  tell producer from consumer (`tu_bb=` the render server's TU_DEBUG, `tu_cl=` every other process's) and UBWC from not
+  (`tu=sysmem,noubwc`).
+- **Where the milliseconds go.** The bridge (metal2vulkan recording) uses 1-11 % of one CPU in backboardd: not it. Cold
+  pipelines: 33-65 made in the first 10 s (0.3-0.6 s in all, worst 118-153 ms), turnip's cache hitting 60 of 72 on the second
+  boot: a first-boot cost only. Commit to completion: 19 ms mean at first, 7-11 ms later (T2-C). In that, the kernel: every
+  `Submit` took 1-6 ms (T2-B: 55 calls, 134 ms in 10 s), because HakiosGPU pushed every IOSurface of the process out of the
+  CPU cache at each submission (Turnip's adapter names all of them so the display waits for the last writer; seven
+  surfaces, 69 MB, every 4 ms). Fixed in kernel `kernel-16k-unixnu1.bak`: a buffer named with GPU_SUBMIT_BO_TRACK (0x8000,
+  RedwoodGPU's meaning) only moves the `drawn` mark; the plug-in already pushes the surfaces a command buffer uses
+  (`sys_dcache_flush`). One-off costs at the start: `nmb_texture_replace` 85 ms a call (CPU copies into write-combined GPU
+  memory), `nmb_heap_new` 48 ms (zeroing 20 MB heaps). Fence waits: polled every 200 us by the kernel, not the bottleneck
+  yet; interrupts stay the next kernel step (B1n).
+- **Buffers.** backboardd's buffers grew through T2-B's gestures (287 to 1402, 212 to 332 MB, almost all under 64 KB): to
+  watch in the next runs (a leak of small buffers per frame, or the heaps' growth).
+
+**Kernel `kernel-16k-unixnu1.bak`** (sha256 `35bc54e779d5f1fbddc1f8d87851aa49d91c16ae9971c6a7a867e119d7c6c51b`;
+`kernel/drivers/gpu/unixnu/build-kernel.sh`: the shared tree as periph2 left it, plus `gpu-wire.py` with the BO_TRACK
+`hakios.gpu.cpp` and `kernel-wire.py`; built under the build lock, the linked kernel new and holding `_HakiosGPUStart`,
+`_hakios_gpu_submit`, `_hakios_gpu_parameter` and the new code's string, the peripherals' symbols still there; kernel26.nopac
+untouched): the submit fix, and boot-arg `gpu_hwcg=1`, the GPU init Linux does for the A635 and our driver never did: the
+hardware clock gating (`a6xx_set_hwcg` with `a660_hwcg`, 49 registers, the GMU's CGC mode 0x00020202 / delay 0x10111 /
+hysteresis 0x5555, RBBM_CLOCK_CNTL 0x8aa8aa82; unixnu-adreno6xx, which composited iPadOS on this GPU, writes the same table)
+and the bicubic weights. The rest of our init matches Linux's `hw_init` for the 7c3 register by register (address modes, UCHE
+ranges and trap base, ROQ thresholds, MEM_POOL, PC_DBG_ECO_CNTL 0x00200200, UBWC: RB/SP/TPL1/UCHE NC_MODE with highest bank
+bit 14, CP_CHICKEN_DBG, APRIV, RB_DBG_ECO_CNTL; the per-submit CCU invalidates and CACHE_FLUSH_TS), and the GPU sees memory as
+Linux maps it (normal non-cacheable, shareable). Left out: CP protection (no candidate, could fault), LLCC (Linux's system
+cache; a speed matter). The VSC (binning) streams are turnip's own buffers and registers, the same as on Linux. So for the
+bands and the sysmem icons the candidate the comparison leaves is the clock gating of the RB/CCU/VSC blocks, which Linux sets
+and we leave at reset: `gpu_hwcg=1` is that test.
+
+**Root int8** `userland-26/out/system-26.apfs.full-e3259e0e` (sha256
+`e3259e0e9814155a84db5dc6601bf104029a4854e31766edc0068ebc1ed2d802`, NOT written): int7 with AdrenoMetal `c5ddd1e9`, which
+adds `tu_bb=` and `tu_cl=`.
+
+The next round (int8, `kernel-16k-unixnu1.bak`; the gestures shortened to fit: the lock-to-home pair moves the home page,
+which is when the bands show, and the Control Center for the glass; lines with the quietrun's prefix 432-456 characters):
+
+```sh
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 interrupt-masked-debug-mode=0 cpus=4 sensors_hid=15 metal_plugin=AdrenoMetal"
+G="touch_lat=1 touch_seq=nc@200,up@210,cc@250"; T="150 200 215 240 260 275"; K=kernel-16k-unixnu1.bak
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3a "$B $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos            # submit fix alone: fps against T2-B
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3b "$B gpu_hwcg=1 $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos # icons in sysmem? bands?
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3c "$B tu_bb=gmem tu_cl=sysmem $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3d "$B tu_bb=sysmem tu_cl=gmem $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3e "$B tu=sysmem,noubwc $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+KERNEL=$K bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh t3f "$B tu=nobin $G" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read: t3a's `gpu2-rwtime` m5 (Submit) under 0.2 ms a call and the swaps per second against T2-B; t3b: icons and no bands
+means the clock gating, and `gpu_hwcg=1` becomes the default; t3c/t3d: which side loses the icons in sysmem; t3e: UBWC or
+not; t3f: bands gone with binning off. Stop at the first that answers.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

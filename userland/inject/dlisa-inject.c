@@ -28,6 +28,9 @@
  *       dlisa_unlock=1 unlocks once at boot (=2: again whenever it locks), dlisa_noidle=1 holds an idle timer
  *       assertion (no auto-lock or dimming: Settings' "Auto-Lock: Never"), dlisa_watchdog=N scales FrontBoard's
  *       launch watchdog by N (apps are slow to start here). App snapshots are JPEG/PNG, not ASTC (HakiOS 16.5's fix).
+ *       The status bar: com.apple.UIKit's UIStatusBarVisualProviderClassName gets the split bar made for the display's
+ *       width (status-bar.c; dlisa_sbprov=0 takes it out), and 30 s in, two "screen:" lines say what UIKit chooses from
+ *       (artwork, home button type, SpringBoard's screen type, UIScreen's sizes and notch, UIKit's own pick).
  *
  *   containermanagerd (both of them)
  *       It asks the user manager for the "personas" of the user. This port has no data volume, no keybag and
@@ -81,6 +84,7 @@
 #include "name-list.c"
 #include "purgeable.c"
 #include "scroll-stroke.c"
+#include "status-bar.c"
 #include "touch-slots.c"
 
 _Static_assert(DLISA_MNT_CPROTECT == MNT_CPROTECT, "file-protection.c's MNT_CPROTECT is <sys/mount.h>'s");
@@ -1053,6 +1057,170 @@ withoutAsynchronousLayerHosts(void)
 	    "setRendersAsynchronously:", (IMP)setRendersAsynchronously);
 }
 
+/* kern.bootargs as it is (a static buffer, "" if the kernel will not say) */
+static const char *
+readBootArgs(void)
+{
+	static char arguments[1024];
+	size_t size = sizeof(arguments) - 1;
+
+	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
+		size = 0;
+	}
+	arguments[size] = 0;
+	return arguments;
+}
+
+/*
+ * The status bar (docs/home-button-type.md, part 3). UIKit picks a split bar by the display's native width and the
+ * notch SpringBoard hands it, and found none here: "rdar:45025538" stood in for the time, battery and Wi-Fi. It
+ * reads com.apple.UIKit's UIStatusBarVisualProviderClassName first for the embedded screen ("WARNING: Using
+ * overridden status bar visual provider class"), so SpringBoard writes there the split bar made for the display's
+ * width (status-bar.c), through cfprefsd, for every app of the user. dlisa_sbprov=0 takes it out again.
+ */
+#define UIKIT_DOMAIN                    CFSTR("com.apple.UIKit")
+#define STATUS_BAR_PROVIDER_KEY         CFSTR("UIStatusBarVisualProviderClassName")
+#define SCREEN_FACTS_SECONDS            30
+
+static bool
+isSameValue(CFPropertyListRef kept, CFStringRef wanted)
+{
+	return kept == NULL || wanted == NULL ? kept == (CFPropertyListRef)wanted : CFEqual(kept, wanted);
+}
+
+static void
+saveStatusBarProvider(void)
+{
+	const char *provider = findStatusBarProvider(readBootArgs());
+
+	dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+		CFStringRef wanted = provider != NULL ? CFStringCreateWithCString(NULL, provider, kCFStringEncodingUTF8) : NULL;
+		CFPropertyListRef kept = CFPreferencesCopyAppValue(STATUS_BAR_PROVIDER_KEY, UIKIT_DOMAIN);
+		bool same = isSameValue(kept, wanted);
+		bool saved = same;
+
+		if (!same) {
+			CFPreferencesSetAppValue(STATUS_BAR_PROVIDER_KEY, wanted, UIKIT_DOMAIN);
+			saved = CFPreferencesAppSynchronize(UIKIT_DOMAIN);
+		}
+		say("dlisa[%s]: status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = %s (%s)\n", getprogname(),
+		    provider != NULL ? provider : "none, UIKit chooses", same ? "already so" : saved ? "saved" : "NOT saved");
+		if (kept != NULL) {
+			CFRelease(kept);
+		}
+		if (wanted != NULL) {
+			CFRelease(wanted);
+		}
+	});
+}
+
+/* What the choice is made from, once UIKit is up: MobileGestalt, SpringBoard's screen type, UIScreen, UIKit's own pick */
+typedef struct {
+	double x, y, width, height;
+} DlisaRect;
+
+static bool
+isAnswering(id object, const char *selector)
+{
+	return object != nil && class_respondsToSelector(object_getClass(object), sel_registerName(selector));
+}
+
+static DlisaRect
+readRect(id object, const char *selector)
+{
+	DlisaRect none = { 0, 0, 0, 0 };
+
+	return isAnswering(object, selector) ? ((DlisaRect (*)(id, SEL))objc_msgSend)(object, sel_registerName(selector)) : none;
+}
+
+static double
+readDouble(id object, const char *selector)
+{
+	return isAnswering(object, selector) ? ((double (*)(id, SEL))objc_msgSend)(object, sel_registerName(selector)) : 0;
+}
+
+static long
+readArtworkSubtype(void)
+{
+	CFTypeRef (*copyAnswer)(CFStringRef) = (CFTypeRef (*)(CFStringRef))dlsym(RTLD_DEFAULT, "MGCopyAnswer");
+	CFTypeRef traits = copyAnswer != NULL ? copyAnswer(CFSTR("oPeik/9e8lQWMszEjbPzng")) : NULL;   /* ArtworkTraits */
+	CFTypeRef subtype = traits != NULL && CFGetTypeID(traits) == CFDictionaryGetTypeID() ?
+	    CFDictionaryGetValue((CFDictionaryRef)traits, CFSTR("ArtworkDeviceSubType")) : NULL;
+	long value = -1;
+
+	if (subtype != NULL && CFGetTypeID(subtype) == CFNumberGetTypeID()) {
+		CFNumberGetValue((CFNumberRef)subtype, kCFNumberLongType, &value);
+	}
+	if (traits != NULL) {
+		CFRelease(traits);
+	}
+	return value;
+}
+
+static int
+readHomeButtonType(void)
+{
+	int (*getNumber)(CFStringRef, int) = (int (*)(CFStringRef, int))dlsym(RTLD_DEFAULT, "MGGetSInt32Answer");
+
+	return getNumber != NULL ? getNumber(CFSTR("JwLB44/jEB8aFDpXQ16Tuw"), -1) : -1;     /* HomeButtonType */
+}
+
+/* SpringBoardHome's screen type and its name ("iPhone X (D22)") into name */
+static long
+readScreenType(char *name, size_t size)
+{
+	long (*currentType)(void) = (long (*)(void))dlsym(RTLD_DEFAULT, "SBHScreenTypeForCurrentDevice");
+	CFStringRef (*nameOf)(long) = (CFStringRef (*)(long))dlsym(RTLD_DEFAULT, "SBHStringForScreenType");
+	long type = currentType != NULL ? currentType() : -1;
+	CFStringRef text = nameOf != NULL && type >= 0 ? nameOf(type) : NULL;
+
+	snprintf(name, size, "?");
+	if (text != NULL) {
+		CFStringGetCString(text, name, (CFIndex)size, kCFStringEncodingUTF8);
+	}
+	return type;
+}
+
+/* the split bar UIKit itself picks for that screen (the override is not looked at there), or "none" */
+static const char *
+readOwnSplitProvider(id screen)
+{
+	Class split = objc_getClass("_UIStatusBarVisualProvider_Split");
+	SEL choose = sel_registerName("visualProviderSubclassForScreen:visualProviderInfo:");
+	Class chosen = split != Nil && screen != nil && class_getClassMethod(split, choose) != NULL ?
+	    ((Class (*)(Class, SEL, id, id))objc_msgSend)(split, choose, screen, nil) : Nil;
+
+	return chosen != Nil ? class_getName(chosen) : "none (rdar:45025538)";
+}
+
+static void
+sayScreenFacts(void)
+{
+	id screen = ((id (*)(Class, SEL))objc_msgSend)(objc_getClass("UIScreen"), sel_registerName("mainScreen"));
+	id notch = isAnswering(screen, "_exclusionArea") ? ((id (*)(id, SEL))objc_msgSend)(screen, sel_registerName("_exclusionArea")) : nil;
+	DlisaRect points = readRect(screen, "_referenceBounds"), native = readRect(screen, "_nativeDisplayBounds");
+	DlisaRect cut = readRect(notch, "rect");
+	char typeName[96];
+	long type = readScreenType(typeName, sizeof(typeName));
+
+	say("dlisa[%s]: screen: artwork %ld, home button type %d, SpringBoard type %ld (%s)\n", getprogname(),
+	    readArtworkSubtype(), readHomeButtonType(), type, typeName);
+	say("dlisa[%s]: screen: %.0fx%.0f points at %.2f, native %.0fx%.0f at %.3f, corner %.2f, notch %s %.2f,%.2f %.2fx%.2f; "
+	    "UIKit's own split bar: %s\n", getprogname(), points.width, points.height, readDouble(screen, "scale"),
+	    native.width, native.height, readDouble(screen, "_nativeScale"), readDouble(screen, "_displayCornerRadius"),
+	    notch != nil ? class_getName(object_getClass(notch)) : "none", cut.x, cut.y, cut.width, cut.height,
+	    readOwnSplitProvider(screen));
+}
+
+static void
+startStatusBarFix(void)
+{
+	saveStatusBarProvider();
+	dispatch_after(dispatch_time(DISPATCH_TIME_NOW, SCREEN_FACTS_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+		sayScreenFacts();
+	});
+}
+
 static void
 fixSpringBoard(void)
 {
@@ -1079,6 +1247,7 @@ fixSpringBoard(void)
 	}
 	replaceMethod('+', "XBApplicationSnapshotManifestImpl", "_outputFormatForSnapshot:", (IMP)snapshotOutputFormat);
 	setForceNoBuddy();
+	startStatusBarFix();
 	unlockMode = bootArgNumber("dlisa_unlock");
 	if (unlockMode != 0) {
 		dispatch_after(dispatch_time(DISPATCH_TIME_NOW, UNLOCK_FIRST_SECONDS * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
@@ -1431,14 +1600,7 @@ sayBacktrace(void)
 static bool
 isNamedHere(const char *key)
 {
-	static char arguments[1024];
-	size_t size = sizeof(arguments) - 1;
-
-	if (sysctlbyname("kern.bootargs", arguments, &size, NULL, 0) != 0) {
-		return false;
-	}
-	arguments[size] = 0;
-	return isNamedByBootArg(arguments, key, getprogname());
+	return isNamedByBootArg(readBootArgs(), key, getprogname());
 }
 
 static bool

@@ -222,3 +222,98 @@ Rollback:
 - With final19, that cache gives type 3 and Split1125, which works. With final17, HBT 0 makes the artwork irrelevant to
   the status bar.
 
+## Part 3 (2026-11-16, host only): still "rdar:45025538" with artwork 2436
+
+hbt-x1 (vendor_boot final22-x2436 `1324baa2`, root 2ef33580, `ls_reset=1`, which removed the MobileGestalt cache).
+Every capture still shows the placeholder, Control Center included, and the lock screen shows a red bar
+(`research/hackios-xnu-kernel/logs/hbt-x1-q1..q5.png`). The log has no line that says what the system decided. Part 2's
+expectation was wrong.
+
+### What was checked (static, 23F84)
+
+- **(a) The device tree carries 2436.** The final22 loader's `dt_identity` has the constant (`mov w28, #0x984` at
+  `0x9bb0` of `loader.obj`). The patch replaces the identity's `artwork-device-subtype` there and nowhere else.
+- **(b) Where the artwork comes from.**
+  - MobileGestalt's ArtworkTraits (`sub_1b1c250b4`) reads `IODeviceTree:/product artwork-device-subtype` and nothing
+    else. It is cached (index 0x24), and `ls_reset=1` removed that cache.
+  - SpringBoard reads it through `SBFEffectiveArtworkSubtype` (`MGCopyAnswer("oPeik/9e8lQWMszEjbPzng")
+    ["ArtworkDeviceSubType"]`). The device emulation override there is not configured.
+  - The hbt-x1 home screen lost its icon images, which fits a changed artwork, but nothing in the log proves it.
+- **(c) What UIKit compares.**
+  - `UIScreen._nativeDisplayBounds` is `FBSDisplayConfiguration.pixelSize`.
+  - `UIScreen._nativeScale` is that width divided by the reference width.
+  - The framebuffer reports 1125x2436 everywhere: timing, `GetDisplaySize`, default surface.
+  - On those numbers, SpringBoard's type 3 notch (`sb_displayShapeForScreenType:`, 627 x 90 px divided by 3) is 209 x 30
+    and should pass `Split1125`. It did not, so at least one runtime value differs from the static reading (pixel size,
+    scale, notch or screen type), and only the phone can tell which.
+- **UIKit has an override.**
+  - The resolver (`sub_18a7e95a0`, the function that logs "No status bar visual provider ... rdar://45025538") first
+    reads, for the embedded screen, `UIStatusBarVisualProviderClassName` from `NSUserDefaults` suite
+    `com.apple.UIKit`.
+  - It takes any class that conforms to the provider protocol and logs "WARNING: Using overridden status bar visual
+    provider class: %@".
+  - No internal-build check guards it.
+
+### Fix: SpringBoard tells UIKit which split bar to use, and says what UIKit chooses from
+
+libdlisa, SpringBoard only (`userland/inject/status-bar.c`, `dlisa-inject.c` `startStatusBarFix`):
+
+- **The fix.** At start SpringBoard writes `com.apple.UIKit` `UIStatusBarVisualProviderClassName`, through cfprefsd,
+  for the user mobile, so every app of the user reads it. The value is the split bar made for the display's width
+  (`fbwidth=`, default 1125):
+
+  | Display width | Class |
+  |---|---|
+  | 1125 | `_UIStatusBarVisualProvider_Split1125` |
+  | 1080 | `Split1080_Wide` (13 mini) |
+  | 1170 | `Split1170` |
+  | 1242 | `Split1242` |
+  | 1284 | `Split1284` |
+  | 828 | `Split828` |
+
+  `dlisa_sbprov=0` removes the key again. The key stays on darwin_var; a root without this libdlisa still uses it.
+- **The probe.** 30 s in, two lines:
+  - `dlisa[SpringBoard]: screen: artwork N, home button type N, SpringBoard type N (name)`;
+  - `dlisa[SpringBoard]: screen: WxH points at S, native WxH at S, corner R, notch CLASS x,y WxH; UIKit's own split
+    bar: CLASS or none (rdar:45025538)`.
+  Together they settle (b) and (c) on the next boot: if UIKit's own pick is "none", the numbers on that line name the
+  mismatch.
+- **Tests.** Host test `userland/inject/test/status-bar-test.c` (10 checks); `sh userland/inject/test/run-tests.sh`:
+  all 0 failures.
+
+| Piece | What | sha256 |
+|---|---|---|
+| `userland-26/out/libdlisa-sbprov/libdlisa.dylib` | libdlisa of 2ef33580 (ef2a85a2, source 62dea9b, rebuilt byte for byte first) + this change only | `f3438d682f642f08389c5c61a1686fed67ea935a334ffb08c74d626dfb1cf3b4` |
+| root `userland-26/out/system-26.apfs.full-2fa0b667` | 2ef33580 with only libdlisa changed: hard-link copy of `out/sysroot-26` (shared sysroot untouched: libdlisa f61dbf9b, glass7) with glass9 `HakiosMetal` 13ea2c9a and this libdlisa, `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB. 61212 files, 24194 directories, 821 symlinks (as 2ef33580), 4,999,610,368 B. Read back: libdlisa f3438d68, `HakiosMetal` 13ea2c9a, `Info.plist` 3769fa7f, `dlisa-inject.conf` 86a53398, launchd d2506319 | `2fa0b667c5870824e7b027e992addb0e241afaf8361b413ba759160c7f2e8e02` |
+
+HEAD's libdlisa (with df57e4f and the launch probe) gets the same change in the same commit. Only the root above is
+the 2ef33580 build.
+
+### Test (root write, then one host run; vendor_boot stays final22-x2436)
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-root.sh userland-26/out/system-26.apfs.full-2fa0b667     # reads back 2fa0b667
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh hbt-x2 "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 cpus=4 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 touch_seq=nc@200,up@230,cc@260,up@290" "150 215 245 275 305"; bash darwin-lisa/tools/bootos.sh pmos
+grep -a -E "dlisa\[SpringBoard\]: (status bar|screen)" research/hackios-xnu-kernel/logs/hbt-x2-end.log
+```
+
+This run needs no `ls_reset`: the artwork cache was rebuilt by hbt-x1.
+
+Pass:
+1. The log has `status bar: com.apple.UIKit UIStatusBarVisualProviderClassName = _UIStatusBarVisualProvider_Split1125
+   (saved)`. On a later boot it says `already so`.
+2. The two `screen:` lines are there. They show artwork 2436, home button type 2, a SpringBoard type, the native size
+   and scale, and the notch. Their "UIKit's own split bar" value is the root cause for the record, even with the fix
+   in place.
+3. Every capture: time at the top left, battery and Wi-Fi at the top right, no "rdar", no red bar on the lock screen.
+   The same inside Control Center (`cc@260`).
+4. Settings (if opened) has the same bar, since apps read the same default.
+
+If pass 1 says `NOT saved`, the write failed and nothing else changed.
+
+Rollback:
+- `tools/flash-root.sh userland-26/out/system-26.apfs.full-2ef33580`.
+- The key stays on darwin_var and keeps the Split1125 bar, which is harmless.
+- To remove it, boot this root once with `dlisa_sbprov=0`.
+

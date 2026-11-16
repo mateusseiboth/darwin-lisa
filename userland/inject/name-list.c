@@ -2,6 +2,8 @@
  * libdlisa: is this program named by a boot-arg that lists programs (dlisa_oslog=NAME,NAME,... or =all or =1,
  * dlisa_uiprobe=...)? `line` is kern.bootargs as it is.
  */
+#ifndef DLISA_NAME_LIST_C
+#define DLISA_NAME_LIST_C
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
@@ -43,3 +45,4 @@ isNamedByBootArg(const char *line, const char *key, const char *name)
 	}
 	return false;
 }
+#endif

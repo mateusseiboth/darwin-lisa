@@ -1,7 +1,7 @@
 NativeAdrenoMetalPlugin.mm   | 87 +++++++++++++++++++++++++++++++++-----------
- NativeBridgeMetalFrontend.mm | 59 ++++++++++++++++++++++++++++--
+ NativeBridgeMetalFrontend.mm | 69 ++++++++++++++++++++++++++++++++---
  bridge/NativeMetalObjects.rs | 16 +++++++-
- 3 files changed, 134 insertions(+), 28 deletions(-)
+ 3 files changed, 143 insertions(+), 29 deletions(-)
 
 --- Changes ---
 
@@ -161,7 +161,28 @@ NativeBridgeMetalFrontend.mm
    - (void)getBytes:(void *)bytes bytesPerRow:(NSUInteger)row fromRegion:(MTLRegion)r mipmapLevel:(NSUInteger)level {
     [self getBytes:bytes bytesPerRow:row bytesPerImage:row*r.size.height fromRegion:r mipmapLevel:level slice:0];
    }
-  @@ -2037,6 +2060,13 @@ static bool computeDescriptor(MTLComputePipelineDescriptor *d,NmbComputePipeline
+  @@ -941,10 +964,17 @@ static void waitForResource(id resource) {
+  -@implementation NBEncoder
+  +@implementation NBEncoder {uint32_t _boundFormats[2][16];}   // darwin-lisa: vertex and fragment textures' pixel formats, slots 0-15
+   - (void)dealloc {if(_handle)nmb_encoder_discard(_handle);}
+   - (bool)check:(bool)ok what:(const char *)what {
+    if(!ok)[_commandBuffer refuse:[NSString stringWithFormat:@"%s: %@",what,lastError()]];
+  + // darwin-lisa: a draw refused for a format names the textures bound to it (t5a: uber_fragment's indexed draws, the format unknown)
+  + static std::atomic<int> told{0};
+  + if(!ok && !strncmp(what,"draw",4) && told++<12) {
+  +  NSMutableString *line=[NSMutableString stringWithFormat:@"pandora-metal refused %s: textures bound (stage:slot=pf)",what];
+  +  for(int st=0;st<2;st++)for(int k=0;k<16;k++)if(_boundFormats[st][k])[line appendFormat:@" %c%d=%u",st?'f':'v',k,_boundFormats[st][k]];
+  +  NSLog(@"%@",line);
+  + }
+    return ok;
+   }
+   - (void)endEncoding {
+  @@ -975,6 +1005,7 @@ static void waitForResource(id resource) {
+  + if((stage==1 || stage==2) && index<16)_boundFormats[stage-1][index]=texture?(uint32_t)texture.pixelFormat:0;
+    if([(id)texture isKindOfClass:[NBTexture class]] && [(NBTexture *)texture surface] && texture.width*texture.height>=1000000)
+     noteSampledSurface(self.commandBuffer,(NBTexture *)texture);   // dada: the surface probe's screen-sized sources
+    if(capturing())capture([NSString stringWithFormat:@"tex %s%lu %@",stage==1?"v":stage==2?"f":"c",(unsigned long)index,capTexture(texture)]);
+  @@ -2037,6 +2068,13 @@ static bool computeDescriptor(MTLComputePipelineDescriptor *d,NmbComputePipeline
   +// darwin-lisa: no archive here holds a binary of this device's (QuartzCore's own metallib is answered with an empty one), so
   +// MTLPipelineOptionFailOnBinaryArchiveMiss would refuse every pipeline that asks it (t7a: fixed_vert_lph_gen / fixed_frag_lph_cpf,
   +// BinaryArchiveMiss, 106 times, the home's icons missing until +240 s). Every pipeline is made from its library instead, as Metal
@@ -172,19 +193,19 @@ NativeBridgeMetalFrontend.mm
    static bool pipelineArchives(NSArray *list,std::vector<NmbBinaryArchive *> &archives,NSError **error) {
     for(id archive in list) {
      if(![archive isKindOfClass:[NBBinaryArchive class]]){if(error)*error=nbError(@"foreign binary archive");return false;}
-  @@ -2510,7 +2540,7 @@ struct NBWatermark {uint64_t value[2];};
+  @@ -2510,7 +2548,7 @@ struct NBWatermark {uint64_t value[2];};
   - const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
   + const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
     const uint64_t pipelineBegan=nowUs();
     NmbComputePipeline *handle=nmb_compute_pipeline_new_with_descriptor(gDevice,&p,&creation);gTimePipeline.add(pipelineBegan);
     if(!handle)return failWith<id<MTLComputePipelineState>>(error,[NSString stringWithFormat:@"compute pipeline (descriptor) %@ %@",d.computeFunction.name,d.label],nil);
-  @@ -2527,7 +2557,7 @@ struct NBWatermark {uint64_t value[2];};
+  @@ -2527,7 +2565,7 @@ struct NBWatermark {uint64_t value[2];};
   - const NmbPipelineOptions creation={(uint64_t)options,archives.data(),archives.size()};
   + const NmbPipelineOptions creation={(uint64_t)withoutArchiveMiss(options),archives.data(),archives.size()};
     const uint64_t pipelineBegan=nowUs();const NBCost costBegan=NBCost::now();
     NmbRenderPipeline *handle=nmb_render_pipeline_new_with_options(gDevice,p,&creation);delete p;gTimePipeline.add(pipelineBegan);
     journalRenderPipeline(d,pipelineBegan,handle?nullptr:nmb_last_error(),gJournalPath.empty()?std::string():NBCost::now().since(costBegan));
-  @@ -2638,6 +2668,14 @@ struct NBWatermark {uint64_t value[2];};
+  @@ -2638,6 +2676,14 @@ struct NBWatermark {uint64_t value[2];};
   + // darwin-lisa: QuartzCore 26 opens its own default.metallib as a binary archive (on an Apple GPU the library's AGX slice is one).
   + // It is no archive of this device's, so it is answered with an empty archive, as Metal answers an archive whose slices are for
   + // another GPU: every lookup misses and the pipelines are made from the library (T1-A on int6: the first problem of every process).
@@ -196,7 +217,7 @@ NativeBridgeMetalFrontend.mm
     if(!handle)return failWith<id<MTLBinaryArchive>>(error,@"binary archive",nil);
     NBBinaryArchive *archive=[NBBinaryArchive new];archive.handle=handle;if(error)*error=nil;return (id<MTLBinaryArchive>)archive;
    }
-  @@ -2701,13 +2739,26 @@ static uint64_t askAnswer(SEL cmd,NSUInteger arg) {
+  @@ -2701,13 +2747,26 @@ static uint64_t askAnswer(SEL cmd,NSUInteger arg) {
   +// darwin-lisa: the private counts and flags the runtime leaves to Metal's own answer (PrivateAnswer::Metal: no Vulkan limit or
   +// document says what they promise), answered for the Adreno 642L instead of left out (T1-A: six "no device answer" lines a process).
   +// gpuCoreCount: the A635's two shader processors (freedreno_devices.py); maxComputeThreadgroupMemory: what a threadgroup really
@@ -221,7 +242,7 @@ NativeBridgeMetalFrontend.mm
       // Extended-range 10-bit (XR10) framebuffers are withheld: this display chain presents 8-bit BGRX scanout only. The render server picks its
       // wide-gamut 64-bit (and Apple-compressed) framebuffer when a device offers them, and the display driver could not show it (int-089: the
       // swap's surface was '&w4a', 8 bytes per pixel, and every swap was refused).
-  +55 -4
+  +64 -5
 
 bridge/NativeMetalObjects.rs
   @@ -90,10 +90,17 @@ fn copy_out(text: &str, out: *mut c_char, size: usize) -> usize {

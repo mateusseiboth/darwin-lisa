@@ -530,6 +530,22 @@ RGBA16Float_XR). Lines (with the quietrun's prefix): `$B m2v_renderarea=1 $G` 44
 Order of the runs: plain int12 (read `vsc grew`), then `tu_vsc=8`, then `tu_condskip=0`; `tu_bb=nobin` and `tu_bb=sysmem` work on
 int11 already. If none clears the band in GMEM and sysmem keeps the CC's fps, `tu_bb=sysmem` becomes backboardd's default.
 
+**t5a (int11, `m2v_renderarea=1`)**: the NC opened clean; the band at +300 stays (the render area is not its cause, and it did
+not speed the CC up: 27.9/s against t4a's 42.3/s, so the CC needs several openings a run to compare). The refusals the 556
+mapping was meant for are not 556. On the host (m2v-coverage, RenderBox's `uber_fragment` with the logged constant
+`#0` = uint4 `00000000000000001e7e000045000000`): the pipeline is made for 115, 80, 70, 552 and 554, and refused at `Color(0)`
+for **542** (`RGB8_444_2P`), the `_RB4` surfaces WidgetRenderer draws into. metal2vulkan made such a pass but refused a
+pipeline that fetches the attachment (`[[color(0)]]`, which the uber shader does): `pipeline/link/graphics.rs` now lets the
+4:4:4 code formats (542, 545) be fetched, reading the render shadow's floats (what the pass wrote); the host makes the pipeline
+for 542 and 545. A pass that loads such an attachment stays refused (`render_pass.rs`, naming the format). The indexed draws
+refused in `uber_fragment` (iconservicesagent, SpringBoard: block 175, instruction 1204) depend on the textures bound: a
+refused draw now logs them (`pandora-metal refused drawIndexedPrimitives: textures bound (stage:slot=pf) f0=...`).
+
+**Root int13** `userland-26/out/system-26.apfs.full-6b0860bb` (sha256
+`6b0860bb476268f9682f05e196fe9b122ea080d0a4dd1c792de251f4b13cc171`, read back, census 61218 files, 0 bad): int12 with
+AdrenoMetal `a3b7f299` (the 542 fetch, the bound textures of a refused draw); turnip as int12. The CC three times in one run:
+`touch_seq=cc@250,up@262,cc@274,up@286,cc@298`, screenshots at 258, 282 and 306.
+
 **Kernel.** Nothing needed for T1: the selector, the service name and the clock are the adapter's. The first kernel
 change, if T2 shows the fence path holding frames, is the interrupt that retires submissions and wakes waiters
 (`gpuWait()` polls every 200 us, released lock), then B1n.

@@ -19,8 +19,9 @@ run lines: [gpu-driver-rewrite.md](gpu-driver-rewrite.md) sections 7 and 9.
 | kernel `research/hackios-xnu-kernel/kernel-16k-unixnu3.bak`: unixnu2 with Linux's clock gating ON by default (`gpu_hwcg=0` leaves it out); `fb_settle_us` off by default | `b802850f4ab8181af95019ab00adbf7451d2589f9d9e4f25d55c96363f4e987c` |
 | root **int11** `userland-26/out/system-26.apfs.full-938a5722`: int10 with `AdrenoMetal` `7c55b1a8` (boot-arg `m2v_renderarea=1`; RGBA16Float_XR as RGBA16Float). Read back, census 61218 files, 0 bad | `938a5722d4adf003106dbbd40c50385b7601281329c58d125212ef403df30979` |
 | root **int12** `userland-26/out/system-26.apfs.full-2bfc0622`: int11 with `AdrenoMetal` `ddb71374` + turnip `3ee69c77` (boot-args `tu_vsc=n`, `tu_condskip=0`; `vsc grew` in the log; private `getBytes` by blit). Read back, census 61218 files, 0 bad | `2bfc0622d938120caa5e6598b968eb4db38e173a58d6bb943229013f024832e5` |
+| root **int13** `userland-26/out/system-26.apfs.full-6b0860bb`: int12 with `AdrenoMetal` `a3b7f299` (RGB8_444_2P attachments fetched; a refused draw logs its bound textures). Read back, census 61218 files, 0 bad | `6b0860bb476268f9682f05e196fe9b122ea080d0a4dd1c792de251f4b13cc171` |
 | kernel `research/hackios-xnu-kernel/kernel-16k-unixnu4.bak`: unixnu3 + boot-arg `gpu_irq=1` (the GPU's interrupt wakes fences' waiters; SPI table in gic_vtimer.c) | `e7c15a5e5873d7fd320c234501c14d10a96d321ad3848d8d0e42642cbfa86603` |
-| `AdrenoMetal.bundle/AdrenoMetal` (plug-in + metal2vulkan bridge, arm64e label; int12) | `ddb713740090445f4e5eae52d7780ce1999de50391d584123ee97b92d1b939e2` |
+| `AdrenoMetal.bundle/AdrenoMetal` (plug-in + metal2vulkan bridge, arm64e label; int13) | `a3b7f29909e1e4c3aaf7ec010cefc2911e19a28220a1904869198035c76c0d6a` |
 | `AdrenoMetal.bundle/libvulkan_freedreno.dylib` (turnip, Darwin backend over HakiosGPU; int12) | `3ee69c77bbdd643803005b899b5f09cfa000161f0a94251eaa40f0331690dd3c` |
 | `userland-26/out/tu-capass/tu-capass` (T0, fixed, with `fetch1`/`fetchbar`) | `5535d43eacfcd36b57f4594830e52f60ec8abb47e04efea88a7b5edf7d10040a` |
 

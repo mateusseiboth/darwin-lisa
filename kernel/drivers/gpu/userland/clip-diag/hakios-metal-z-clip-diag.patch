@@ -1,0 +1,73 @@
+diff --git a/include/hakios-metal/hakios_metal.h b/include/hakios-metal/hakios_metal.h
+index 1252b62..30e621e 100644
+--- a/include/hakios-metal/hakios_metal.h
++++ b/include/hakios-metal/hakios_metal.h
+@@ -64,6 +64,11 @@ typedef struct hakios_metal_sampler hakios_metal_sampler;
+ /* the last failure on this thread, in words */
+ const char *hakios_metal_error(void);
+ 
++/* darwin-lisa (clip diagnostics): since the process began, the draws whose framebuffer fetch of a target the pass does
++ * not have was given attachment 0's view, and the constant ranges pushed as zeros for an unbound buffer; with the last
++ * stage named for each (FB_STAGE / ZERO_STAGE, either may be NULL) */
++void hakios_metal_diag_counts(unsigned *fb_fallbacks, unsigned *zero_pushes, char *fb_stage, size_t fb_size, char *zero_stage, size_t zero_size);
++
+ hakios_metal_device *hakios_metal_open(void);
+ /* whether this driver's tables are for a GPU of that chip ID (hakios_metal_open() refuses any other, with hakios_metal_error()) */
+ bool hakios_metal_chip_known(uint32_t chip);
+diff --git a/src/render.cpp b/src/render.cpp
+index b2f44c4..36ce2c5 100644
+--- a/src/render.cpp
++++ b/src/render.cpp
+@@ -8,6 +8,8 @@
+ #include "hakios-metal/render.hpp"
+ 
+ #include <algorithm>
++#include <atomic>
++#include <cstdio>
+ #include <cmath>
+ #include <cstring>
+ #include <initializer_list>
+@@ -19,6 +21,12 @@
+ 
+ namespace hakios::metal {
+ 
++// darwin-lisa (clip diagnostics): how often a draw's framebuffer fetch was given attachment 0's view for a target its
++// pass does not have, and how often a constant range was pushed as zeros for a buffer the draw left unbound -- both
++// are guesses in the place of what Metal would read, and both were silent. With the name of the last stage each time.
++std::atomic<uint32_t> gDiagFbFallbacks{0}, gDiagZeroPushes{0};
++char gDiagFbFallbackStage[96], gDiagZeroPushStage[96];
++
+ namespace render {
+ 
+ namespace {
+@@ -251,6 +259,8 @@ bool pushedRanges(const Stage& s, const Bindings& b, std::vector<PushedRange>* o
+             if (r.sizeDwords == 0 || r.sizeDwords % 4 != 0 || r.offsetVec4 + r.sizeDwords / 4 > k.constlen) {
+                 return refuse(why, name() + ": no buffer bound at index " + n(r.block) + " (its constant buffer)");
+             }
++            gDiagZeroPushes.fetch_add(1, std::memory_order_relaxed);
++            snprintf(gDiagZeroPushStage, sizeof gDiagZeroPushStage, "%s buffer %u", name().c_str(), r.block);
+             out->push_back(PushedRange{r.offsetVec4, r.sizeDwords / 4, 0, std::vector<uint32_t>(r.sizeDwords, 0u)});
+             continue;
+         }
+@@ -659,6 +669,8 @@ bool stageTextures(const Stage& fs, const Bindings& b, const RenderPass& pass, S
+             uint32_t fbIndex = kt.fbTarget - 1u;
+             Attachment a = attachmentOf(pass, fbIndex);
+             if (a.texture == nullptr && fbIndex != 0 && attachmentOf(pass, 0).texture != nullptr) {
++                gDiagFbFallbacks.fetch_add(1, std::memory_order_relaxed);
++                snprintf(gDiagFbFallbackStage, sizeof gDiagFbFallbackStage, "%s reads [[color(%u)]]", name.c_str(), fbIndex);
+                 // (darwin-lisa) CoreAnimation 26's uber shader (fixed_frag_lph_cph) keeps [[color(1)]] and [[color(2)]] reads
+                 // in branches its function constants switch off for a pass of one attachment, and every one of its draws was
+                 // refused for them: no wallpaper, no icons. The slot is given attachment 0's descriptor instead, which a
+@@ -3410,3 +3422,12 @@ bool CommandBuffer::clear(const RenderPass& pass, const render::Options& options
+ }
+ 
+ }  // namespace hakios::metal
++
++// darwin-lisa (clip diagnostics): hakios_metal.h's reader of the counts above
++extern "C" void hakios_metal_diag_counts(unsigned* fb_fallbacks, unsigned* zero_pushes, char* fb_stage, size_t fb_size, char* zero_stage, size_t zero_size) {
++    using namespace hakios::metal;
++    if (fb_fallbacks != nullptr) *fb_fallbacks = gDiagFbFallbacks.load(std::memory_order_relaxed);
++    if (zero_pushes != nullptr) *zero_pushes = gDiagZeroPushes.load(std::memory_order_relaxed);
++    if (fb_stage != nullptr && fb_size != 0) snprintf(fb_stage, fb_size, "%s", gDiagFbFallbackStage);
++    if (zero_stage != nullptr && zero_size != 0) snprintf(zero_stage, zero_size, "%s", gDiagZeroPushStage);
++}

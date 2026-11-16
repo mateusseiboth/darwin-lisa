@@ -1,0 +1,132 @@
+--- a/HakiosMetalCA.m
++++ b/HakiosMetalCA.m
+@@ -3548,6 +3548,27 @@
+ 		}
+ 		hm_note_constants(program, set);
+ 		if (hm_tracing()) {
++			/* darwin-lisa (clip diagnostics): the vertex function's own constants, every one it was given (the fragment
++			 * line above names only those not 0), and what the pipeline says of colour attachments 1 and 2 */
++			hakios_metal_constant vc[64];
++			unsigned vcount = hm_function_constants([descriptor vertexFunction], vc, 64);
++			NSMutableString *vset = [NSMutableString string], *more = [NSMutableString string];
++
++			for (unsigned i = 0; i < vcount; i++) [vset appendFormat:@" %u=%llu", vc[i].index, (unsigned long long)vc[i].bits];
++			for (unsigned i = 1; i < 3; i++) {
++				MTLRenderPipelineColorAttachmentDescriptor *c = [[descriptor colorAttachments] objectAtIndexedSubscript:i];
++
++				[more appendFormat:@" c%u fmt %lu mask %lu blend %d (%lu %lu %lu %lu op %lu)", i, (unsigned long)[c pixelFormat],
++					(unsigned long)[c writeMask], [c isBlendingEnabled] ? 1 : 0, (unsigned long)[c sourceRGBBlendFactor],
++					(unsigned long)[c destinationRGBBlendFactor], (unsigned long)[c sourceAlphaBlendFactor],
++					(unsigned long)[c destinationAlphaBlendFactor], (unsigned long)[c rgbBlendOperation]];
++			}
++			{
++				MTLRenderPipelineColorAttachmentDescriptor *c0 = [[descriptor colorAttachments] objectAtIndexedSubscript:0];
++
++				hm_print("trace: %s (%p) vertex constants (%u):%s; c0 mask %lu blend %d;%s\n", hakios_metal_program_name(program), (void *)program,
++					 vcount, [vset UTF8String], (unsigned long)[c0 writeMask], [c0 isBlendingEnabled] ? 1 : 0, [more UTF8String]);
++			}
+ 			/* the module this Metal hands over is the function already specialised (a few KB, not the library's
+ 			 * 100), so its size and hash, not the library's, say which code a pipeline runs */
+ 			NSData *air = hm_bitcode_for([descriptor fragmentFunction], [descriptor label], NO);
+@@ -5644,6 +5665,73 @@
+ 	return YES;
+ }
+ 
++/* darwin-lisa, boot-arg metal_ml_clear=1 (an experiment, off by default): a memoryless colour attachment past 0 that
++ * the pass would begin with DontCare begins Cleared to zero instead. Memoryless contents are undefined at a pass's
++ * start on an Apple GPU; here such a texture is ordinary memory and keeps what the last pass that used it left. */
++static BOOL
++hm_ml_clear(void)
++{
++	static int on = -1;
++
++	if (on < 0) {
++		char args[1024] = "";
++		size_t size = sizeof(args) - 1;
++
++		on = sysctlbyname("kern.bootargs", args, &size, NULL, 0) == 0 && strstr(args, "metal_ml_clear=1") != NULL;
++	}
++	return on != 0;
++}
++
++static BOOL hm_tracing(void);
++
++/* darwin-lisa (clip diagnostics, metal_trace=1): each kind of pass once -- colour attachments 0 to 2 with their size,
++ * format, storage (S shared, P private, M memoryless), load and store actions -- and the core's counts of fetches given
++ * attachment 0 for a missing target and of constants pushed as zeros, whenever they change */
++static void
++hm_trace_pass(MTLRenderPassDescriptor *d)
++{
++	static NSMutableSet *seen;
++	static unsigned printed, lastFb = ~0u, lastZero = ~0u;
++	NSMutableString *line;
++
++	if (!hm_tracing() || d == nil) return;
++	line = [NSMutableString string];
++	for (NSUInteger i = 0; i < 3; i++) {
++		MTLRenderPassColorAttachmentDescriptor *c = [[d colorAttachments] objectAtIndexedSubscript:i];
++		id t = c != nil ? [c texture] : nil;
++		static const char kStorage[] = "SMPM";
++
++		if (t == nil) {
++			[line appendFormat:@" a%lu none", (unsigned long)i];
++			continue;
++		}
++		[line appendFormat:@" a%lu %lux%lu fmt %lu %c load %lu store %lu%s", (unsigned long)i, (unsigned long)[t width], (unsigned long)[t height],
++			(unsigned long)[t pixelFormat], (unsigned long)[t storageMode] < 4 ? kStorage[[t storageMode]] : '?',
++			(unsigned long)[c loadAction], (unsigned long)[c storeAction],
++			[t isKindOfClass:[HakiosMetalTexture class]] && hakios_metal_texture_iosurface([(HakiosMetalTexture *)t hakiosTexture]) != 0 ? " (surface)" : ""];
++	}
++	@synchronized ([NSMutableSet class]) {
++		if (seen == nil) seen = [[NSMutableSet alloc] init];
++		if (printed < 400 && ![seen containsObject:line]) {
++			[seen addObject:line];
++			printed++;
++			hm_print("trace: pass%s\n", [line UTF8String]);
++		}
++	}
++	{
++		unsigned fb = 0, zero = 0;
++		char fbStage[96] = "", zeroStage[96] = "";
++
++		hakios_metal_diag_counts(&fb, &zero, fbStage, sizeof(fbStage), zeroStage, sizeof(zeroStage));
++		if (fb != lastFb || zero != lastZero) {
++			hm_print("trace: so far %u draws fetched attachment 0 for a target their pass has not (last: %s), %u constant ranges pushed as "
++				 "zeros for an unbound buffer (last: %s)\n", fb, fbStage, zero, zeroStage);
++			lastFb = fb;
++			lastZero = zero;
++		}
++	}
++}
++
+ static BOOL
+ hm_read_render_pass(MTLRenderPassDescriptor *d, struct hakios_metal_render_pass *pass, HakiosMetalTexture **texture, char *why, size_t size)
+ {
+@@ -5692,6 +5780,11 @@
+ 			m->clear_color[1] = cc.green;
+ 			m->clear_color[2] = cc.blue;
+ 			m->clear_color[3] = cc.alpha;
++			if (hm_ml_clear() && [t storageMode] == MTLStorageModeMemoryless && [c loadAction] == MTLLoadActionDontCare) {
++				HM_ONCE("metal_ml_clear=1: a memoryless colour attachment past 0 that begins DontCare is cleared to zero\n");
++				m->load_action = (unsigned)MTLLoadActionClear;
++				memset(m->clear_color, 0, sizeof(m->clear_color));
++			}
+ 		}
+ 	}
+ 	if (t0 != nil && ![t0 isKindOfClass:[HakiosMetalTexture class]]) {
+@@ -5885,6 +5978,7 @@
+ 	HakiosMetalTexture *texture = nil;
+ 	char why[256];
+ 
++	hm_trace_pass(descriptor);
+ 	if (!hm_read_render_pass(descriptor, &pass, &texture, why, sizeof(why))) {
+ 		hm_print("refused: a render pass: %s; the command buffer is failed and no encoder is returned\n", why);
+ 		hakios_metal_cb_refuse(_cb, why);
+@@ -5908,6 +6002,7 @@
+ 	HakiosMetalTexture *texture = nil;
+ 	char why[256];
+ 
++	hm_trace_pass(descriptor);
+ 	if (!hm_read_render_pass(descriptor, &pass, &texture, why, sizeof(why))) {
+ 		hm_print("refused: a parallel render pass: %s; the command buffer is failed and no encoder is returned\n", why);
+ 		hakios_metal_cb_refuse(_cb, why);

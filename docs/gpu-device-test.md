@@ -1,5 +1,73 @@
 # GPU on the phone: the run book (one session)
 
+## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
+
+Nothing was run on the phone. Question: why the Settings switch track and knob, the Settings cards, the Control
+Center's slider fills and the square behind the AirPlay glyph come out with square corners, and why the result changes
+from one boot to the next (gpu-d2-q7 against gpu-d3-q3; gpu-s9a-q3: track, knob and cards all square).
+
+**What the clip is (host, every specialisation the logs name).** The 78 constant sets of `fixed_frag_lph_cph` linked in
+gpu-c1/c2/d2/d3, poster-f2 and gpu-s9a/b were compiled on the host through glass9's compiler (the patch series,
+`make MESA=1` against `build/mesa-host`, `sweep -f fixed_frag_lph_cph -c N=V ...`, with a report of each stage's
+fetch slots and written targets) and their final NIR read. The rounded clip is not a distance field: it is a mask in
+colour attachment 1, multiplied in.
+- `path_blit_vert_lph + attachment_clear_frag_lph` (triangle strip) returns zero to colour 0 and colour 1: CoreAnimation
+  clears the clip's area of the mask with a draw, not with a load action.
+- `fc_dest_index` 34=1 draws write colour 1 alone (the predicate `frg_has_color0` folds to false, so color0 is left
+  out since `air-x-gated-render-targets.patch`): 28=13 writes the vertex colour (a tessellated shape), 47=10 a circle's
+  coverage, 47=11 the continuous-corner rounded rect's (both by `fwidth` of the radial distance, in f32), 28=1/15=1 an
+  image (a backdrop), 55=1 a copy of colour 0.
+- The content under the clip, `fc_memoryless_index0/1` 55=2 or 56=2, is `colour = colour_lin * fetch(color(1))`
+  (28=3) or the image times the mask (28=5); `fc_blend_function` 42 (`fc_memoryless_backdrop`) reads colour 1 as a
+  backdrop.
+- Checked and right in what reaches ir3: the gated outputs, each fetch's slot and target (`fbTarget`), the half
+  outputs, the derivatives (always before the one `demote`), the VS/FS varying link (VAR0..9 by declaration), the
+  stage cache (it keeps every field of the stage). The rounded-rect mask computes `texcoord0A_lin` =
+  `texture_matrix.xy * texcoord0 + texture_matrix.zw` in `fixed_vert_lph_spc` (buffer 3, read whenever 53 or 54 is set
+  without `fc_vertex_layout`); a coordinate of 0 gives coverage 1 everywhere, a square.
+
+So a square corner is the mask being 1 where the shape is not, which leaves three places, none of which a log shows:
+(1) attachment 1 holds what an earlier pass or frame left there: it is memoryless on an Apple GPU, ordinary memory
+here, and nothing clears it when a pass begins with DontCare (it would also explain the change between boots);
+(2) the fetch of `[[color(1)]]` is given attachment 0's view because the pass has no attachment 1 (render.cpp's
+fallback for the uber shader's dead reads, silent); (3) `texture_matrix` pushed as zeros because buffer 3 is unbound
+(`hakios-metal-unbound-push.patch`, silent).
+
+**The diagnostic plug-in** (`kernel/drivers/gpu/userland/clip-diag/`, built by its `build.sh` from a copy of the
+committed series, which is left as it was; HakiosMetal `1b8438cd`): with `metal_trace=1`, each kind of render pass
+once (`trace: pass a0 WxH fmt F S|P|M load L store S ... a1 ... a2 ...`), each pipeline's vertex constants and its
+colour attachments 1 and 2 (`trace: ... vertex constants (n): ...; c0 mask ...; c1 fmt ... mask ... blend ...`), and
+whenever they change the core's counts (`trace: so far N draws fetched attachment 0 for a target their pass has not
+(last: ...), M constant ranges pushed as zeros for an unbound buffer (last: ...)`). With `metal_ml_clear=1` (the
+experiment for (1)), a memoryless attachment past 0 that begins DontCare is cleared to zero. Without the boot-args the
+plug-in draws as glass9 (same compiled-stage cache key: the core patch changes no stage). Host: 266 tests, the same 14
+failed checks as before the patch.
+
+Root `userland-26/out/system-26.apfs.full-a84f8896` (4,999,610,368 B): 2ef33580 with only `HakiosMetal` changed
+(hard-link copy of `out/sysroot-26` with this plug-in and libdlisa ef2a85a2, `mkapfs.py -z` with
+`extract/system.manifest`, copy deleted). Read back: the same 86227 entries as 2ef33580, HakiosMetal 1b8438cd, libdlisa
+ef2a85a2, Info.plist 3769fa7f, dlisa-inject.conf 86a53398; 442 blocks of 4096 differ from 2ef33580. NOT written.
+
+The run (one trip, root a84f8896; Settings may open without text on this base, see Session 11 part 2; the Control
+Center carries the clip as well):
+
+```sh
+B="dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1"
+T="150 200 215 240 260 275"
+# S15-A and S15-B: two boots in a row, the diagnostics alone
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s15a "$B metal_trace=1 cpus=4 touch_seq=tap:56800:5600@190,cc@250" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s15b "$B metal_trace=1 cpus=4 touch_seq=tap:56800:5600@190,cc@250" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+# S15-C: memoryless attachments cleared at the pass's start
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s15c "$B metal_trace=1 metal_ml_clear=1 cpus=4 touch_seq=tap:56800:5600@190,cc@250" "$T"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read: in A/B, `trace: pass` lines for the 1080x2400 surface: is there an a1, is it M, with what load/store and format;
+the `so far` counts (a fetch fallback named `fixed_frag_lph_cph reads [[color(1)]]` is cause (2); zero pushes named
+`fixed_vert_lph_spc buffer 3` beside 53=1 vertex constants is cause (3)). Pass for the fix: Settings (+215: switch
+track and knob, card corners) and the Control Center (+260/275: the slider fills inside their pills, no square behind
+AirPlay) right in both A and B, or in C where A/B were wrong (then cause (1) and the clear goes in by default, sized to
+what the trace says). Rollback: 2ef33580.
+
 ## Session 14 (2026-11-16, host only): 7 cores against 4, the 5 s window, and an idle loop that leaves the A78s alone
 
 Nothing was run on the phone and nothing was written to it. Question: why S8-A (`kernel-16k-s8-select.bak`, cpus=7)

@@ -1,0 +1,24 @@
+--- a/xnuloader/loader.c
++++ b/xnuloader/loader.c
+@@ -520,6 +520,21 @@
+ 			dt_prop(w, props[i].name, "sRGB", 5);
+ 			continue;
+ 		}
++#ifdef IDENTITY_ARTWORK_SUBTYPE
++		/*
++		 * darwin-lisa (loader/identity-artwork.patch): the artwork of the screen the kernel gives iOS, not the
++		 * identity's. SpringBoard takes its screen type (and so the notch it hands to UIKit) from the exact
++		 * bounds, scale, artwork and home button; UIKit then wants a status bar whose native width and notch
++		 * match. The kernel's default framebuffer is the iPhone X's 1125x2436 at 3x: only artwork 2436 makes
++		 * that "iPhone X (D22)" with the X's notch (209x30, _UIStatusBarVisualProvider_Split1125). With the
++		 * 13 mini's 2340 the notch is the mini's, no split provider matches 1125 pixels, and the status bar
++		 * shows UIKit's "rdar:45025538" placeholder.
++		 */
++		if (str_eq(props[i].name, "artwork-device-subtype")) {
++			dt_prop_u32(w, props[i].name, IDENTITY_ARTWORK_SUBTYPE);
++			continue;
++		}
++#endif
+ 		dt_prop(w, props[i].name, data + props[i].offset, props[i].length);
+ 	}
+ }

@@ -22,6 +22,9 @@ M=$(cd "$(dirname "$0")/../.." && pwd)
 export KERNEL=${KERNEL:-$M/research/hackios-xnu-kernel/kernel-16k-final1.bak}
 export IDENTITY=${IDENTITY:-$M/darwin-lisa/.work/identity/identity-d16.h}
 export GEOMETRY=${GEOMETRY-1080x2400}
+# the kernel's own framebuffer (no GEOMETRY) is the iPhone X's 1125x2436: its artwork, or SpringBoard's notch and UIKit's
+# split status bar disagree (docs/home-button-type.md). ARTWORK= (empty) keeps the identity's
+[[ -n $GEOMETRY ]] || export ARTWORK=${ARTWORK-2436}
 export NAME=${NAME:-combined}
 export LISA_DEFAULTS=${LISA_DEFAULTS:-1}
 export WIFI=${WIFI:-1}

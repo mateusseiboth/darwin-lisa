@@ -131,3 +131,94 @@ runs measure a different screen than Sessions 7 to 9.
 - A libdlisa hook of `MGGetSInt32Answer` would also work, but it needs a new root.
 - The other `/buttons` answers of MobileGestalt (button names, ringer, side button) stay at their missing-node values,
   as before.
+
+## Part 2 (2026-11-16, host only): the status bar shows "rdar:45025538"
+
+poster-f3 (vendor_boot final19-hbt, root 2ef33580, `research/hackios-xnu-kernel/logs/poster-f3-q1..q5.png`):
+- passed: home indicator, the 13 mini's grid, no crash loop;
+- failed: the status bar shows only an emoji and "rdar:45025538" at the top left, with no time and no battery;
+- at +320 s: no status bar, the home screen shifted up, and one row of icons cut.
+
+### Cause: the 13 mini's notch on the iPhone X's framebuffer
+
+- **What the text is.** The text is UIKit's fallback for "No status bar visual provider for screen %@ (width, scale,
+  idiom, cornerRadius). Please see rdar://45025538."
+- **How UIKit picks a split status bar.** With a notch, `+[_UIStatusBarVisualProvider_Split
+  visualProviderSubclassForScreen:]` tries 9 subclasses. A subclass is taken only when both of these hold (block
+  `sub_18a8065bc`):
+  - its `nativeDisplayWidth` equals the screen's `_nativeDisplayBounds` width;
+  - its `notchSize` equals the exclusion rect times `_nativeScale / referenceScreenScale` (within the tolerance).
+- **The subclasses that matter** (UIKitCore constants):
+
+  | Class | native width | reference scale | notch (points) |
+  |---|---|---|---|
+  | `Split1125` | 1125 | the screen's | 209 x 30 |
+  | `Split1080` | 1080 | 2.88 | 226 x 34.33 |
+  | `Split1080_Wide` | 1080 | 2.88 | 174 x 37.33 |
+
+- **Our screen.** It is the kernel's default framebuffer: 1125x2436, 375x812 points at 3x, nativeScale 3. Only
+  `Split1125` passes the width test.
+- **The notch SpringBoard computes.** `sb_displayShapeForScreenType:` takes a rect in native pixels and divides it by
+  `__SBHNativeScaleForScreenType`. That scale is 2.88 x 1.0417 = 3 for the minis.
+  - Type 0xf, "iPhone 13 mini (D16)", the type HBT 2 gave: x 301.5, w 522, h 112, so 174 x 37.33. That is the real
+    13 mini's notch, which fits `Split1080_Wide` only on a 1080-pixel panel at nativeScale 2.88.
+  - Type 3, "iPhone X (D22)": x 249, w 627, h 90, divided by 3 gives 209 x 30, which is `Split1125`.
+- **Result.** A 13-mini notch on a 1125-pixel screen matches no subclass, and UIKit falls back to the placeholder.
+- **The +320 s screen.** Most likely the same broken status bar, relaid. Re-check it after the fix.
+- **Why artwork alone decides the type.** SpringBoard needs an exact spec. Type 3's spec is 375x812, scale 3, artwork
+  **2436**, no home button, and the only thing that differs from today is the artwork (2340, the 13 mini's).
+
+### Fix: artwork-device-subtype 2436 while the framebuffer is the iPhone X's
+
+| File | What | sha256 (16) |
+|---|---|---|
+| `loader/identity-artwork.patch` | with `IDENTITY_ARTWORK_SUBTYPE`, `dt_identity` writes `/product artwork-device-subtype` with it instead of the identity's (as `artwork-display-gamut` already is). Without the define the loader is byte for byte final19's (apart from the PE timestamp) | `db6b52b5bd1ce44d` |
+| `loader/build-standalone.sh` | `ARTWORK=` adds the define to the build's copy of the identity header (the Apple header itself is untouched); applies the patch | |
+| `loader/build-combined.sh` | `ARTWORK=2436` by default when `GEOMETRY` is empty (the kernel's 1125x2436); `ARTWORK=` keeps 2340 | |
+
+The rest of the identity stays the 13 mini's: model, D16AP, SoC, HomeButtonType 2. With these values SpringBoard takes
+type 3, the notch becomes 209 x 30, and UIKit picks `_UIStatusBarVisualProvider_Split1125`, the iPhone X's split bar. A
+real 13 mini uses `Split1080_Wide`. Getting that one would need the kernel to report a 1080-pixel panel with
+nativeScale 2.88, a display driver change.
+
+| Image | Base | sha256 |
+|---|---|---|
+| `out/vendor_boot-lisa-final22-x2436.img` | final19-hbt + artwork 2436 (rc3, cpus=4; line = final19's but the epoch) | `1324baa20649697233e2fc923fe6d78c47ea0da5f877478e46d7bbd92ea46eaa` |
+| `out/loader-usb-lisa-final22-x2436.hkub` | the same HKUB | `ace975914af901672caf8a1388dec591408a24bbc836e8243b0e3a6a0daaf1ea` |
+
+The build line was `GEOMETRY= CPUS=4 NAME=final22-x2436
+KERNEL=research/hackios-xnu-kernel/kernel-16k-consolidated-rc3.bak` plus final17's `EXTRA_ARGS`. The name final21 was
+already taken by another worker's `final21-s14-idle`. That image was built from the same tree, but without
+`identity-artwork.patch` and without ARTWORK, so it carries the bug.
+
+**The MobileGestalt cache must go once.** ArtworkTraits (`oPeik/9e8lQWMszEjbPzng`, cache index 0x24) is cached.
+`SBFEffectiveArtworkSubtype` reads `ArtworkTraits.ArtworkDeviceSubType`, so a kept cache would still say 2340.
+`ls_reset=1` removes the cache (init26); the identity stamp does not, because hw.machine and hw.model are unchanged.
+
+### Test (vendor_boot write, then one host run)
+
+```sh
+cd ~/Dev/mobile && export PMOS_PASS=... SSHPASS=$PMOS_PASS
+PMOS_PASS=$PMOS_PASS darwin-lisa/tools/flash-vendorboot.sh out/vendor_boot-lisa-final22-x2436.img   # reads back 1324baa2
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh hbt-x1 "dlisa_unlock=1 dlisa_noidle=1 display=1 console_open=1 lisa=1 cpus=4 keystore=1 init_run=/usr/libexec/usermanagerd:--init gpu=1 metal=1 dlisa_async=1 metal_spec_wait=1 interrupt-masked-debug-mode=0 metal_all=1 ls_reset=1 touch_seq=nc@240,up@270,cc@300,up@330" "200 255 285 315 345"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+The line is 428 characters. `ls_reset=1` makes the first boot slower, because LaunchServices seeds again.
+
+Pass:
+- every screenshot has the split bar: time at the top left, battery and Wi-Fi at the top right, no "rdar:45025538";
+- `nc` at +240 opens Notification Center, `cc` at +300 opens Control Center, `up` goes home;
+- the +345 screenshot keeps its status bar, with no shifted or cut row;
+- in the log, `init26: VAR ls_reset: ... MobileGestalt cache removed`.
+
+Later boots do not need `ls_reset`. Then do a cold boot with no host command, with a screenshot at +4/+5 min.
+
+The touch_seq line was not checked against a run. If `touch_seq` was renamed since (Session 11's libdlisa), use that
+session's gesture argument instead.
+
+Rollback:
+- `tools/flash-vendorboot.sh out/vendor_boot-lisa-final19-hbt.img` (`bc7a7ea2`) or final17 (`2e7f0b85`).
+- The cache then still says 2436 until one more host run with `ls_reset=1`.
+- With final19, that cache gives type 3 and Split1125, which works. With final17, HBT 0 makes the artwork irrelevant to
+  the status bar.
+

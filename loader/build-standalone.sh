@@ -17,7 +17,8 @@
 # identity-soc.patch writes the identity's own platform-name, chip-id, board-id and regulatory model when the identity
 # header carries them (loader/identity-soc.py), the iPhone X's otherwise. identity-buttons.patch adds the iPhone's /buttons
 # "home-button-type" (IDENTITY_HOME_BUTTON_TYPE, also from identity-soc.py): without it MobileGestalt answers HomeButtonType
-# 0 and SpringBoard and UIKit lay out a phone with a home button (docs/home-button-type.md).
+# 0 and SpringBoard and UIKit lay out a phone with a home button (docs/home-button-type.md). identity-artwork.patch writes
+# /product "artwork-device-subtype" = ARTWORK instead of the identity's, when ARTWORK is set.
 #
 # Sources are copied to darwin-lisa/.work/loader-standalone/build and patched there: research/hackios-xnu-kernel/xnuloader
 # is never touched. Nothing here writes to the phone.
@@ -38,6 +39,10 @@
 #   GEOMETRY      WxH: the display iOS is told about (fbwidth= fbheight=, kernel/drivers/display). 1080x2400 is the
 #                 panel itself, 1:1 at 3x (360 x 800 points); 1125x2499 is 375 x 833 points shown at 0.96. Empty (default):
 #                 nothing added, the kernel's 1125x2436 (the iPhone X's, squeezed onto the panel)
+#   ARTWORK       /product artwork-device-subtype instead of the identity's (identity-artwork.patch): the artwork of the
+#                 screen the kernel gives iOS. 2436 for the kernel's default 1125x2436 (the iPhone X's), so that
+#                 SpringBoard's screen type, its notch and UIKit's split status bar agree (docs/home-button-type.md).
+#                 Empty (default): the identity's (2340 on the 13 mini). build-combined.sh sets 2436 when GEOMETRY is empty
 #   NAME          the name in the output files (default standalone). Never the name of an image already flashed
 #   LISA_DEFAULTS 1: lisa=1 instead of the hardware arguments (touchscreen=1 touch_avdd_ldo= touch_chip= touch_goodix_a=
 #                 cpufreq=1 cpufreq_max= and, with WIFI=1, wifi_irq= wifi_mac=): the kernel has them built in
@@ -58,6 +63,7 @@ DATAVOL=${DATAVOL:-1}
 DATAVOL_PART=${DATAVOL_PART:-darwin_var}
 FW_RAMDISK=${FW_RAMDISK:-}
 GEOMETRY=${GEOMETRY:-}
+ARTWORK=${ARTWORK:-}
 NAME=${NAME:-standalone}
 LISA_DEFAULTS=${LISA_DEFAULTS:-0}
 WIFI=${WIFI:-0}
@@ -127,6 +133,11 @@ case " $LINE " in *" bootcpu=7 "*) ;; *) echo "build-standalone: bootcpu=7 is re
 rm -rf "${W:?}/build" && mkdir -p "$W/build/xnuloader"
 cp "$H"/xnuloader/{loader.c,efi.h,build.sh} "$W/build/xnuloader/"
 cp "$IDENTITY" "$W/build/xnuloader/identity.h"
+if [[ -n $ARTWORK ]]; then
+	[[ $ARTWORK =~ ^[0-9]+$ ]] || { echo "build-standalone: ARTWORK=$ARTWORK is not a number" >&2; exit 1; }
+	printf '\n#define IDENTITY_ARTWORK_SUBTYPE  %s   /* build-standalone.sh ARTWORK */\n' "$ARTWORK" >>"$W/build/xnuloader/identity.h"
+fi
+echo "build-standalone: artwork-device-subtype: ${ARTWORK:-from the identity}"
 SOC=$(sed -n 's/^#define IDENTITY_\(PLATFORM_NAME\|CHIP_ID\|BOARD_ID\|REGULATORY_MODEL\|HOME_BUTTON_TYPE\) *\(.*\)$/\2/p' "$IDENTITY" | tr -d '"' | tr '\n' ' ')
 [[ -n $SOC ]] || SOC="none in the header, so the defaults: t8015 0x8015 0x06 A1865"
 echo "build-standalone: identity SoC and board: $SOC"
@@ -134,7 +145,7 @@ cp "$M/darwin-lisa/loader/data-regions.h" "$W/build/xnuloader/"
 # boot-args-layout.patch (xnu-12377's 1024-byte boot_args command line, the whole boot_args page zeroed) is opt-in until
 # a session at the phone has booted it: LOADER_BOOTARGS_FIX=1. The kernel copes with the old layout either way
 # (kernel/patches/boot-args-loader-layout.patch).
-LOADER_PATCHES="oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch identity-soc.patch identity-buttons.patch"
+LOADER_PATCHES="oem-bootos.patch data-region.patch autoboot.patch run-tpl.patch live-watch.patch identity-soc.patch identity-buttons.patch identity-artwork.patch"
 [ "${LOADER_BOOTARGS_FIX:-0}" = 1 ] && LOADER_PATCHES="$LOADER_PATCHES boot-args-layout.patch"
 for p in $LOADER_PATCHES; do
 	(cd "$W/build" && patch -s -p1 --forward <"$M/darwin-lisa/loader/$p")

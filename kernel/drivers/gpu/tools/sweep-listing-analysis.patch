@@ -1,0 +1,78 @@
+Analysis only, NOT applied by build-hakios-metal.sh (darwin-lisa session 13, 2026-11-16): what ir3 makes of each
+CoreAnimation pipeline a log names. Applies over the hakios-metal-*.patch series in userland/ (in a copy of
+hakios-metal), then `make sweep MESA=1 MESA_HOST=.../build/mesa-host HAKIOS=..`.
+
+- tools/sweep.cpp: with SWEEP_LISTING=FILE, `sweep -f FUNCTION -c I=V...` writes the stage's ir3 listing there.
+- src/compiler.cpp: the listing ends with "; STATS waves=.. double=.. max_reg=.. prefetch=.. instrs=.. tex=.. preamble=..";
+  HM_NOBIAS=1 drops a txb's bias before ir3 (to see whether the sample would then be prefetched: it is not, the
+  coordinate is a noperspective varying, which ir3 25.0.7 never prefetches).
+
+tools/ir3-survey.py LOG... runs it over every (fragment function, constants) the logs' "linked" lines name.
+
+diff --git a/src/compiler.cpp b/src/compiler.cpp
+index dee3a33..09cb880 100644
+--- a/src/compiler.cpp
++++ b/src/compiler.cpp
+@@ -726,6 +726,16 @@ bool usesSubgroup(nir_shader* nir) {
+     return false;
+ }
+ 
++// analysis: HM_NOBIAS=1 drops a txb's bias (txb -> tex), to see what ir3 makes of the sample without it
++bool dropBias(nir_builder*, nir_instr* instr, void*) {
++    if (instr->type != nir_instr_type_tex) return false;
++    nir_tex_instr* tex = nir_instr_as_tex(instr);
++    if (tex->op != nir_texop_txb) return false;
++    int i = nir_tex_instr_src_index(tex, nir_tex_src_bias);
++    if (i >= 0) nir_tex_instr_remove_src(tex, i);
++    tex->op = nir_texop_tex;
++    return true;
++}
+ bool compileVariant(Translation& t, PassOrder order, std::string* why) {
+     ir3_compiler* compiler = theCompiler();
+     nir_shader* nir = t.nir;
+@@ -747,6 +757,7 @@ bool compileVariant(Translation& t, PassOrder order, std::string* why) {
+     ir3_shader_nir_options nirOptions{};
+     nir_shader_intrinsics_pass(nir, lowerHalfDerivative, nir_metadata_control_flow, nullptr);
+     nir_shader_instructions_pass(nir, lowerUclz, nir_metadata_control_flow, nullptr);
++    if (getenv("HM_NOBIAS")) nir_shader_instructions_pass(nir, dropBias, nir_metadata_control_flow, nullptr);
+     ir3_nir_lower_io_to_temporaries(nir);
+     ir3_finalize_nir(compiler, &nirOptions, nir);
+     if (!lowerFbRead(nir, t.fbTargets, why)) return false;
+@@ -891,6 +902,9 @@ bool fillKernel(Translation& t, const KernelHome& out, uint32_t highestSampler,
+         FILE* f = open_memstream(&text, &length);
+         if (f != nullptr) {
+             ir3_shader_disasm(v, t.bin, f);
++            fprintf(f, "; STATS waves=%u double=%d max_reg=%d max_half=%d branchstack=%u prefetch=%u instrs=%u sstall=%u systall=%u nops=%u tex=%u pvtmem=%u preamble=%u\n",
++                    v->info.max_waves, (int)v->info.double_threadsize, v->info.max_reg, v->info.max_half_reg, v->branchstack, v->num_sampler_prefetch,
++                    v->info.instrs_count, v->info.sstall, v->info.systall, v->info.nops_count, v->info.instrs_per_cat[5], v->pvtmem_size, v->info.preamble_instrs_count);
+             fclose(f);
+             out.listing.assign(text, length);
+             free(text);
+diff --git a/tools/sweep.cpp b/tools/sweep.cpp
+index f43d654..987b2fc 100644
+--- a/tools/sweep.cpp
++++ b/tools/sweep.cpp
+@@ -49,7 +49,14 @@ bool compileApart(bool kernel, const uint8_t* bc, uint64_t len, std::string* why
+         close(fds[0]);
+         dup2(fds[1], 2);   // the child's assertion text goes up the pipe too
+         std::string w;
+-        bool ok = kernel ? compileAir(bc, len, &w, gConstants) != nullptr : compileStage(bc, len, &w, gConstants) != nullptr;
++        bool ok;
++        if (kernel) {
++            ok = compileAir(bc, len, &w, gConstants) != nullptr;
++        } else {
++            auto st = compileStage(bc, len, &w, gConstants);
++            ok = st != nullptr;
++            if (ok && getenv("SWEEP_LISTING")) { FILE* lf = fopen(getenv("SWEEP_LISTING"), "w"); if (lf) { fputs(st->listing.c_str(), lf); fclose(lf); } }
++        }
+         std::string msg = std::string(ok ? "OK\n" : "NO\n") + w;
+         (void)!write(fds[1], msg.data(), msg.size());
+         _exit(0);
+@@ -174,6 +181,7 @@ int main(int argc, char** argv) {
+                             std::printf(" [tex %u samp %u]", st->stage.prefetch[i].texId, st->stage.prefetch[i].sampId);
+                         for (const auto& [index, smp] : st->inlineSamplers) std::printf(" inline sampler at %u", index);
+                         std::printf("\n");
++                        if (getenv("SWEEP_LISTING")) { FILE* lf = fopen(getenv("SWEEP_LISTING"), "w"); if (lf) { fputs(st->listing.c_str(), lf); fclose(lf); } }
+                     }
+                 } else {
+                     ok = !only.empty() ? compileAir(bc, len, &why, gConstants) != nullptr : compileApart(t == 2, bc, len, &why);

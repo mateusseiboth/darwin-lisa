@@ -112,6 +112,80 @@ cold boot with no host command and a screenshot at +4/+5 min. Rollback: final22-
 `bc7a7ea2` or final17-cpus4 `2e7f0b85`. S14-C against S14-A says how much of it is WFI; if S14-C equals S14-A, keep the mask anyway (the A55s cool
 and the A78s keep the shared lines).
 
+## Session 13 (2026-11-16, host only): what the shader compiler makes of CoreAnimation's hot programs, and a GL reference
+
+Nothing was run on the phone; no plug-in or root was built (nothing below gave a gain measurable on the host, so
+there was nothing to swap into 2ef33580). Goal: the 12.5-14.6 ms of GPU a command buffer of the Settings launch and
+scroll, with all of Liquid Glass kept.
+
+**The hot programs are already close to minimal (hypothesis 2: no lever).** Every (fragment function, constants)
+pair that S8-B, S9-A, S9-B and poster-f2 linked (`HakiosMetal[...]: linked ...` lines, 120 pairs) was compiled on the
+host through glass9's compiler (the patch series + `tools/sweep-listing-analysis.patch`, `tools/ir3-survey.py`), and
+the ir3 listing of each was read:
+
+| program (backboardd) | instructions (body after the preamble) | samples | waves | note |
+|---|---|---|---|---|
+| fixed_frag_lph_cph, plain textured layer (29=62 51=1 7=1 15=1 28=1) | 11 (4 without nops) | 1 `samb` f16 | 16 | bary.f, sample with the LOD bias from the constant buffer, end |
+| fixed_frag_lph_cph, vibrancy (29=43 ... 35=1) | 138 (84) | 1 `samb` + 1 `isaml` (fetch) | 16 | colour matrix in f16, 4 `cov` |
+| narrow_blur_7..23 | 34-64 | 4-12 `sam` f16 | 16, 10 (19 taps), 8 (23) | f32 coordinates, f16 sums, 0 `cov` |
+| downsample_4 / _8, variable_blur_downsample | 28 / 80 / 54 | 4 / 16 / 13 `saml` | 16 / 6 / 8 | 0 `cov` |
+| glass_background_sdf_no_bleed_lph | 1145 | 4 `saml` | 10 | 587 32-bit float ops, 133 `cov.f` |
+| glass_foreground_sdf_lph | 601 | 7 | 10 | |
+| glass_background_no_bleed_lph | 399 | 5, 1 prefetched | 16 | |
+
+No spill (private memory 0 everywhere), samples return f16, the fixed_frag variants all run at the maximum 16 waves
+of 128. The f16/f32 conversions of the glass shaders are not round trips: of the 587 32-bit float operations of
+glass_background_sdf only 1 takes 16-bit operands and gives a 16-bit result;
+the rest is the SDF's own float math, so narrowing them would change the picture. Only one sample of all
+the pairs is prefetched (sampled before the shader starts): CoreAnimation samples with a LOD bias read from its
+constant buffer (`samb`), and even with the bias dropped (HM_NOBIAS=1) ir3 25.0.7 does not prefetch, since the
+coordinate is a noperspective varying (`texcoord0A_lin`; ir3_nir_lower_tex_prefetch.c takes smooth ones only).
+
+**The draw state is Mesa's (hypothesis 1: no difference found on paper).** The static registers (`kStaticState`:
+TPL1_DBG_ECO_CNTL 0x05008000, SP_CHICKEN_BITS 0x1400, UCHE_CLIENT_PF 0x84, PC_MODE_CNTL 0x1f, ...), the sampler words
+(makeSampler, fd6_sampler_state_create's), PRIMALLOCTHRESHOLD 7, threadsize and the kernel's UCHE/UBWC setup are
+those of freedreno_devices.py's A635 row and of Linux's a6xx_hw_init. What differs from what freedreno would do with
+the same picture: CoreAnimation's offscreen render targets (backdrops, blur levels, flattened layers) are linear
+here (Mesa: tiled and UBWC), every pass is in sysmem (Mesa: GMEM with binning), and no sample is prefetched. Session 9's
+probe gives the cost: a blended full-screen draw 0.91 ms, the same with a sample of a 4x4 texture 1.80 ms, as with a
+194x237 one: the extra ~0.85 ms a screen does not depend on the texture's bytes.
+
+**The reference: `tools/glfill`** (`kernel/drivers/gpu/tools/glfill.c`, `build-glfill.sh`; binary
+`userland-26/out/glfill/glfill`, sha256 `03c74c8c`, aarch64 musl, needs only pmOS's libEGL/libGLESv2). On pmOS it times,
+by the GPU (GL_EXT_disjoint_timer_query), 40 full-screen draws into a 1080x2400 RGBA8 target for 14 cases: clear,
+opaque, blended, blended with one sample of a 4x4 texture (highp as the probe, mediump as CoreAnimation, nearest and
+linear, with a LOD bias, with a computed coordinate), a 1080x2400 RGBA8 texture 1:1 (opaque and blended), RGBA16F 1:1
+and stretched, two samples, and framebuffer fetch. Run with and without `FD_MESA_DEBUG=sysmem` (and `sysmem,noubwc`),
+the GPU held at its top frequency. Checked on the host under qemu with llvmpipe (all cases run, GL error 0).
+
+Read it against Session 9's probe (per draw, sysmem):
+
+| glfill, `FD_MESA_DEBUG=sysmem` | means | next |
+|---|---|---|
+| blended 4x4 sample ~1.8 ms, blended constant ~0.9 | the sample's ~0.85 ms a screen is the chip's | the lever is fewer sampled pixels a frame: the S13-D run below names the draws |
+| blended 4x4 sample well under 1.8 | freedreno's draw state samples cheaper | bisect what differs: the cases say which (bias/no-prefetch, layout via the 1080x2400 cases) |
+| gmem cases far under sysmem | GMEM pays where our sysmem passes do not | revisit GMEM for the passes without fetch |
+
+The pmOS UI reaches 90 Hz on the same chip (the owner), but its compositor draws one or two textured quads a frame
+with damage tracking; Liquid Glass adds the backdrop capture, downsample, blur and SDF passes, so that comparison is
+per draw (glfill), not per frame.
+
+**S13-D (diagnostic boot, any root; no new image):** which draws a heavy frame is made of, by program and area, the
+one thing no log has (`metal_fps=draws` and `metal_fps=timeline` were never run). `metal_fps=draws` waits for idle
+around every draw, so its times compare draws with each other, not with the totals; the clean numbers stay those of a
+`metal_fps=1` run.
+
+```sh
+KERNEL=kernel-16k-consolidated-rc3.bak bash darwin-lisa/kernel/drivers/gpu/gpu-quietrun.sh gpu-s13d "$B metal_fps=timeline metal_fps=draws metal_fps=mainpass cpus=4 touch_seq=tap:56800:5600@190,up@230,cc@250" "150 200 215 240 260 275 290"; bash darwin-lisa/tools/bootos.sh pmos
+```
+
+Read `fps: ... a heavy pass` / `its draws:` (program, us, area), `timeline: a buffer of N ms`, `full-screen passes by
+load action ... by format`, `textures bound to draws`. With Settings opening without text on 2ef33580 (another
+worker), the lock-to-home window and the Control Center (`cc@250`) carry the glass passes as well.
+
+Files: `kernel/drivers/gpu/tools/glfill.c`, `build-glfill.sh`, `sweep-listing-analysis.patch` (analysis only, not
+built into the plug-in), `ir3-survey.py`.
+
 ## Session 11 (2026-11-13, host only): Settings "draws nothing while scrolled" is a run with no scroll in it
 
 Nothing was run on the phone. Question: why Settings stops making frames while a finger scrolls it (Session 10, S9-A/B).

@@ -24,7 +24,7 @@ the dyld cache, the reference kernelcache).
 | Piece | What | sha256 |
 | --- | --- | --- |
 | `research/hackios-xnu-kernel/kernel-16k-periph1.bak` | the shared tree as of 2026-11-16 15:2x (s14 + the restored scheduler `sched_prim.c` 3c766b2f + the other workers' wires) + buttons, torch, haptic, bt, audio; firmware built in (`aw8624_haptic.bin`, `msbtfw11.{mbn,tlv}`, `msnv11.bin`). Built by `kernel/drivers/periph-build.sh` (lock, no `apply.sh`, symbols checked) | `40815677f8d56468e31549d8c58cdbdbeae59f057de6cd24bd1f28d2dd5754e0` |
-| `userland-26/out/libdlisa-periph/libdlisa.dylib` | libdlisa with the Bluetooth and flashlight hooks (the test root is built from HEAD instead) | `7249bc09...` |
+| `userland-26/out/system-26.apfs.full-9a91ed47` | test root: int3 (122a0d5c: libdlisa 7249bc09 with the Bluetooth and flashlight hooks, libdlisa-motion d948f0d5, ld-groups 2beca308, launchd dbeb1522, HakiosMetal 9e29ff9c, InterfaceNamer aa6f1292) + `usr/sbin/bluetoothd` (23F84, aaa02518) + `/etc/dlisa-inject.conf` of HEAD (b6d0f0b4: int3's + bluetoothd; both libraries it names are present). Hard-link copy of `out/sysroot-26` with those files replaced (taken out of the int3 image with `apfs.py cat`), `mkapfs.py -z` with `extract/system.manifest`, padded to 32 MiB; copy deleted, shared sysroot untouched. Read back: the files above; census 61213 files (int3 + 1), 24194 directories, 821 symlinks, 15960 checksums, 0 bad. 4,999,610,368 B. NOT written | `9a91ed478bbd3d7d6a6439f148192ea8e6b14b0116c028d83184fe74e817706f` |
 
 How to rebuild: `sh kernel/drivers/periph-build.sh NAME` (`EXTRA="bt audio"` by default). It holds
 `research/hackios-xnu-kernel/.build.lock`, runs only the idempotent wires of this work, never writes `kernel26.nopac`,
@@ -182,7 +182,7 @@ headset nearby), `level 3 done`. Any `bt: K: FAILED:` names the step.
 
 ### P3: Bluetooth in Settings (virtual controller) and speaker tone
 
-Needs the test root (int3 + bluetoothd + the conf): `"$B dlisa_btvirt=1 bt-transport-override=10 adsp=1 sound=2
+Needs the test root `system-26.apfs.full-9a91ed47` (`tools/flash-root.sh`; rollback int3 122a0d5c). Do not put `ld_disable=` with the `lean3` or `missing` groups on the line: both list `com.apple.bluetoothd`. Line: `"$B dlisa_btvirt=1 bt-transport-override=10 adsp=1 sound=2
 touch_seq=tap:56800:5600@200"` (Settings opened by the tap; then Bluetooth row). Pass: `dlisa[bluetoothd]: bt:
 sysctlbyname rebound in N slot(s)`, `kern.hv_vmm_present answered 1`, no "No valid serial port found"; a screenshot of
 Settings with Bluetooth "On"; `sound: the DSP took N frames a second` near 48000 (silent: amps off at sound=2).

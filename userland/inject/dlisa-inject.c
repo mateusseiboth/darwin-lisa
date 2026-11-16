@@ -2067,6 +2067,12 @@ probeThread(__unused void *argument)
  * windows (text, resolved textColor, its own appearance, its layer's compositingFilter, and the nearest ancestor whose
  * class names a visual effect, glass or vibrancy). White text with "light" here means the render server colours it;
  * "dark" means the app resolves its colours for a dark appearance.
+ * ctl2 answered that (light, labelColor black, yet no title and no SwiftUI row text on screen), so each label also gets
+ * "text: label N view alpha ... window ... font NAME SIZE pt; layer CLASS at (x,y wxh) bounds ... opacity ... contents
+ * CLASS|nil format ...", and up to 24 layers whose class can hold text (UIKit label layers, CATextLayer, RenderBox,
+ * SwiftUI's CG drawing layers) one "text: layer N CLASS (of VIEW) ..." line each. contents nil = never drawn (the app's
+ * side); contents present, on screen, opaque = drawn but not composited (backboardd's side); EMPTY or a 0 pt font =
+ * laid out to nothing (traits, Dynamic Type, screen metrics).
  */
 #define TEXT_PROBE_LABELS       8
 
@@ -2108,6 +2114,78 @@ findEffectAncestor(id view)
 	return "-";
 }
 
+#define TEXT_PROBE_LAYERS       24
+
+struct probeRect {
+	double x, y, w, h;
+};
+
+static const char *
+describeObject(id object)
+{
+	id text = object != nil ? SEND0(id, object, "description") : nil;
+	const char *utf8 = text != nil ? SEND0(const char *, text, "UTF8String") : NULL;
+
+	return utf8 != NULL ? utf8 : "-";
+}
+
+/* where a layer is, in its window's layer, and what it holds (frame, bounds, opacity, hidden, contents, format) */
+static void
+formatLayerState(char *text, size_t size, id layer, id windowLayer)
+{
+	struct probeRect bounds = ((struct probeRect (*)(id, SEL))objc_msgSend)(layer, sel_registerName("bounds"));
+	struct probeRect inWindow = windowLayer != nil ? ((struct probeRect (*)(id, SEL, struct probeRect, id))objc_msgSend)(layer,
+	    sel_registerName("convertRect:toLayer:"), bounds, windowLayer) : bounds;
+	float opacity = SEND0(float, layer, "opacity");
+	bool hidden = SEND0(bool, layer, "isHidden");
+	id contents = SEND0(id, layer, "contents");
+	char frame[48], box[48];
+
+	formatRect(frame, sizeof(frame), inWindow.x, inWindow.y, inWindow.w, inWindow.h);
+	formatRect(box, sizeof(box), bounds.x, bounds.y, bounds.w, bounds.h);
+	snprintf(text, size, "at %s bounds %s%s opacity %.2f%s contents %s format %s", frame, box,
+	    isRectEmpty(bounds.w, bounds.h) ? " EMPTY" : "", opacity, hidden ? " HIDDEN" : "",
+	    contents != nil ? object_getClassName(contents) : "nil", describeObject(SEND0(id, layer, "contentsFormat")));
+}
+
+/* the label's view side: alpha, hidden, window, font and point size (0 or a tiny size would draw nothing) */
+static void
+sayLabelGeometry(id label, int index, id windowLayer)
+{
+	id font = SEND0(id, label, "font"), layer = SEND0(id, label, "layer");
+	double alpha = SEND0(double, label, "alpha");
+	char state[320];
+
+	formatLayerState(state, sizeof(state), layer, windowLayer);
+	say("dlisa[%s]: text: label %d view alpha %.2f%s window %s font %s %.1f pt; layer %s %s\n", getprogname(), index, alpha,
+	    SEND0(bool, label, "isHidden") ? " HIDDEN" : "", SEND0(id, label, "window") != nil ? "yes" : "NONE",
+	    font != nil ? describeObject(SEND0(id, font, "fontName")) : "nil", font != nil ? SEND0(double, font, "pointSize") : 0.0,
+	    object_getClassName(layer), state);
+}
+
+/* every layer under the window whose class can hold text (trait-names.c), with its sublayers' count */
+static void
+walkTextLayers(id layer, id windowLayer, int depth, int *found, int *layers)
+{
+	id sublayers = SEND0(id, layer, "sublayers");
+	unsigned long count = sublayers != nil ? SEND0(unsigned long, sublayers, "count") : 0;
+	const char *name = object_getClassName(layer);
+
+	(*layers)++;
+	if (*found < TEXT_PROBE_LAYERS && isTextLayerClassName(name)) {
+		char state[320];
+		id delegate = SEND0(id, layer, "delegate");
+
+		formatLayerState(state, sizeof(state), layer, windowLayer);
+		say("dlisa[%s]: text: layer %d %s (of %s) %s, %lu sublayers\n", getprogname(), (*found)++, name,
+		    delegate != nil ? object_getClassName(delegate) : "-", state, count);
+	}
+	for (unsigned long i = 0; depth < 80 && i < count; i++) {
+		walkTextLayers(((id (*)(id, SEL, unsigned long))objc_msgSend)(sublayers, sel_registerName("objectAtIndex:"), i),
+		    windowLayer, depth + 1, found, layers);
+	}
+}
+
 static void
 sayLabel(id label, int index)
 {
@@ -2124,7 +2202,7 @@ sayLabel(id label, int index)
 }
 
 static void
-walkLabels(id view, int depth, int *found, int *views)
+walkLabels(id view, id windowLayer, int depth, int *found, int *views)
 {
 	id subviews;
 	unsigned long count;
@@ -2132,7 +2210,8 @@ walkLabels(id view, int depth, int *found, int *views)
 	(*views)++;
 	if (*found < TEXT_PROBE_LABELS && ((bool (*)(id, SEL, Class))objc_msgSend)(view, sel_registerName("isKindOfClass:"),
 	    objc_getClass("UILabel"))) {
-		sayLabel(view, (*found)++);
+		sayLabel(view, *found);
+		sayLabelGeometry(view, (*found)++, windowLayer);
 	}
 	if (depth > 60) {
 		return;
@@ -2140,8 +2219,8 @@ walkLabels(id view, int depth, int *found, int *views)
 	subviews = SEND0(id, view, "subviews");
 	count = subviews != nil ? SEND0(unsigned long, subviews, "count") : 0;
 	for (unsigned long i = 0; i < count; i++) {
-		walkLabels(((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews, sel_registerName("objectAtIndex:"), i), depth + 1,
-		    found, views);
+		walkLabels(((id (*)(id, SEL, unsigned long))objc_msgSend)(subviews, sel_registerName("objectAtIndex:"), i), windowLayer,
+		    depth + 1, found, views);
 	}
 }
 
@@ -2152,7 +2231,7 @@ sayTextColors(void)
 	id windows = app != nil ? SEND0(id, app, "windows") : nil;
 	unsigned long count = windows != nil ? SEND0(unsigned long, windows, "count") : 0;
 	id screen = SEND0(id, (id)objc_getClass("UIScreen"), "mainScreen");
-	int found = 0, views = 0;
+	int found = 0, views = 0, textLayers = 0, layers = 0;
 
 	for (unsigned long i = 0; i < count; i++) {
 		id window = ((id (*)(id, SEL, unsigned long))objc_msgSend)(windows, sel_registerName("objectAtIndex:"), i);
@@ -2163,9 +2242,11 @@ sayTextColors(void)
 		say("dlisa[%s]: text: window %lu %s style %s (screen %s) labelColor %s\n", getprogname(), i,
 		    object_getClassName(window), nameInterfaceStyle(readInterfaceStyle(window)),
 		    nameInterfaceStyle(readInterfaceStyle(screen)), label);
-		walkLabels(window, 0, &found, &views);
+		walkLabels(window, SEND0(id, window, "layer"), 0, &found, &views);
+		walkTextLayers(SEND0(id, window, "layer"), SEND0(id, window, "layer"), 0, &textLayers, &layers);
 	}
-	say("dlisa[%s]: text: %lu windows, %d views, %d labels shown\n", getprogname(), count, views, found);
+	say("dlisa[%s]: text: %lu windows, %d views, %d labels shown; %d layers, %d that can hold text shown\n", getprogname(),
+	    count, views, found, layers, textLayers);
 }
 
 static void

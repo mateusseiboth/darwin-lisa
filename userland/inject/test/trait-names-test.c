@@ -30,6 +30,17 @@ main(void)
 	expect(strcmp(text, "rgba(255,255,255,0.50)") == 0, "white, half transparent");
 	formatRgba(text, sizeof(text), 1.2, -0.1, 0.5, 1);
 	expect(strcmp(text, "rgba(255,0,128,1.00)") == 0, "extended-range components are clamped");
+	formatRect(text, sizeof(text), 16, 120.5, 343, 0);
+	expect(strcmp(text, "(16,120.5 343x0)") == 0, "a rect as origin and size, one decimal at most");
+	expect(isRectEmpty(343, 0) && isRectEmpty(0, 20) && !isRectEmpty(343, 41), "a side of 0 is an empty rect");
+	expect(isTextLayerClassName("UILabelLayer"), "UIKit's label layer is text");
+	expect(isTextLayerClassName("_UILabelContentLayer"), "and its content layer");
+	expect(isTextLayerClassName("CATextLayer"), "CATextLayer is text");
+	expect(isTextLayerClassName("RBLayer"), "a RenderBox layer may hold SwiftUI text");
+	expect(isTextLayerClassName("_TtC7SwiftUIP33_ABCDEF16CGDrawingLayer"), "SwiftUI's CG drawing layer may hold text");
+	expect(isTextLayerClassName("_TtCOCV7SwiftUI11DisplayList11ViewUpdater8Platform13CGDrawingView"), "and its drawing view");
+	expect(!isTextLayerClassName("CALayer") && !isTextLayerClassName("CABackdropLayer"), "plain and backdrop layers are not");
+	expect(!isTextLayerClassName(NULL), "no class name is not text");
 	printf("%s (%d failures)\n", failures ? "FAILED" : "ok", failures);
 	return failures != 0;
 }

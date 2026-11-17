@@ -39,6 +39,7 @@ extern struct vc_info vinfo;            /* the boot framebuffer, as the text con
 #include "MiniIOSurface.h"
 
 extern "C" void hakios_tl(const char * format, ...) __printflike(1, 2);
+extern "C" void dlisa_brightness_init(void);         /* MiniPanelBrightness.cpp: the panel's brightness (bright=) */
 
 /* IOConnectCallMethod selectors of the framebuffer user client (Darwin userland 16.5) */
 enum {
@@ -689,6 +690,7 @@ IOMobileFramebuffer::start(IOService * provider)
 	publishModes();
 	setName("disp0");
 	registerService();
+	dlisa_brightness_init();
 	return true;
 }
 

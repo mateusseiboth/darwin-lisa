@@ -48,8 +48,9 @@ def append_once(path, marker, text, tag):
     print(f"  [ok]   {tag}")
 
 
-# 1. sources (MiniDrivers.h is already in the tree, from wifi-wire.py, byte-identical to HakiOS's)
-for name in ("MiniIOSurface.cpp", "MiniIOSurface.h", "MiniIOMobileFramebuffer.cpp"):
+# 1. sources (MiniDrivers.h is already in the tree, from wifi-wire.py, byte-identical to HakiOS's). MiniPanelBrightness.cpp
+#    + dlisa_dcs.h: the panel's brightness over DSI DCS (boot-arg bright=), started by the framebuffer's start().
+for name in ("MiniIOSurface.cpp", "MiniIOSurface.h", "MiniIOMobileFramebuffer.cpp", "MiniPanelBrightness.cpp", "dlisa_dcs.h"):
     copy(name)
 if not os.path.exists(os.path.join(T, "iokit/Kernel/MiniDrivers.h")):
     shutil.copyfile(os.path.join(HERE, "..", "MiniDrivers.h"), os.path.join(T, "iokit/Kernel/MiniDrivers.h"))
@@ -61,6 +62,10 @@ append_once(os.path.join(T, "iokit/conf/files"), "iokit/Kernel/MiniIOSurface.cpp
             "iokit/Kernel/MiniIOSurface.cpp\t\toptional hakios_display iokitcpp\n"
             "iokit/Kernel/MiniIOMobileFramebuffer.cpp\toptional hakios_display iokitcpp\n",
             "iokit/conf/files += MiniIOSurface + MiniIOMobileFramebuffer")
+append_once(os.path.join(T, "iokit/conf/files"), "iokit/Kernel/MiniPanelBrightness.cpp",
+            "\n# darwin-lisa: the panel's brightness, DCS 0x51 over the DSI host's command DMA (boot-arg bright=).\n"
+            "iokit/Kernel/MiniPanelBrightness.cpp\toptional hakios_display iokitcpp\n",
+            "iokit/conf/files += MiniPanelBrightness")
 
 # 3. config: option + tag
 edit(os.path.join(T, "config/MASTER"),

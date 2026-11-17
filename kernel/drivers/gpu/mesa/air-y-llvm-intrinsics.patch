@@ -1,0 +1,140 @@
+The llvm.* intrinsics Apple's compiler leaves in AIR, translated (2026-11-16, darwin-lisa session 13). A survey of every
+.metallib of iOS 26.5 (the strings of their symbol tables) counts llvm.smax 384 times, umax 367, ctlz 208, abs 145,
+umin, fshl, smin, exp2, minnum, log2, ctpop, maxnum, cttz, bitreverse, bswap, usub.sat, copysign and a few more; the
+front end knew lifetime, assume, memcpy, memset, fmuladd and fabs. VideoToolbox's VTMTSComputeFunction1x1
+(llvm.umax.i32, MercuryPosterExtension, run ubwc-A) was the first refused on the phone.
+
+Each at the operand's own width, as LLVM defines it; the "poison for INT_MIN / zero" flag of abs, ctlz and cttz only
+widens what is allowed, so the defined answer is given. ctlz of 8 and 16 bits is counted in 32 (uclz is a 32-bit
+opcode) and the difference taken off. llvm.experimental.noalias.scope.decl is a marker, as the lifetimes.
+
+Checked on the host: darwin-lisa/kernel/drivers/gpu/tools/air-llvm-check.py folds 40 cases with air2nir --eval
+against LLVM's definitions in Python: 40 of 40 agree.
+
+diff -ru a/air_intrinsics.c b/air_intrinsics.c
+--- a/air_intrinsics.c	2026-11-12 10:44:25.025768555 -0400
++++ b/air_intrinsics.c	2026-11-16 15:34:33.549593539 -0400
+@@ -1633,6 +1633,112 @@
+ 
+ /* -- llvm.* ------------------------------------------------------------- */
+ 
++/* darwin-lisa session 13: the integer and float llvm.* intrinsics Apple's
++ * front end leaves in AIR (a survey of every .metallib of iOS 26.5: llvm.smax
++ * 384 times, umax 367, ctlz 208, abs 145, umin, fshl, smin, exp2, minnum,
++ * log2, ctpop, maxnum, cttz, bitreverse, bswap, usub.sat, copysign, ...),
++ * VideoToolbox's VTMTSComputeFunction1x1 the first one met on the phone
++ * (llvm.umax.i32, MercuryPosterExtension). Each is LLVM's own definition, at
++ * the operand's own bit size; the flag LLVM adds to abs/ctlz/cttz ("the result
++ * is poison for INT_MIN / zero") only widens what is allowed, so the defined
++ * answer is given everywhere.
++ */
++static nir_def *
++llvm_resize(struct air_ctx *c, nir_def *v, unsigned bits)
++{
++   return v->bit_size == bits ? v : nir_u2uN(&c->b, v, bits);
++}
++
++static bool
++llvm_int_op(struct air_ctx *c, const struct air_inst *in, const char *name)
++{
++   static const struct { const char *name; unsigned args; } ops[] = {
++      { "smax", 2 }, { "smin", 2 }, { "umax", 2 }, { "umin", 2 }, { "abs", 1 },
++      { "ctlz", 1 }, { "cttz", 1 }, { "ctpop", 1 }, { "bswap", 1 },
++      { "bitreverse", 1 }, { "fshl", 3 }, { "fshr", 3 }, { "usub.sat", 2 },
++      { "uadd.sat", 2 }, { "ssub.sat", 2 }, { "sadd.sat", 2 }, { "minnum", 2 },
++      { "maxnum", 2 }, { "minimum", 2 }, { "maximum", 2 }, { "copysign", 2 },
++      { "exp2", 1 }, { "log2", 1 }, { "sqrt", 1 }, { "floor", 1 }, { "ceil", 1 },
++      { "trunc", 1 }, { "rint", 1 }, { "nearbyint", 1 }, { "fma", 3 },
++   };
++   const char *op = name + 5;
++   unsigned k;
++   for (k = 0; k < ARRAY_SIZE(ops); k++) {
++      size_t len = strlen(ops[k].name);
++      if (!strncmp(op, ops[k].name, len) && op[len] == '.')
++         break;
++   }
++   if (k == ARRAY_SIZE(ops))
++      return air_error(c, "intrinsic: %s", name);
++   if (in->num_operands < 1 + ops[k].args)
++      return air_error(c, "intrinsic: %s with %u operands", name, in->num_operands - 1);
++   nir_def *a[3] = { NULL, NULL, NULL };
++   for (unsigned i = 0; i < ops[k].args; i++) {
++      a[i] = air_get_ssa(c, in->operands[1 + i]);
++      if (!a[i])
++         return false;
++   }
++   nir_builder *b = &c->b;
++   const char *o = ops[k].name;
++   nir_def *x = a[0], *r = NULL;
++   const unsigned bits = x->bit_size;
++   if (!strcmp(o, "smax")) r = nir_imax(b, a[0], a[1]);
++   else if (!strcmp(o, "smin")) r = nir_imin(b, a[0], a[1]);
++   else if (!strcmp(o, "umax")) r = nir_umax(b, a[0], a[1]);
++   else if (!strcmp(o, "umin")) r = nir_umin(b, a[0], a[1]);
++   else if (!strcmp(o, "abs")) r = nir_iabs(b, x);
++   else if (!strcmp(o, "ctlz"))   /* (counted in 32 bits and the difference taken off: uclz is a 32-bit opcode) */
++      r = llvm_resize(c, bits == 64 ? nir_uclz(b, x) :
++                      nir_iadd_imm(b, nir_uclz(b, nir_u2u32(b, x)), -(int64_t)(32 - bits)), bits);
++   else if (!strcmp(o, "cttz"))
++      r = nir_bcsel(b, nir_ieq_imm(b, x, 0), nir_imm_intN_t(b, bits, bits),
++                    llvm_resize(c, nir_find_lsb(b, x), bits));
++   else if (!strcmp(o, "ctpop")) r = llvm_resize(c, nir_bit_count(b, x), bits);
++   else if (!strcmp(o, "bitreverse"))
++      r = bits == 32 ? nir_bitfield_reverse(b, x) :
++          llvm_resize(c, nir_ushr_imm(b, nir_bitfield_reverse(b, nir_u2u32(b, x)), 32 - bits), bits);
++   else if (!strcmp(o, "bswap")) {
++      if (bits != 16 && bits != 32 && bits != 64)
++         return air_error(c, "intrinsic: %s of %u bits", name, bits);
++      r = nir_imm_intN_t(b, 0, bits);
++      for (unsigned i = 0; i < bits / 8; i++) {
++         nir_def *byte = nir_iand_imm(b, nir_ushr_imm(b, x, 8 * i), 0xff);
++         r = nir_ior(b, r, nir_ishl_imm(b, byte, bits - 8 - 8 * i));
++      }
++   } else if (!strcmp(o, "fshl") || !strcmp(o, "fshr")) {
++      /* funnel shift of the concatenation hi:lo by c mod width; a shift of 0
++       * gives hi (fshl) or lo (fshr) unchanged, without the full-width shift
++       * NIR leaves undefined */
++      nir_def *s = nir_umod_imm(b, llvm_resize(c, a[2], bits), bits);
++      nir_def *inv = nir_isub(b, nir_imm_intN_t(b, bits, bits), s);
++      nir_def *s32 = nir_u2u32(b, s), *inv32 = nir_u2u32(b, inv);
++      bool left = !strcmp(o, "fshl");
++      nir_def *shifted = left ? nir_ior(b, nir_ishl(b, a[0], s32), nir_ushr(b, a[1], inv32))
++                              : nir_ior(b, nir_ushr(b, a[1], s32), nir_ishl(b, a[0], inv32));
++      r = nir_bcsel(b, nir_ieq_imm(b, s, 0), left ? a[0] : a[1], shifted);
++   } else if (!strcmp(o, "usub.sat")) r = nir_usub_sat(b, a[0], a[1]);
++   else if (!strcmp(o, "uadd.sat")) r = nir_uadd_sat(b, a[0], a[1]);
++   else if (!strcmp(o, "ssub.sat")) r = nir_isub_sat(b, a[0], a[1]);
++   else if (!strcmp(o, "sadd.sat")) r = nir_iadd_sat(b, a[0], a[1]);
++   else if (!strcmp(o, "minnum") || !strcmp(o, "minimum")) r = nir_fmin(b, a[0], a[1]);
++   else if (!strcmp(o, "maxnum") || !strcmp(o, "maximum")) r = nir_fmax(b, a[0], a[1]);
++   else if (!strcmp(o, "copysign"))
++      r = nir_bcsel(b, nir_flt(b, a[1], nir_imm_floatN_t(b, 0.0, bits)) /* (-0 keeps +) */,
++                    nir_fneg(b, nir_fabs(b, a[0])), nir_fabs(b, a[0]));
++   else if (!strcmp(o, "exp2")) r = nir_fexp2(b, x);
++   else if (!strcmp(o, "log2")) r = nir_flog2(b, x);
++   else if (!strcmp(o, "sqrt")) r = nir_fsqrt(b, x);
++   else if (!strcmp(o, "floor")) r = nir_ffloor(b, x);
++   else if (!strcmp(o, "ceil")) r = nir_fceil(b, x);
++   else if (!strcmp(o, "trunc")) r = nir_ftrunc(b, x);
++   else if (!strcmp(o, "rint") || !strcmp(o, "nearbyint")) r = nir_fround_even(b, x);
++   else if (!strcmp(o, "fma")) r = nir_ffma(b, a[0], a[1], a[2]);
++   if (!r)
++      return air_error(c, "intrinsic: %s", name);
++   air_set(c, &in->base, air_val_ssa(c, r));
++   return true;
++}
++
+ static bool
+ llvm_op(struct air_ctx *c, const struct air_inst *in, const char *name)
+ {
+@@ -1761,7 +1867,9 @@
+    }
+    if (!strcmp(name, "llvm.trap"))
+       return air_error(c, "intrinsic: llvm.trap");
+-   return air_error(c, "intrinsic: %s", name);
++   if (!strncmp(name, "llvm.experimental.noalias.scope.decl", 36))
++      return true; /* an alias-scope marker, like the lifetimes: nothing to emit */
++   return llvm_int_op(c, in, name);
+ }
+ 
+ /* -- textures ------------------------------------------------------------

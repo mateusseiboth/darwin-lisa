@@ -1,0 +1,33 @@
+Plug-in selectors QuartzCore 26 and IconRendering ask (2026-11-16, darwin-lisa session 13; ubwc-A refused them by name):
+-[HakiosMetalBuffer setResponsibleProcess:] / -responsibleProcess (no per-process GPU memory accounting here, as the
+texture already answered), and -[HakiosMetalDevice minimumTextureBufferAlignmentForPixelFormat:] /
+-minimumLinearTextureAlignmentForPixelFormat: (64: a texture over a buffer's rows is taken as it lies when its offset
+and bytesPerRow are multiples of 64, and served through a copy otherwise; 0, the unknown-selector answer, is no
+alignment). Applies after HakiosMetalCA-ubwc-fb.patch.
+
+--- a/HakiosMetalCA.m	2026-11-16 15:35:19.127793123 -0400
++++ b/HakiosMetalCA.m	2026-11-16 15:35:27.189229209 -0400
+@@ -2571,6 +2571,12 @@
+ /* Not measured: nothing has asked the kernel what one allocation may be. It only has to be non-zero for initLimits
+  * to accept it; a buffer longer than the kernel gives is refused at -newBufferWithLength:options:, with the reason. */
+ - (uint64_t)maxBufferLength { return 256ULL << 20; }
++/* darwin-lisa session 13: where a texture over a buffer's rows may start and how its rows may be spaced for the GPU to
++ * take them as they lie (-[HakiosMetalBuffer newTextureWithDescriptor:offset:bytesPerRow:]: a multiple of 64 bytes,
++ * hakios-metal's Texture::wrap; anything else is served through a copy). IconRendering asks it before it lays out
++ * rows, and a 0 answered by the unknown-selector fallback is no alignment at all. */
++- (NSUInteger)minimumTextureBufferAlignmentForPixelFormat:(MTLPixelFormat)format { (void)format; return 64; }
++- (NSUInteger)minimumLinearTextureAlignmentForPixelFormat:(MTLPixelFormat)format { (void)format; return 64; }
+ 
+ /* profile 0's own maxVertexAmplificationCount is 1 */
+ - (BOOL)supportsVertexAmplificationCount:(NSUInteger)count { return count <= 1; }
+@@ -4477,6 +4483,10 @@
+ - (MTLResourceOptions)resourceOptions       { return MTLResourceStorageModeShared | MTLResourceCPUCacheModeWriteCombined; }
+ - (MTLHazardTrackingMode)hazardTrackingMode { return MTLHazardTrackingModeDefault; }
+ - (id)heap                                  { return nil; }   /* every buffer is its own allocation; nil is Metal's answer for that */
++/* (darwin-lisa session 13: QuartzCore 26 names the process a buffer is made for; there is no accounting of GPU memory
++ * by process in this kernel, as for a texture) */
++- (int)responsibleProcess                   { return 0; }
++- (void)setResponsibleProcess:(int)pid      { (void)pid; }
+ - (NSUInteger)heapOffset                    { return 0; }
+ - (BOOL)isAliasable                         { return NO; }
+ 

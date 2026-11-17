@@ -209,6 +209,15 @@ gestures `touch_lat=1 touch_seq=nc@200,up@210,cc@250` unless said; "CC" = the Co
 | t5a | int11, unixnu4 | `m2v_renderarea=1` | the Notification Center clean; band at +300 | gesture 64.0/s (16.1 ms); CC 27.9/s (26.8 ms) |
 | t5d | int12, unixnu4 | `$B` | the lock screen complete: "Mon 16 Nov", big "7:21" in glass over the wallpaper; band at +300 | `vsc grew draw 0 prim 0` in all 27 lines (gmem passes up to 1478, 52177 tiles); CC 27.7/s (20.7 ms) |
 | t6a | int13, unixnu4 | `touch_seq=cc@250,up@262,cc@274,up@286,cc@298` | **GPU hang** at 66 s: `adreno: gpu: no answer: submission 16 is the last, the core has done 13; ring: read up to 479, written up to 651; status 0xe715e5`; turnip `device lost: wait fence failed: 0xe00002d8`; backboardd and SpringBoard SIGSEGV; no frame | before it: SpringBoard `refused drawIndexedPrimitives: textures bound ... f0=550`. The queue's automatic `bootos.sh pmos` brought pmOS back; t6b was stopped in the loader before `oem run`; t6c not run. The run queue now stops without returning to pmOS when a log has `gpu: no answer: submission` |
+| t6a12 | int12 again, unixnu4 | as t6a | no hang (the hang was int13's change). Home complete at +150; the app switcher; **Settings with its text drawn by the new stack** (title, Apple Account, every row, "Wi-Fi Off", glass search bar); CC right | gesture bursts 55.7/s (16.3 ms) down to 21.4/s; none of the CC pulls at 50/s; m5 0.051 ms; `vsc grew draw 0 prim 0` throughout |
+| t6b12 | int12, unixnu4 | + `tu_condskip=0` | the band at +306 (icon rows doubled); CC right at +320: the condition skip is not the cause | 28.6/s and 31.4/s; m5 0.058 ms |
+| t6c12 | int12, unixnu4 | + `tu_bb=sysmem` | home complete and clean at +150/+215 (8:04/8:05); stopped at about +230 by the coordinator's order (another session of the owner flashes the phone), so no CC numbers | boot 52.0/s (17.1 ms) |
+
+**End of Session 12 (2026-11-16 ~20:05).** The owner stopped the 60 fps work. The last run (t6c12) was stopped on the
+host while its iOS kernel was running on the phone; no command was sent to the phone after that (another session of
+the owner was about to flash Arch Linux ARM). Written at that time: boot_a U-Boot 2e20b724 (not touched this session),
+vendor_boot_a final19-hbt `bc7a7ea2`, super root int12 `2bfc0622`. int13 (it hangs the GPU) was replaced by int12; int9 and int14
+were never written.
 
 ## Session 15 (2026-11-16, host only): the clipped corners, what the uber shader asks of colour attachment 1
 

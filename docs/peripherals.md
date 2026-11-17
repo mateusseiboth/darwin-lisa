@@ -16,7 +16,7 @@ the dyld cache, the reference kernelcache).
 | Flashlight | PM8350C flash LED module, channel 0 | done | done (libdlisa, SpringBoard) | `kernel/drivers/torch/`, `userland/inject/torch-level.c` |
 | Panel brightness | VTDR6130 DCS 0x51 over DSI | not started | plan | below |
 | Bluetooth | WCN6750 BT half, UART7 (QUP0 SE7), BT_EN GPIO 85 | done (bt=1..4 + bluetoothd bridge) | virtual controller done; real path planned | `kernel/drivers/bt/`, `userland/inject/bt-virtual.c` |
-| Speaker | 2x TFA9873 (I2C SE3) on PRIMARY MI2S, ADSP APR | done (sound=1..4) | plan (HAL plug-in) | `kernel/drivers/audio/` |
+| Speaker | 2x TFA9873 (I2C SE3) on PRIMARY MI2S, ADSP APR | done (sound=1..4, Xiaomi's tuning, status guard) | built, not run (DLisaAudio.driver, [audio-ios.md](audio-ios.md)) | `kernel/drivers/audio/`, `userland/audio/` |
 | NFC, fingerprint, modem | survey at the end | | | |
 
 ## Builds and files
@@ -127,6 +127,11 @@ and copies nothing unless the linked kernel is newer than the run and defines ev
   `audio_plugin.c` (AudioServerPlugIn, `/dev/hakios-audio`) is the model. Unknowns: VirtualAudio's topology for this
   product and the missing speaker tunings ("HAL Speaker Protection is missing" may fail the route or attenuate 20 dB).
 - **Cost to iOS sound**: the plug-in port is small (a day); VirtualAudio route work is open-ended (days).
+- **2026-11-16 (host)**: the amplifiers take Xiaomi's tuning where it fits pmOS's bus (`sound_tune`, the current limits
+  and the boost of the stock `tfa98xx.cnt`, NXP's settings for rev 0x0b73) and stop on any protection flag or a die over
+  100 C; `DLisaAudio.driver` (HakiOS's plug-in ported to 26) in `/Library/Audio/Plug-Ins/HAL`, libdlisa in audiomxd
+  and `dlisa_sndtest` in SpringBoard. Kernel `kernel-16k-audio1.bak`, root `920e8d79`, runs A0 to A3:
+  [handover-2026-11-16-audio.md](handover-2026-11-16-audio.md).
 
 ## 7. NFC, fingerprint, modem (survey and plan only)
 

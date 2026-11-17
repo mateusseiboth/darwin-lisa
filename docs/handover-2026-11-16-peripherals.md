@@ -19,7 +19,7 @@ Nothing was run on the phone and nothing was written to it. Details, hardware, i
 | Flashlight | `dlisa.torch.c`, torch=1..3 | done (AVFlashlight in SpringBoard) | P1 (driver), then with root 9a91ed47 (Control Center) |
 | Brightness | no | plan: DSI DCS 0x51 + BrightnessSystem hook | |
 | Bluetooth | `dlisa.bt.c`, bt=1..4 + bluetoothd bridge | virtual controller (dlisa_btvirt=1) done; real path planned | P2 (bt=1, 2, 3), P3 (Settings) |
-| Speaker | `dlisa.sound.c` + TFA9873, sound=1..4 with adsp=1 | plan: HAL plug-in in /Library/Audio/Plug-Ins/HAL | P3 (sound=2), then sound=3 sound_amps=2 |
+| Speaker | `dlisa.sound.c` + TFA9873, sound=1..4 with adsp=1, `sound_tune` | built: DLisaAudio.driver ([handover-2026-11-16-audio.md](handover-2026-11-16-audio.md)) | P3 (sound=2) passed; A0 to A3 |
 | NFC, fingerprint, modem | survey | | |
 
 ## Commits
